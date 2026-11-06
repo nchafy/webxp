@@ -1,0 +1,223 @@
+/* Luna: the palette, the type, and the controls. No layout above the control level.
+ *
+ * The palette is Windows XP's Luna theme, with the two values Luna itself got wrong for
+ * contrast corrected: its grey body text and the light stop of its close box both fail
+ * WCAG 2.2 AA. Ratios are noted where they were the reason for a value.
+ *
+ * System fonts only. Tahoma is what Luna shipped and what macOS does not have, so Verdana
+ * is the fallback that keeps the metrics closest.
+ */
+
+:root {
+  --ink: #000;
+  --muted: #3a3a3a;          /* darkened from Luna's grey, which fails AA */
+  --rule: #919b9c;           /* XP control border */
+  --bg: #fff;
+  --accent: #0000cc;         /* the era's link blue, darkened to clear AA */
+  --face: #ece9d8;           /* XP control face, the "bisque" */
+  --title-a: #0a246a;        /* title bar, dark end */
+  --title-b: #3a6ea5;        /* title bar, light end */
+  --sunken: #7f9db9;         /* input border */
+  --raised: #fff;            /* the lit edge of a bevel, top-left */
+  --sunk: #b8b4a2;           /* the shaded edge, bottom-right */
+  --panel: #fcfcfa;          /* a record's own face, slightly off the page */
+  --start-a: #51a800;
+  --start-b: #2f7a00;
+  --desktop: #3a6ea5;
+
+  --taskbar-h: 30px;
+  --titlebar-h: 28px;
+
+  /* Luna's zoom. XP animated a window opening, minimising and maximising at roughly this
+     speed; longer reads as a web transition rather than as a shell. */
+  --zoom-ms: 160ms;
+  --zoom-ease: cubic-bezier(.2, .7, .4, 1);
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  font: 13px/1.45 Tahoma, Verdana, Geneva, sans-serif;
+  color: var(--ink);
+  background: var(--desktop);
+  /* The desktop owns the viewport. Windows are positioned inside it, so the page itself
+     never scrolls: a scrolling page would slide the taskbar off the bottom and a window
+     dragged to the edge would extend it. */
+  overflow: hidden;
+}
+
+a { color: var(--accent); }
+a:focus-visible,
+button:focus-visible,
+select:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  /* Luna's focus ring was a 1px dotted line, which fails SC 1.4.11. A white inset ring
+     with a dark halo reads on both the bisque chrome and the blue title bars. */
+  outline: 2px solid #fff;
+  outline-offset: -3px;
+  box-shadow: 0 0 0 2px var(--title-a);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------------------
+   Controls.
+   --------------------------------------------------------------------------- */
+
+button, .btn {
+  font: inherit;
+  min-height: 23px;
+  padding: .15rem .7rem;
+  color: var(--ink);
+  background: linear-gradient(to bottom, var(--raised) 0%, var(--face) 45%, var(--sunk) 100%);
+  border: 1px solid #003c74;
+  border-radius: 3px;
+  box-shadow: inset 0 0 0 1px var(--raised);
+  cursor: pointer;
+}
+button:active, .btn:active {
+  background: linear-gradient(to bottom, #cdc9b4 0%, #e3dfcd 100%);
+  box-shadow: inset 1px 1px 2px rgb(0 0 0 / 25%);
+}
+button:disabled {
+  color: var(--sunk);
+  /* Luna embossed a dead label rather than fading it, which survives on the bisque face
+     where a plain opacity drop turns to mud. */
+  text-shadow: 1px 1px 0 var(--raised);
+  cursor: default;
+}
+
+input[type="text"], input[type="search"], input[type="number"], select, textarea {
+  font: inherit;
+  min-height: 23px;
+  padding: .2rem .35rem;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--sunken);
+  border-radius: 0;
+  box-shadow: inset 1px 1px 2px rgb(0 0 0 / 14%);
+}
+
+/* A segmented group wearing tab clothes: exactly one member is on, so the pressed state is
+   the whole answer and `aria-pressed` carries it. */
+.segment { display: flex; flex-wrap: wrap; gap: 3px; }
+.segment button[aria-pressed="true"] {
+  background: linear-gradient(to bottom, var(--title-b), var(--title-a));
+  border-color: #0a1a4a;
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 35%);
+}
+
+/* ---------------------------------------------------------------------------
+   Containers: the beveled panel, and the group box.
+   --------------------------------------------------------------------------- */
+
+/* A beveled panel: light top-left edge, dark bottom-right. */
+.card {
+  background: var(--face);
+  border: 1px solid var(--rule);
+  border-top-color: var(--raised);
+  border-left-color: var(--raised);
+  box-shadow: inset -1px -1px 0 var(--raised), 2px 2px 5px rgb(0 0 0 / 28%);
+  padding: .5rem .6rem;
+}
+.card h2 {
+  margin: 0 0 .35rem;
+  font-size: 12px;
+  font-weight: 700;
+  color: #0a2a5a;
+}
+.card p { margin: .25rem 0; }
+
+/* A document page: the white sheet prose sits on inside a bisque window. Bounded, because a
+   line of text the full width of a maximised window is unreadable. */
+.sheet {
+  max-width: 44rem;
+  margin: .75rem auto;
+  padding: .9rem 1.1rem 1.1rem;
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-top-color: var(--raised);
+  border-left-color: var(--raised);
+  box-shadow: inset -1px -1px 0 var(--raised), 1px 1px 0 var(--sunk);
+}
+.sheet > :first-child { margin-top: 0; }
+.sheet > :last-child { margin-bottom: 0; }
+
+/* Group box: the fieldset-and-legend that is the era's way of titling a block. A titled
+   group reads as a record; a bulleted list reads as a dump. */
+.group {
+  margin: .5rem 0 0;
+  padding: .45rem .6rem .5rem;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--panel);
+}
+.group:first-child { margin-top: 0; }
+.group legend {
+  padding: 0 .3rem;
+  font-weight: 700;
+  font-size: 11px;
+  color: #0a2a5a;
+}
+.group-line { margin: .1rem 0; }
+
+/* ---------------------------------------------------------------------------
+   Tables, for content that really has columns. Column rules only — row striping would
+   imply an order the data does not carry.
+   --------------------------------------------------------------------------- */
+
+.group-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.group-table caption {
+  margin: 0 0 .3rem;
+  text-align: left;
+  color: var(--muted);
+  font-size: 10px;
+}
+.group-table th, .group-table td {
+  padding: .2rem .45rem .2rem 0;
+  text-align: left;
+  vertical-align: top;
+}
+.group-table thead th {
+  border-bottom: 1px solid var(--rule);
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.group-table tbody th { font-weight: 400; padding-right: .6rem; }
+.group-table tbody tr + tr th,
+.group-table tbody tr + tr td { border-top: 1px solid #e8e6dc; }
+.group-table th:last-child, .group-table td:last-child { padding-right: 0; }
+
+/* Below this a three-column table stops fitting, so every table collapses to stacked rows:
+   the header row is dropped and each cell is labelled by its `data-label`. `attr()` keeps
+   the label in the stylesheet, where a strict `style-src` can reach it.
+
+   The query is on the window, not the viewport. A window 300 px wide on a 1600 px desktop
+   has exactly the problem a 300 px phone has, and a viewport query cannot see it — this is
+   the rule that a resizable window makes necessary and a maximised one never needed.
+   `window.css` declares the containment. */
+@container window (max-width: 26rem) {
+  .group-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .group-table tbody tr { display: block; padding: .3rem 0; }
+  .group-table tbody tr + tr { border-top: 1px solid var(--rule); }
+  .group-table tbody th, .group-table tbody td { display: block; border-top: 0; padding: 0 0 .1rem; }
+  .group-table tbody th { font-weight: 700; }
+  .group-table tbody td[data-label]::before { content: attr(data-label) ": "; color: var(--muted); }
+}

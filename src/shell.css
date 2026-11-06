@@ -1,0 +1,243 @@
+/* The shell around the windows: the desktop surface, its icons, the taskbar, and the Start
+   menu. */
+
+/* ---------------------------------------------------------------------------
+   The desktop. Everything above the taskbar, and the positioning context every window's
+   geometry is measured against.
+   --------------------------------------------------------------------------- */
+
+.desktop {
+  position: fixed;
+  inset: 0 0 var(--taskbar-h) 0;
+  overflow: hidden;
+  /* Flat Luna blue, which is what XP showed with no wallpaper set. A page that wants a
+     wallpaper paints one on `.desktop` itself; `demo/demo.css` has three. */
+  background: var(--desktop);
+}
+
+/* ---------------------------------------------------------------------------
+   Desktop icons. XP opened these on a double click; a single activation is used here,
+   because a double click is unreachable by keyboard and has no touch equivalent. The
+   Start menu lists the same programs, so neither is the only way in.
+   --------------------------------------------------------------------------- */
+
+.desktop-icons {
+  position: absolute;
+  top: .5rem;
+  left: .5rem;
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: repeat(auto-fill, 5.5rem);
+  gap: .25rem;
+  max-height: calc(100% - 1rem);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.desktop-icon {
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: .3rem;
+  width: 5.5rem;
+  padding: .35rem .2rem;
+  /* The desktop icon is the one place XP used no button chrome at all. */
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  box-shadow: none;
+  color: #fff;
+  font-size: 11px;
+  line-height: 1.25;
+  text-align: center;
+  /* Luna's icon label: white text on whatever the wallpaper happens to be, which is
+     unreadable without this. The shadow is the contrast mechanism, not decoration. */
+  text-shadow: 0 1px 2px rgb(0 0 0 / 85%), 0 0 3px rgb(0 0 0 / 65%);
+}
+.desktop-icon:active { background: none; box-shadow: none; }
+.desktop-icon:hover,
+.desktop-icon:focus-visible {
+  background: rgb(10 36 106 / 42%);
+  border-color: rgb(255 255 255 / 45%);
+}
+.desktop-icon svg { display: block; filter: drop-shadow(1px 1px 2px rgb(0 0 0 / 45%)); }
+.desktop-icon span { overflow-wrap: anywhere; }
+
+/* ---------------------------------------------------------------------------
+   The taskbar.
+   --------------------------------------------------------------------------- */
+
+.taskbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--taskbar-h);
+  z-index: 1000;
+  display: flex;
+  align-items: stretch;
+  gap: .4rem;
+  /* Luna's bar: a bright line at the very top, then the blue. */
+  background: linear-gradient(to bottom, #3f8cf3 0%, #2461d8 9%, #245edb 55%, #1941a5 100%);
+  border-top: 1px solid #90bdff;
+  padding-right: .25rem;
+  font-size: 12px;
+  color: #fff;
+}
+
+.start {
+  display: flex;
+  align-items: center;
+  gap: .3rem;
+  padding: 0 1.1rem 0 .6rem;
+  min-height: 0;
+  font: italic 700 14px/1 Tahoma, Verdana, sans-serif;
+  color: #fff;
+  text-shadow: 0 1px 2px rgb(0 0 0 / 45%);
+  background: linear-gradient(to bottom, #6cc53f 0%, var(--start-a) 42%, var(--start-b) 100%);
+  border: 0;
+  /* The bar's right edge was a curve, not a corner. */
+  border-radius: 0 9px 9px 0;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 45%), 1px 0 3px rgb(0 0 0 / 35%);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.start:active,
+.start[aria-expanded="true"] {
+  background: linear-gradient(to bottom, var(--start-b), var(--start-a));
+  box-shadow: none;
+}
+
+/* The window buttons. One per open window, in the order the windows were opened, which is
+   the order XP kept: a button that moves when you focus it cannot be found twice. */
+.task-items {
+  display: flex;
+  align-items: center;
+  gap: .3rem;
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow: hidden;
+}
+.task-items li { min-width: 0; display: flex; }
+
+.task-button {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  flex: 0 1 10.5rem;
+  min-width: 2.2rem;
+  min-height: 0;
+  margin: 3px 0;
+  padding: 0 .5rem;
+  font: inherit;
+  color: #fff;
+  text-align: left;
+  /* Luna's top stop was #3c81ee, which holds the white window title at 3.77:1 and fails
+     SC 1.4.3. #2f6fd8 measures 4.79:1 and is the same blue two shades down. */
+  background: linear-gradient(to bottom, #2f6fd8 0%, #1c50b5 100%);
+  border: 1px solid #1941a5;
+  border-radius: 2px;
+  box-shadow: inset 1px 1px 0 rgb(255 255 255 / 18%);
+  cursor: pointer;
+}
+.task-button:hover { background: linear-gradient(to bottom, #2e6dd4 0%, #1a4aa8 100%); }
+/* Pressed means "this is the window you are looking at". XP sank the button and lightened
+   it; the sink is what reads at this size. */
+.task-button[aria-pressed="true"] {
+  background: linear-gradient(to bottom, #1a4faf 0%, #3072d8 100%);
+  box-shadow: inset 1px 1px 3px rgb(0 0 0 / 45%);
+}
+.task-button:active { box-shadow: inset 1px 1px 3px rgb(0 0 0 / 45%); }
+.task-button svg { flex: 0 0 auto; display: block; }
+.task-button span {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The system tray: a sunken well with the clock in it. */
+.tray {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  flex: 0 0 auto;
+  margin: 3px 0;
+  padding: 0 .6rem;
+  background: linear-gradient(to bottom, #1346b4 0%, #1a5ad4 100%);
+  border-left: 1px solid #1034a0;
+  box-shadow: inset 1px 0 0 #4a8ae8;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------------------------------------------------------------------------
+   The Start menu, used as the program list.
+   --------------------------------------------------------------------------- */
+
+.start-menu {
+  position: fixed;
+  left: 0;
+  bottom: var(--taskbar-h);
+  z-index: 1001;
+  width: min(20rem, 92vw);
+  max-height: min(32rem, calc(100vh - var(--taskbar-h) - 1rem));
+  display: flex;
+  flex-direction: column;
+  background: var(--face);
+  border: 1px solid #0a3f94;
+  border-radius: 6px 6px 0 0;
+  box-shadow: 2px -2px 10px rgb(0 0 0 / 40%);
+}
+.start-menu[hidden] { display: none; }
+.start-menu-head {
+  flex: 0 0 auto;
+  padding: .45rem .7rem;
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(to bottom, #1c62d6 0%, #0a3f94 100%);
+  border-radius: 5px 5px 0 0;
+}
+.start-menu-head small { display: block; font-weight: 400; font-size: 10px; opacity: .9; }
+.start-menu ul {
+  margin: 0;
+  padding: .3rem;
+  list-style: none;
+  overflow-y: auto;
+  background: var(--bg);
+}
+.start-item {
+  display: flex;
+  gap: .5rem;
+  align-items: center;
+  width: 100%;
+  min-height: 26px;
+  padding: .3rem .45rem;
+  font: inherit;
+  text-align: left;
+  color: var(--ink);
+  background: none;
+  border: 0;
+  border-radius: 2px;
+  box-shadow: none;
+  cursor: pointer;
+}
+.start-item:active { background: none; box-shadow: none; }
+.start-item:hover,
+.start-item:focus-visible { background: var(--title-b); color: #fff; }
+.start-item svg { flex: 0 0 auto; display: block; }
+.start-item span { flex: 1 1 auto; min-width: 0; }
+.start-item .hint { flex: 0 0 auto; font-size: 10px; color: var(--muted); }
+.start-item:hover .hint,
+.start-item:focus-visible .hint { color: #dfe8f5; }
+.start-menu-foot {
+  flex: 0 0 auto;
+  padding: .35rem .7rem;
+  font-size: 10px;
+  color: var(--muted);
+  border-top: 1px solid var(--sunk);
+}

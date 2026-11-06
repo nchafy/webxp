@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+  <!-- The generic window from src/icons.mjs. Duplicated as a file because a favicon is
+       fetched by the browser before any module runs, so it cannot be the drawn one. -->
+  <rect x="1.5" y="2.5" width="13" height="11" fill="#fcfcfa" stroke="#0a246a"/>
+  <rect x="2" y="3" width="12" height="3" fill="#3a6ea5"/>
+  <path d="M3 8h8M3 10h8M3 12h5" stroke="#7a8a9a" stroke-width="1"/>
+</svg>
