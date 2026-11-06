@@ -126,13 +126,35 @@ Luna's title-box stop, which the check reports at 2.91:1.
 | ------------------------- | -------- | -------- | -------- | -------- |
 | Close box, lightest stop  | `#e8785a` | 2.89:1  | `#c8341a` | 5.30:1  |
 | Title box, lightest stop  | `#6a9ad8` | 2.91:1  | `#4574ad` | 4.82:1  |
-| Unfocused title box       | `#8f9db3` | 2.75:1  | `#5c6b82` | 5.42:1  |
 | Taskbar button, top stop  | `#3c81ee` | 3.77:1  | `#2f6fd8` | 4.79:1  |
-| Unfocused title bar       | pale blue, near-white text | ~2.3:1 | `#66778f` → `#46556e` | 4.55:1, 5.12:1 |
 | Body text                 | grey      | fails AA | `#3a3a3a` | passes  |
 
 The light stop that the title-box gradient loses is put back as an inset box-shadow on the
 bevel's edge, where it is not under the glyph.
+
+### The unfocused title bar
+
+Luna washed the unfocused bar pale and kept near-white text on it, at roughly 2.3:1.
+
+The obvious fix is to darken the bar until it holds white. That was the first attempt, and
+it was wrong: `#66778f` → `#46556e` passes at 4.55:1 and lands on a navy close enough to the
+focused bar that "which window am I typing into" stops being answerable at a glance. The
+check passed and the thing the title bar is for had quietly stopped working.
+
+So the bar keeps Luna's pale wash and the **text** goes dark instead:
+
+| Surface                          | Colour                  | With                | Measured |
+| -------------------------------- | ----------------------- | ------------------- | -------- |
+| Unfocused bar, top stop          | `#b4c3da`               | text `#2b3a4f`      | 6.45:1   |
+| Unfocused bar, bottom stop       | `#93a6c4`               | text `#2b3a4f`      | 4.67:1   |
+| Unfocused title box, darkest     | `#aebed6`               | glyph `#2b3a4f`     | 6.10:1   |
+| Unfocused close box, darkest     | `#d79c92`               | glyph `#5e2415`     | 5.21:1   |
+
+The focused bar is vivid and white-on-navy; the unfocused one is pale and dark-on-pale. The
+two are now distinguishable by lightness, saturation and text colour at once, which is what
+XP was communicating. `active styling` reads each state's own text colour rather than
+assuming both are white — an earlier version read `color` off the bar instead of the heading,
+got the inherited black for both, and compared black to black. That assertion could not fail.
 
 **One departure is kept uncorrected.** The Start button is white bold italic on Luna's green
 and measures **2.16:1**, which fails SC 1.4.3. It is deliberately outside the contrast sweep

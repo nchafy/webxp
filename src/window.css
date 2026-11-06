@@ -69,12 +69,23 @@
 }
 .is-max > .window-title { border-radius: 0; }
 
-/* The unfocused bar. Luna desaturated it and kept near-white text, which measures 2.3:1 and
-   fails SC 1.4.3; these two stops measure 4.5:1 and 5.1:1 against white, so the bar still
-   reads as "not the active window" without the text going under. */
+/* The unfocused bar. Luna washed it out and kept near-white text on it, which measures
+   2.3:1 and fails SC 1.4.3.
+
+   Darkening the bar to hold white text is the obvious fix and the wrong one: it lands on a
+   navy close enough to the focused bar that "which window am I typing into" stops being
+   answerable at a glance, which is the only job the title bar has. So the bar keeps Luna's
+   pale wash and the text goes dark instead — 6.45:1 on the top stop and 4.67:1 on the
+   bottom. The window reads as asleep, which is what XP was saying. */
 .window:not(.is-active) > .window-title {
-  background: linear-gradient(to bottom, #66778f 0%, #46556e 100%);
-  border-bottom-color: #2e3a4c;
+  background: linear-gradient(to bottom, #b4c3da 0%, #93a6c4 100%);
+  border-bottom-color: #7f93b3;
+}
+.window:not(.is-active) > .window-title h2 {
+  color: #2b3a4f;
+  /* The dark-on-pale title takes Luna's embossed highlight instead of its drop shadow; a
+     dark shadow under dark text is mud. */
+  text-shadow: 0 1px 0 rgb(255 255 255 / 55%);
 }
 .window:not(.is-active) { box-shadow: 1px 1px 5px rgb(0 0 0 / 25%); }
 
@@ -121,10 +132,11 @@
   background: linear-gradient(to bottom, #17417c, #2c5c92);
   box-shadow: inset 1px 1px 2px rgb(0 0 0 / 35%);
 }
-/* Same correction on the unfocused boxes: Luna's #8f9db3 measures 2.75:1. */
+/* The unfocused boxes follow the unfocused bar: pale face, dark glyph. 6.10:1 and better. */
 .window:not(.is-active) .title-box {
-  background: linear-gradient(to bottom, #5c6b82 0%, #45536b 48%, #333f54 100%);
-  border-color: #2e3a4c;
+  background: linear-gradient(to bottom, #cfdaea 0%, #aebed6 100%);
+  border-color: #7f93b3;
+  color: #2b3a4f;
 }
 /* Lightest stop is #c8341a, not Luna's #e8785a: white on that measures 2.89:1 and the
    glyph has to sit over it. Every stop here clears 4.5:1. */
@@ -133,9 +145,12 @@
   border-color: #7a1a06;
 }
 .title-box.close:active { background: linear-gradient(to bottom, #a52208, #c8341a); }
+/* The unfocused close box keeps its red so it is still findable, washed to match the rest of
+   the sleeping bar. 5.21:1 with the dark glyph. */
 .window:not(.is-active) .title-box.close {
-  background: linear-gradient(to bottom, #a8503f 0%, #8d3a28 55%, #7a2e1c 100%);
-  border-color: #5e2415;
+  background: linear-gradient(to bottom, #e8b4ab 0%, #d79c92 100%);
+  border-color: #b5705f;
+  color: #5e2415;
 }
 .title-box[hidden] { display: none; }
 
