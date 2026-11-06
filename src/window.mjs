@@ -346,21 +346,37 @@ export class XPWindow {
       return;
     }
 
+    // A resize moves edges, so it is computed as edges. Deriving a position and a size
+    // separately is what makes the opposite edge drift: clamping `y` at the desktop top
+    // while the height keeps growing slides the bottom edge down, which is a resize from
+    // the north edge quietly becoming a move.
     const dir = this.drag.dir;
-    let { x, y, w, h } = start;
-    if (dir.includes('e')) w = start.w + dx;
-    if (dir.includes('s')) h = start.h + dy;
-    if (dir.includes('w')) {
-      // Dragging the west edge moves the left side and the width together. The minimum is
-      // enforced on the width first, so the edge stops instead of the window walking right.
-      w = Math.max(start.w - dx, MIN_W);
-      x = start.x + (start.w - w);
+    let left = dir.includes('w') ? start.x + dx : start.x;
+    let right = dir.includes('e') ? start.x + start.w + dx : start.x + start.w;
+    let top = dir.includes('n') ? start.y + dy : start.y;
+    let bottom = dir.includes('s') ? start.y + start.h + dy : start.y + start.h;
+
+    // The title bar must not go above the desktop, and the edge being dragged is the one
+    // that stops. The edge opposite it never moves during a resize.
+    if (top < 0) top = 0;
+    // The minimum is enforced on the edge under the pointer, so that edge stops rather than
+    // the window walking in the other direction.
+    if (right - left < MIN_W) {
+      if (dir.includes('w')) left = right - MIN_W;
+      else right = left + MIN_W;
     }
-    if (dir.includes('n')) {
-      h = Math.max(start.h - dy, MIN_H);
-      y = start.y + (start.h - h);
+    if (bottom - top < MIN_H) {
+      if (dir.includes('n')) top = bottom - MIN_H;
+      else bottom = top + MIN_H;
     }
-    this.box = { x, y, w, h };
+    // Enforcing the minimum height can push the top back above the desktop, so the clamp is
+    // re-applied and the bottom follows it. Order matters: the minimum wins over the edge.
+    if (top < 0) {
+      bottom += -top;
+      top = 0;
+    }
+
+    this.box = { x: left, y: top, w: right - left, h: bottom - top };
     this.apply();
   }
 

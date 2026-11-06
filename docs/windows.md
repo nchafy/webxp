@@ -29,7 +29,7 @@ geometry, because the open and minimise animations use it.
 | Gesture                      | Does                                | Check |
 | ---------------------------- | ----------------------------------- | ----- |
 | Drag the title bar           | Moves the window                    | `drag` |
-| Drag any of eight edges      | Resizes from that edge              | `resize se`, `resize w` |
+| Drag any of eight edges      | Resizes from that edge              | `resize se`, `resize w`, `resize n at desktop edge` |
 | Double-click the title bar   | Maximise, or restore                | `maximise` |
 | Click a title box            | Minimise, maximise, close           | `minimise and restore`, `maximise`, `close` |
 | Click a taskbar button       | Raise it, or put the front one away | `taskbar toggle` |
@@ -61,6 +61,12 @@ window without moving its origin.
   it stops at it rather than inverting the window (`minimum size`).
 - At least 72 px of a window stays horizontally on the desktop, and the title bar never goes
   above the top edge. See the departures below.
+- A resize is computed as four edges, not as a position plus a size. The edge under the
+  pointer is the one that stops at a clamp or at the minimum; the opposite edge does not
+  move. Deriving position and size separately lets the `y` clamp at the desktop top fire
+  while the height keeps growing, which slides the bottom edge down — a resize from the
+  north edge quietly becoming a move. `resize n at desktop edge` fails by 170 px if that
+  formulation comes back.
 - A new window cascades 26 px down and right of the last, starting clear of the desktop icon
   column. Two windows never open at one origin (`launch all`).
 

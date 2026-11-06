@@ -660,6 +660,44 @@ def check_resize_west(page) -> list[str]:
     return bad
 
 
+def check_resize_north_at_edge(page) -> list[str]:
+    """Dragging the north edge into the top of the desktop must not move the bottom edge.
+
+    The regression this exists for: computing a resize as a position plus a size lets the
+    `y` clamp at the desktop top fire while the height keeps growing, so the bottom edge
+    slides down and a resize from the north edge quietly becomes a move. Found by review,
+    fixed by computing edges instead, and kept here because the fix is not obvious enough to
+    survive an unrelated edit.
+    """
+    selector = win_selector(page, "readme")
+    # Put the window near the top first, so one drag can reach past the desktop edge.
+    page.evaluate(
+        "(() => { const w = window.webxp.windows.find((w) => w.programId === 'readme');"
+        " w.moveTo(360, 30); w.sizeTo(460, 300); })()"
+    )
+    time.sleep(0.1)
+    before = need(probe(page), "readme")
+    grip = rect_of(page, f'{selector} .window-grip[data-dir="n"]')
+    if grip is None:
+        return ["resize n: no north grip laid out"]
+
+    # Far enough up that the clamp has to fire.
+    drag(page, grip["x"] + grip["w"] / 2, grip["y"] + grip["h"] / 2, 0, -200, steps=8)
+
+    after = need(probe(page), "readme")
+    bad = []
+    if after["box"]["y"] != 0:
+        bad.append(f"resize n: top is {after['box']['y']}, want 0 at the desktop edge")
+    bottom_before = before["box"]["y"] + before["box"]["h"]
+    bottom_after = after["box"]["y"] + after["box"]["h"]
+    if not near(bottom_after, bottom_before):
+        bad.append(
+            f"resize n: the bottom edge moved {bottom_before} -> {bottom_after} while the "
+            "top was clamped — the resize became a move"
+        )
+    return bad
+
+
 def check_min_size(page) -> list[str]:
     """Dragging the corner far past the minimum stops at the minimum."""
     selector = win_selector(page, "readme")
@@ -940,6 +978,7 @@ CHECKS = (
     ("drag is title-bar only (negative control)", check_drag_is_title_bar_only),
     ("resize se", check_resize_corner),
     ("resize w", check_resize_west),
+    ("resize n at desktop edge", check_resize_north_at_edge),
     ("minimum size", check_min_size),
     ("container query", check_container_query),
     ("minimise and restore", check_minimize_restore),
