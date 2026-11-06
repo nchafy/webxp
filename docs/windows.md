@@ -59,8 +59,9 @@ window without moving its origin.
 
 - Minimum size is 220 × 120 (`MIN_W`, `MIN_H` in `src/window.mjs`). Dragging a corner past
   it stops at it rather than inverting the window (`minimum size`).
-- At least 72 px of a window stays horizontally on the desktop, and the title bar never goes
-  above the top edge. See the departures below.
+- At least 72 px of a window stays horizontally on the desktop, and the title bar stays
+  between the top edge and the taskbar (`offscreen clamp`, which drags a window hard at all
+  four edges and requires it to remain grabbable and unresized). See the departures below.
 - A resize is computed as four edges, not as a position plus a size. The edge under the
   pointer is the one that stops at a clamp or at the minimum; the opposite edge does not
   move. Deriving position and size separately lets the `y` clamp at the desktop top fire

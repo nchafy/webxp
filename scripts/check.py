@@ -698,6 +698,54 @@ def check_resize_north_at_edge(page) -> list[str]:
     return bad
 
 
+def check_offscreen_clamp(page) -> list[str]:
+    """A window dragged at the desktop edges keeps enough of itself to be grabbed back.
+
+    `docs/windows.md` promises 72 px horizontally and a title bar never above the top. A
+    documented guarantee with no check is the kind that stops being true quietly.
+    """
+    bad = []
+    selector = win_selector(page, "readme")
+    page.evaluate(
+        "(() => { const w = window.webxp.windows.find((w) => w.programId === 'readme');"
+        " w.moveTo(400, 200); w.sizeTo(400, 260); })()"
+    )
+    time.sleep(0.1)
+    surface = probe(page)["surface"]
+
+    for label, dx, dy in (
+        ("right", 4000, 0),
+        ("left", -4000, 0),
+        ("up", 0, -4000),
+        ("down", 0, 4000),
+    ):
+        bar = rect_of(page, f"{selector} .window-title")
+        if bar is None:
+            return [f"clamp {label}: no title bar laid out"]
+        drag(page, bar["x"] + 40, bar["y"] + bar["h"] / 2, dx, dy, steps=10)
+        win = need(probe(page), "readme")
+        box = win["box"]
+
+        # Horizontally: some of the window has to remain over the desktop.
+        visible = min(box["x"] + box["w"], surface["w"]) - max(box["x"], 0)
+        if visible < 60:
+            bad.append(
+                f"clamp {label}: only {round(visible)}px of the window is over the desktop"
+            )
+        if box["y"] < 0:
+            bad.append(f"clamp {label}: title bar is at y={box['y']}, above the desktop")
+        # And the title bar has to be on the desktop, not under the taskbar.
+        if box["y"] > surface["h"] - 20:
+            bad.append(
+                f"clamp {label}: title bar at y={box['y']} is below the desktop's "
+                f"{round(surface['h'])}px"
+            )
+        # The drag must not have resized anything.
+        if box["w"] != 400 or box["h"] != 260:
+            bad.append(f"clamp {label}: the window resized to {box['w']}x{box['h']}")
+    return bad
+
+
 def check_min_size(page) -> list[str]:
     """Dragging the corner far past the minimum stops at the minimum."""
     selector = win_selector(page, "readme")
@@ -979,6 +1027,7 @@ CHECKS = (
     ("resize se", check_resize_corner),
     ("resize w", check_resize_west),
     ("resize n at desktop edge", check_resize_north_at_edge),
+    ("offscreen clamp", check_offscreen_clamp),
     ("minimum size", check_min_size),
     ("container query", check_container_query),
     ("minimise and restore", check_minimize_restore),
