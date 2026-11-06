@@ -1,12 +1,16 @@
 # Review findings
 
-Findings raised against this extraction, their addresses, and what was done. Five were
-defects in the code or in the harness; all five are fixed and four became checks.
+Findings raised against this extraction, their addresses, and what was done. Twelve defects
+in the code or the harness; all twelve are fixed, and nine became checks.
 
-A second-agent review was dispatched and had not reported when the work was handed over, so
-every finding below is from a self-review. That is the weaker arrangement — an author reads
-their own change with the eyes least able to see what is missing — and it is recorded here
-rather than left implied.
+Findings 1–5 are from a self-review. Findings 6–12 are from a second agent that reviewed the
+change without the author's conclusions, driving the live page rather than reading the diff.
+It found more, and worse, than the self-review did — including a case where the fix for
+finding 1 had re-introduced the same defect one call later. That is the argument for the
+second reader, and it is recorded here rather than left implied.
+
+Every finding below was verified against the code before it was acted on, and every check
+named was shown to fail against the defect it describes.
 
 ## 1. A resize could become a move — fixed
 
@@ -81,6 +85,125 @@ colour clears AA on every stop of its own bar. It does **not** assert they are
 **Fix** `offscreen clamp` drags a window hard at all four desktop edges and requires that it
 stays grabbable, that its title bar stays between the top edge and the taskbar, and that the
 drag did not resize it.
+
+## 6. The size cap re-introduced finding 1, one call later — fixed
+
+**Where** `src/window.mjs`, `clamp()`.
+
+**Scenario** `applyGesture` was rewritten to compute four edges, which fixed finding 1. But
+`apply()` then calls `clamp()`, which capped the size to the desktop (`w = min(w, sw)`) while
+leaving `x` and `y` alone — so the anchored edge absorbed the cap and drifted anyway. Two
+measured cases on a 1280 × 790 desktop:
+
+- A window at `(300, 500)`, 460 × 400, so its bottom edge is at 900, below the desktop. Drag
+  the north grip up 480 px: the **bottom edge moves 900 → 810**.
+- A window at `(1000, 200)`, 240 × 300, so its right edge is at 1240. Drag the west grip left
+  1150 px: the **right edge moves 1240 → 1130**.
+
+`resize n at desktop edge` could not see either, because it starts with the window fully
+inside the desktop and the cap never binds.
+
+**Fix** The size cap is gone. It cannot know which edge the pointer is holding, so it can
+only ever move the wrong one, and a window larger than the desktop is legitimate — XP allowed
+it. The position clamp still keeps the title bar reachable.
+
+**Check** `resize past the desktop`, which sets up both measured cases and asserts the
+anchored edge. Restoring the cap reproduces `the bottom edge moved 900 -> 810`.
+
+This is the finding most worth keeping: a fix verified by a check written against the same
+mental model as the fix will agree with it. The check passed because it tested the case the
+author was thinking about.
+
+## 7. A throwing `mount` stranded the window forever — fixed
+
+**Where** `src/desktop.mjs`, `launch`.
+
+**Scenario** `Promise.all([program.mount(...), zoom(...)])` had no `catch`, and neither the
+Start menu nor the desktop-icon caller had one. A program whose `mount` threw left
+`.window-body.is-loading` on screen indefinitely, with an `Uncaught (in promise)` in the
+console and a window that looked like it was still working. `autostart` awaits each launch in
+sequence, so one bad program also silently cancelled every program after it.
+
+**Fix** `launch` catches, and the window shows what failed: the error message, the program
+id, and a pointer to the console for the stack. The error is still re-reported to the console
+— a swallowed failure is a defect. `autostart` isolates each program.
+
+**Check** `mount failure`, which registers a program that throws and requires the window to
+name the error. Removing the `catch` reports `the window is still showing the loading
+marquee`.
+
+## 8. A window could be stranded off-screen by resizing the browser — fixed
+
+**Where** `src/desktop.mjs`; there was no `resize` listener at all.
+
+**Scenario** `clamp` ran only when a window moved. A window at `(1000, 600)` on a desktop
+shrunk to 520 × 390 stayed at `(1000, 600)`: horizontal overlap with the desktop measured
+**−480 px**, so the window and the title bar that is its only move handle were both entirely
+off the surface, with no pointer or keyboard route back. Exactly the trap this project claims
+to have removed from XP, reachable by dragging the browser's corner.
+
+**Fix** `watchViewport` re-clamps every non-maximised window on resize, coalesced to one
+frame.
+
+**Check** `viewport shrink`. Disabling the listener reports `only -480px of the window is
+over a 520px desktop`.
+
+## 9. The title-bar icon squashed to 4.2 px — fixed
+
+**Where** `src/window.css` had a `.window-icon` rule; `icons.mjs` sets `class="xp-icon"`.
+
+**Scenario** The rule matched nothing, so the title-bar icon was a flex item with the default
+`flex-shrink: 1`. A long title in a 220 px window squashed it to **4.2 px × 16 px**. The
+taskbar and Start menu icons were spared only because `shell.css` happened to set
+`flex: 0 0 auto` on their `svg` separately.
+
+**Fix** One `.xp-icon` rule in `theme.css` carries `display: block; flex: 0 0 auto`, and the
+three duplicate per-context rules are gone. One definition, since every icon wants the same
+thing.
+
+## 10. `register()` after construction was invisible — fixed
+
+**Where** `src/desktop.mjs`, `register`.
+
+**Scenario** `renderStartMenu` and `renderDesktopIcons` ran once, in the constructor. A
+program registered later was launchable only from code, while the JSDoc presents `register`
+as the public way to add one.
+
+**Fix** `register` re-renders when the desktop is past construction; a `ready` flag keeps the
+constructor's own loop from rendering once per program.
+
+**Check** `mount failure` registers its program after construction and asserts it appears in
+the Start menu.
+
+## 11. `check_close` did not close the active window — fixed
+
+**Where** `scripts/check.py`, `check_close`.
+
+**Scenario** It ran straight after `desktop blur`, which asserts nothing is active. So the
+window it closed was never the active one, and its assertion that "nothing took focus after
+the active window closed" was satisfied through the non-active path. Closing the active window
+— the case the docstring names — was unasserted, as was whether focus lands on the *topmost*
+survivor rather than any survivor.
+
+**Fix** The check focuses the window first, computes which survivor is topmost by z, and
+asserts focus lands on that one.
+
+## 12. Cell links accepted any URL scheme — fixed
+
+**Where** `src/widgets.mjs`, `fillCell`.
+
+**Scenario** `table` and `group` are documented as the shared renderer for a record, and
+`a.href = href` was unguarded. A cell value of `['click me', 'javascript:…']` produced a link
+that executes on activation. Every caller today passes a literal from program source, so this
+was reachable only by a future caller — which is what a shared renderer invites.
+
+**Fix** An allowlist: `http:`, `https:`, `mailto:`, and relatives resolved against
+`document.baseURI`. A refused href degrades to its text and reports to the console.
+
+**Check** `link schemes`, which asserts `javascript:` and `data:` are refused, that the text
+survives the refusal, that the script did not run, **and** that https, mailto and relative
+hrefs still work — without that last part the check would pass on a renderer that refuses
+every link.
 
 ## Two harness bugs found by running it
 

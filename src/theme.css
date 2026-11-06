@@ -63,6 +63,13 @@ textarea:focus-visible,
   box-shadow: 0 0 0 2px var(--title-a);
 }
 
+/* Every drawn icon, wherever it sits. `icons.mjs` puts this class on each one.
+   `flex: 0 0 auto` is load-bearing and not tidiness: an icon beside a long title in a narrow
+   window is a flex item with the default `flex-shrink: 1`, and it squashes — measured at
+   4.2px wide in a 220px window before this rule existed. One definition, because the title
+   bar, the taskbar button, the Start menu row and the desktop icon all want the same thing. */
+.xp-icon { display: block; flex: 0 0 auto; }
+
 .visually-hidden {
   position: absolute;
   width: 1px;

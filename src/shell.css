@@ -61,7 +61,7 @@
   background: rgb(10 36 106 / 42%);
   border-color: rgb(255 255 255 / 45%);
 }
-.desktop-icon svg { display: block; filter: drop-shadow(1px 1px 2px rgb(0 0 0 / 45%)); }
+.desktop-icon svg { filter: drop-shadow(1px 1px 2px rgb(0 0 0 / 45%)); }
 .desktop-icon span { overflow-wrap: anywhere; }
 
 /* ---------------------------------------------------------------------------
@@ -152,7 +152,6 @@
   box-shadow: inset 1px 1px 3px rgb(0 0 0 / 45%);
 }
 .task-button:active { box-shadow: inset 1px 1px 3px rgb(0 0 0 / 45%); }
-.task-button svg { flex: 0 0 auto; display: block; }
 .task-button span {
   flex: 1 1 auto;
   min-width: 0;
@@ -229,7 +228,6 @@
 .start-item:active { background: none; box-shadow: none; }
 .start-item:hover,
 .start-item:focus-visible { background: var(--title-b); color: #fff; }
-.start-item svg { flex: 0 0 auto; display: block; }
 .start-item span { flex: 1 1 auto; min-width: 0; }
 .start-item .hint { flex: 0 0 auto; font-size: 10px; color: var(--muted); }
 .start-item:hover .hint,

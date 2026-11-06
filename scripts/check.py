@@ -127,6 +127,27 @@ def console_errors(page) -> list[str]:
     return [m for m in found if not any(skip in m for skip in IGNORED)]
 
 
+def drain_expecting(page, needle: str, label: str) -> list[str]:
+    """Consume the console, require a message containing `needle`, and surface the rest.
+
+    Two checks provoke a console error on purpose, because the code under test is supposed
+    to report rather than swallow. Draining here rather than adding `needle` to `IGNORED`
+    keeps the end-of-run sweep strict: an ignore list that grows for every deliberate error
+    is how a real one gets filtered out six months later. Requiring the message also turns
+    "the error path reports" into an assertion instead of an assumption.
+    """
+    messages = console_errors(page)
+    bad = []
+    if not any(needle in message for message in messages):
+        bad.append(f"{label}: no console error mentioning {needle!r}; saw {messages}")
+    bad += [
+        f"{label}: unexpected console error: {message}"
+        for message in messages
+        if needle not in message
+    ]
+    return bad
+
+
 def shoot(page, target: Path) -> int:
     data = page.call("Page.captureScreenshot", format="png")
     blob = base64.b64decode(data["data"])
@@ -746,6 +767,214 @@ def check_offscreen_clamp(page) -> list[str]:
     return bad
 
 
+def check_resize_oversize(page) -> list[str]:
+    """Resizing a window that extends past the desktop must not move the anchored edge.
+
+    The regression this exists for survived the first edge-based rewrite: `clamp()` capped
+    the size to the desktop while leaving the position alone, so the anchored edge absorbed
+    the cap. `resize n at desktop edge` could not see it, because that check starts with the
+    window fully inside the desktop and the cap never binds.
+
+    Two measured cases, both from the review that found it:
+      north — a window hanging below the desktop lost 90px off its bottom edge;
+      west  — a window extending past the right edge lost 110px off its right edge.
+    """
+    bad = []
+    selector = win_selector(page, "readme")
+    surface = probe(page)["surface"]
+
+    # North: put the bottom edge below the desktop, then drag the top edge up hard.
+    page.evaluate(
+        "(() => { const w = window.webxp.windows.find((w) => w.programId === 'readme');"
+        " w.moveTo(300, 500); w.sizeTo(460, 400); })()"
+    )
+    time.sleep(0.1)
+    before = need(probe(page), "readme")
+    if before["box"]["y"] + before["box"]["h"] <= surface["h"]:
+        bad.append(
+            "resize oversize: setup failed — the window does not hang below the desktop, "
+            "so this check cannot bind the cap it is about"
+        )
+    grip = rect_of(page, f'{selector} .window-grip[data-dir="n"]')
+    if grip is None:
+        return bad + ["resize oversize: no north grip laid out"]
+    drag(page, grip["x"] + grip["w"] / 2, grip["y"] + grip["h"] / 2, 0, -480, steps=10)
+    after = need(probe(page), "readme")
+    bottom_before = before["box"]["y"] + before["box"]["h"]
+    bottom_after = after["box"]["y"] + after["box"]["h"]
+    if not near(bottom_after, bottom_before):
+        bad.append(
+            f"resize oversize n: the bottom edge moved {bottom_before} -> {bottom_after} "
+            "while the top was dragged — the size cap moved the anchored edge"
+        )
+
+    # West: put the right edge past the desktop, then drag the left edge left hard.
+    page.evaluate(
+        "(() => { const w = window.webxp.windows.find((w) => w.programId === 'readme');"
+        " const s = window.webxp.surface.getBoundingClientRect();"
+        " w.moveTo(Math.round(s.width) - 240, 200); w.sizeTo(240, 300); })()"
+    )
+    time.sleep(0.1)
+    before = need(probe(page), "readme")
+    grip = rect_of(page, f'{selector} .window-grip[data-dir="w"]')
+    if grip is None:
+        return bad + ["resize oversize: no west grip laid out"]
+    drag(page, grip["x"] + grip["w"] / 2, grip["y"] + grip["h"] / 2, -1000, 0, steps=12)
+    after = need(probe(page), "readme")
+    right_before = before["box"]["x"] + before["box"]["w"]
+    right_after = after["box"]["x"] + after["box"]["w"]
+    if not near(right_after, right_before):
+        bad.append(
+            f"resize oversize w: the right edge moved {right_before} -> {right_after} "
+            "while the left was dragged — the size cap moved the anchored edge"
+        )
+    return bad
+
+
+def check_mount_failure(page) -> list[str]:
+    """A program whose mount throws gets a window that says so, not a permanent marquee."""
+    bad = []
+    before = page.evaluate("window.webxp.windows.map((w) => w.id)")
+    page.evaluate(
+        "(() => { window.webxp.register({ id: 'boom', name: 'Boom', icon: 'info',"
+        " width: 360, height: 220, status: true,"
+        " mount() { throw new Error('mount exploded'); } }); })()"
+    )
+    try:
+        # Registered after construction, so this also covers the Start menu re-render.
+        in_menu = page.evaluate(
+            "[...document.querySelectorAll('.start-item')]"
+            ".some((b) => b.textContent.includes('Boom'))"
+        )
+        if not in_menu:
+            bad.append(
+                "mount failure: a program registered after construction never reached the "
+                "Start menu, so it is launchable only from code"
+            )
+
+        page.evaluate("window.webxp.launch('boom')")
+        time.sleep(1.0)
+
+        shot = page.evaluate(
+            "(() => { const w = window.webxp.windows.find((w) => w.programId === 'boom');"
+            " if (!w) return null;"
+            " return { loading: w.bodyEl.classList.contains('is-loading'),"
+            "          text: w.bodyEl.textContent,"
+            "          status: w.statusEl ? w.statusEl.textContent : '' }; })()"
+        )
+        if shot is None:
+            return bad + ["mount failure: the window was never created"]
+        if shot["loading"]:
+            bad.append("mount failure: the window is still showing the loading marquee")
+        # An error path must name what failed. "Something went wrong" in a finished-looking
+        # window is worse than the hang it replaces.
+        if "mount exploded" not in shot["text"]:
+            bad.append(
+                f"mount failure: the window does not carry the error message — body reads "
+                f"{shot['text'][:80]!r}"
+            )
+        if "boom" not in shot["text"] and "boom" not in shot["status"]:
+            bad.append("mount failure: neither the body nor the status names the program")
+
+        # And the failure must not take the rest of the desktop with it.
+        others = page.evaluate(
+            "document.querySelectorAll('.window-body.is-loading').length"
+        )
+        if others:
+            bad.append(f"mount failure: {others} other windows left loading")
+    finally:
+        page.evaluate(
+            "(() => { const keep = new Set(%s);"
+            " for (const w of [...window.webxp.windows]) if (!keep.has(w.id)) w.close();"
+            " window.webxp.programs.delete('boom');"
+            " window.webxp.renderStartMenu(); window.webxp.renderDesktopIcons(); })()"
+            % json.dumps(before)
+        )
+        time.sleep(0.4)
+    # The thrown error is reported to the console on purpose: a swallowed failure is a
+    # defect, so its absence is a failure too.
+    return bad + drain_expecting(page, "mount exploded", "mount failure")
+
+
+def check_viewport_shrink(page) -> list[str]:
+    """Shrinking the desktop pulls windows back into reach.
+
+    Without a resize listener a window is clamped only when it moves, so a window at
+    x=1000 on a desktop that becomes 520 wide stays there — off the surface, with the title
+    bar that is its only move handle off it too, and no route back.
+    """
+    bad = []
+    page.evaluate(
+        "(() => { const w = window.webxp.windows.find((w) => w.programId === 'readme');"
+        " w.moveTo(1000, 600); w.sizeTo(240, 160); })()"
+    )
+    time.sleep(0.1)
+    width, height = VIEWPORT
+    try:
+        page.call(
+            "Emulation.setDeviceMetricsOverride",
+            width=520, height=420, deviceScaleFactor=1, mobile=False,
+        )
+        # Past the coalescing frame.
+        time.sleep(0.4)
+        state = probe(page)
+        win = need(state, "readme")
+        surface = state["surface"]
+        visible = min(win["box"]["x"] + win["box"]["w"], surface["w"]) - max(win["box"]["x"], 0)
+        if visible < 60:
+            bad.append(
+                f"viewport shrink: only {round(visible)}px of the window is over a "
+                f"{round(surface['w'])}px desktop — it cannot be dragged back"
+            )
+        if win["box"]["y"] > surface["h"] - 20:
+            bad.append(
+                f"viewport shrink: title bar at y={win['box']['y']} is below the "
+                f"{round(surface['h'])}px desktop"
+            )
+    finally:
+        page.call(
+            "Emulation.setDeviceMetricsOverride",
+            width=width, height=height, deviceScaleFactor=1, mobile=False,
+        )
+        time.sleep(0.4)
+    return bad
+
+
+def check_link_schemes(page) -> list[str]:
+    """A cell link to a scheme that is not http, https or mailto is refused."""
+    result = page.evaluate(
+        "(async () => {"
+        " const { table } = await import('/src/widgets.mjs');"
+        " const probe = (href) => {"
+        "   const t = table({ columns: ['a', 'b'], rows: [['row', ['click me', href]]] });"
+        "   const a = t.querySelector('tbody a');"
+        "   return { link: !!a, text: t.querySelector('tbody td').textContent }; };"
+        " return { js: probe('javascript:window.__webxpPwned = 1'),"
+        "          data: probe('data:text/html,<script>1</script>'),"
+        "          https: probe('https://example.com/'),"
+        "          relative: probe('/docs/windows.md'),"
+        "          mail: probe('mailto:nobody@example.com') }; })()",
+        await_promise=True,
+    )
+    bad = []
+    for scheme in ("js", "data"):
+        if result[scheme]["link"]:
+            bad.append(f"link schemes: a {scheme}: href was rendered as a live link")
+        if "click me" not in result[scheme]["text"]:
+            bad.append(
+                f"link schemes: a refused {scheme}: href dropped its text as well as its "
+                f"link — cell reads {result[scheme]['text']!r}"
+            )
+    # The negative control: the allowlist must still let the real schemes through, or this
+    # check would pass on a renderer that refuses every link.
+    for scheme in ("https", "relative", "mail"):
+        if not result[scheme]["link"]:
+            bad.append(f"link schemes: a {scheme} href was refused, but should be allowed")
+    if page.evaluate("window.__webxpPwned === 1"):
+        bad.append("link schemes: the javascript: href executed")
+    return bad + drain_expecting(page, "refused a cell link", "link schemes")
+
+
 def check_min_size(page) -> list[str]:
     """Dragging the corner far past the minimum stops at the minimum."""
     selector = win_selector(page, "readme")
@@ -973,13 +1202,33 @@ def check_desktop_blur(page) -> list[str]:
 
 
 def check_close(page) -> list[str]:
-    """Close removes the window and its button, and hands focus to what is left."""
+    """Close removes the window and its button, and hands focus to the topmost survivor.
+
+    The window is focused first on purpose. This check used to run straight after
+    `desktop blur`, which leaves nothing active, so it closed a window that was not the
+    active one and satisfied its own "nothing took focus" assertion through the easy path.
+    Closing the *active* window is the case worth asserting, and the survivor has to be the
+    topmost one rather than merely some window.
+    """
     bad = []
-    before = probe(page)
+    task_click(page, "about")
+    state = probe(page)
+    if state["active"] != "about":
+        return [f"close: wanted About active before closing it, got {state['active']!r}"]
+
+    before = state
+    survivors = [w for w in before["wins"] if w["program"] != "about" and w["state"] != "min"]
+    want_next = max(survivors, key=lambda w: w["z"])["program"] if survivors else None
+
     title_click(page, "about", "Close")
     time.sleep(0.2)
 
     state = probe(page)
+    if want_next and state["active"] != want_next:
+        bad.append(
+            f"close: focus went to {state['active']!r}, want the topmost survivor "
+            f"{want_next!r}"
+        )
     if window_of(state, "about") is not None:
         bad.append("close: the window is still in the desktop's list")
     if len(state["wins"]) != len(before["wins"]) - 1:
@@ -1027,7 +1276,9 @@ CHECKS = (
     ("resize se", check_resize_corner),
     ("resize w", check_resize_west),
     ("resize n at desktop edge", check_resize_north_at_edge),
+    ("resize past the desktop", check_resize_oversize),
     ("offscreen clamp", check_offscreen_clamp),
+    ("viewport shrink", check_viewport_shrink),
     ("minimum size", check_min_size),
     ("container query", check_container_query),
     ("minimise and restore", check_minimize_restore),
@@ -1038,6 +1289,10 @@ CHECKS = (
     ("desktop blur", check_desktop_blur),
     ("close", check_close),
     ("singleton", check_singleton),
+    ("link schemes", check_link_schemes),
+    # Last, because it registers a program and provokes a console error. Its cleanup puts
+    # the desktop back, but a check that deliberately breaks something belongs at the end.
+    ("mount failure", check_mount_failure),
 )
 
 

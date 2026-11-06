@@ -225,16 +225,25 @@ export class XPWindow {
   /**
    * Hold a box inside the desktop.
    *
-   * The size is clamped to the minimum and to the desktop. The position is clamped so that
-   * `MIN_VISIBLE` of the window stays horizontally on screen and the title bar never goes
-   * above the top edge — a departure from XP, which let a window be dragged until its own
-   * handle was unreachable.
+   * Only the minimum size and the position are clamped. `MIN_VISIBLE` of the window stays
+   * horizontally on the desktop and the title bar stays between the top edge and the
+   * taskbar — a departure from XP, which let a window be dragged until its own handle was
+   * unreachable.
+   *
+   * The size is deliberately *not* capped to the desktop. A cap here cannot know which edge
+   * the pointer is holding, so it shrinks the window while leaving `x` and `y` alone and the
+   * anchored edge absorbs the difference: dragging the north grip of a window that hangs
+   * below the desktop moved its bottom edge up by 90px, and the west grip of one that
+   * extended past the right edge moved its right edge left by 110px. That is the same defect
+   * `applyGesture` was rewritten to remove, re-entering one call later. A window larger than
+   * the desktop is legitimate — XP allowed it — and the position clamp above still keeps the
+   * title bar reachable.
    */
   clamp(box) {
     const { w: sw, h: sh } = this.surface();
     const bar = this.bar.offsetHeight || 28;
-    const w = Math.min(Math.max(box.w, MIN_W), Math.max(sw, MIN_W));
-    const h = Math.min(Math.max(box.h, MIN_H), Math.max(sh, MIN_H));
+    const w = Math.max(box.w, MIN_W);
+    const h = Math.max(box.h, MIN_H);
     const x = Math.min(Math.max(box.x, MIN_VISIBLE - w), Math.max(sw - MIN_VISIBLE, 0));
     const y = Math.min(Math.max(box.y, 0), Math.max(sh - bar, 0));
     return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) };

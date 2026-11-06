@@ -4,6 +4,28 @@
  * two programs showing a record show it the same way.
  */
 
+//: The schemes a cell may link to. `table` and `group` are the shared renderer for "a
+//: record", so the moment a cell's value comes from anywhere but a literal in the program
+//: source — a fetch, a query string, a file a user opened — `javascript:` in an href is a
+//: script that runs on activation. An allowlist is the only form of this check that stays
+//: correct as schemes are added.
+const SAFE_SCHEMES = new Set(['http:', 'https:', 'mailto:']);
+
+/**
+ * Whether a cell may be rendered as a link to this href.
+ *
+ * A relative href has no scheme of its own and inherits the page's, so it is resolved
+ * against the document to find out what it would actually navigate to. `new URL` throws on
+ * input that is not a URL at all, which is also a refusal.
+ */
+function safeHref(href) {
+  try {
+    return SAFE_SCHEMES.has(new URL(href, document.baseURI).protocol);
+  } catch {
+    return false;
+  }
+}
+
 /** A cell's content: a string, `[text, href]`, `{text, href}`, or a Node. */
 function fillCell(target, value) {
   if (value instanceof Node) {
@@ -15,8 +37,11 @@ function fillCell(target, value) {
     return;
   }
   const [text, href] = Array.isArray(value) ? value : [value, null];
-  if (!href) {
+  if (!href || !safeHref(href)) {
+    // A refused href degrades to its text rather than to nothing, so the cell still carries
+    // its value and the caller can see what happened.
     target.textContent = text == null ? '' : String(text);
+    if (href) console.error(`webxp: refused a cell link to an unsupported scheme: ${href}`);
     return;
   }
   const a = document.createElement('a');

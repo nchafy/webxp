@@ -26,6 +26,31 @@ const MIN_LOAD_MS = 120;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/**
+ * What a window shows when its program's `mount` threw.
+ *
+ * It names the program and the error. "Something went wrong" in a window with a title bar
+ * and a taskbar button is worse than a hang, because it looks like a finished state.
+ */
+function mountFailure(program, error) {
+  const box = document.createElement('fieldset');
+  box.className = 'group';
+  const legend = document.createElement('legend');
+  legend.textContent = `${program.name} could not start`;
+  const what = document.createElement('p');
+  what.className = 'group-line';
+  what.textContent = error && error.message ? error.message : String(error);
+  const where = document.createElement('p');
+  where.className = 'group-line';
+  where.textContent = `Thrown by the mount of program "${program.id}". The console carries the stack.`;
+  box.append(legend, what, where);
+
+  const sheet = document.createElement('div');
+  sheet.className = 'sheet';
+  sheet.append(box);
+  return sheet;
+}
+
 export class Desktop {
   /**
    * @param {object} options
@@ -44,10 +69,41 @@ export class Desktop {
     this.opened = 0;
     this.minLoadMs = Number.isFinite(options.minLoadMs) ? options.minLoadMs : MIN_LOAD_MS;
 
+    this.ready = false;
     this.build(options);
     for (const program of options.programs || []) this.register(program);
+    this.ready = true;
     this.renderStartMenu();
     this.renderDesktopIcons();
+    this.watchViewport();
+  }
+
+  /**
+   * Re-clamp every window when the desktop changes size.
+   *
+   * Without this a window is clamped only when it moves. Shrink the browser and a window at
+   * x=1000 on a desktop that is now 520 wide stays at x=1000: it and its title bar are
+   * entirely off the surface, and the title bar is the only way to move a window, so there
+   * is no pointer or keyboard route back. That is the trap this project claims to have
+   * removed from XP, reachable by resizing the browser.
+   *
+   * Coalesced to one frame, because a browser resize fires continuously while dragged and
+   * every window re-clamps on each event.
+   */
+  watchViewport() {
+    let queued = false;
+    window.addEventListener('resize', () => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(() => {
+        queued = false;
+        // A maximised window takes its size from CSS, so it needs no arithmetic. A
+        // minimised one is re-clamped too, or it comes back out of the taskbar off-screen.
+        for (const win of this.windows) {
+          if (!win.closed && win.state !== 'max') win.apply();
+        }
+      });
+    });
   }
 
   /* -------------------------------------------------------------------------
@@ -173,12 +229,30 @@ export class Desktop {
    */
   register(program) {
     this.programs.set(program.id, program);
+    // Re-rendered, so a program registered after construction is reachable from the Start
+    // menu and the desktop rather than from code only. `ready` keeps the constructor's own
+    // registration loop from rendering once per program.
+    if (this.ready) {
+      this.renderStartMenu();
+      this.renderDesktopIcons();
+    }
   }
 
-  /** Open every program marked `autostart`, in registration order. */
+  /**
+   * Open every program marked `autostart`, in registration order.
+   *
+   * One program that fails to start must not stop the ones after it. `launch` already turns
+   * a thrown `mount` into a window that says so, so this only has to survive a rejection
+   * from anywhere else in the sequence.
+   */
   async autostart() {
     for (const program of this.programs.values()) {
-      if (program.autostart) await this.launch(program.id);
+      if (!program.autostart) continue;
+      try {
+        await this.launch(program.id);
+      } catch (error) {
+        console.error(`webxp: autostart failed for program ${program.id}`, error);
+      }
     }
   }
 
@@ -228,10 +302,26 @@ export class Desktop {
     const started = performance.now();
     // The zoom and the mount run together: the content is usually ready before the frame
     // has finished arriving, which is what makes the marquee a glimpse rather than a wait.
-    const [content] = await Promise.all([
-      Promise.resolve().then(() => program.mount({ win, desktop: this })),
-      zoom(win.el, this.anchorRect(win), 'in'),
-    ]);
+    //
+    // A `mount` that throws must not leave the window on its marquee forever. The frame is
+    // already on screen and already has a taskbar button, so there is nothing to roll back
+    // to — the honest outcome is a window that says what failed. Swallowing it silently
+    // would be worse than the hang it replaces, so the error is re-reported to the console
+    // with the program's id on it.
+    let content;
+    try {
+      [content] = await Promise.all([
+        Promise.resolve().then(() => program.mount({ win, desktop: this })),
+        zoom(win.el, this.anchorRect(win), 'in'),
+      ]);
+    } catch (error) {
+      if (win.closed) return win;
+      win.setContent(mountFailure(program, error));
+      win.setStatus(`${program.id} failed to start`);
+      this.announce(`${program.name} failed to start`);
+      console.error(`webxp: mount failed for program ${program.id}`, error);
+      return win;
+    }
 
     if (win.closed) return win;
     const floor = Number.isFinite(program.minLoadMs) ? program.minLoadMs : this.minLoadMs;

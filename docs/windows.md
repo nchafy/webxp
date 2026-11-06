@@ -29,7 +29,7 @@ geometry, because the open and minimise animations use it.
 | Gesture                      | Does                                | Check |
 | ---------------------------- | ----------------------------------- | ----- |
 | Drag the title bar           | Moves the window                    | `drag` |
-| Drag any of eight edges      | Resizes from that edge              | `resize se`, `resize w`, `resize n at desktop edge` |
+| Drag any of eight edges      | Resizes from that edge              | `resize se`, `resize w`, `resize n at desktop edge`, `resize past the desktop` |
 | Double-click the title bar   | Maximise, or restore                | `maximise` |
 | Click a title box            | Minimise, maximise, close           | `minimise and restore`, `maximise`, `close` |
 | Click a taskbar button       | Raise it, or put the front one away | `taskbar toggle` |
@@ -68,6 +68,15 @@ window without moving its origin.
   while the height keeps growing, which slides the bottom edge down — a resize from the
   north edge quietly becoming a move. `resize n at desktop edge` fails by 170 px if that
   formulation comes back.
+- A window's size is **not** capped to the desktop, deliberately. A cap cannot know which
+  edge the pointer is holding, so it shrinks the window while leaving the position alone and
+  the anchored edge absorbs the difference — the same defect as above, one call later.
+  `resize past the desktop` covers both the north and west cases. A window larger than the
+  desktop is legitimate; XP allowed it, and the position clamp still keeps the title bar
+  reachable.
+- Every non-maximised window is re-clamped when the desktop changes size. Without that, a
+  window is clamped only when it moves, and shrinking the browser can leave one entirely off
+  the surface with no route back (`viewport shrink`).
 - A new window cascades 26 px down and right of the last, starting clear of the desktop icon
   column. Two windows never open at one origin (`launch all`).
 
