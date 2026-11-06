@@ -105,6 +105,10 @@ the only implementation. That split is what lets a window be tested without a sh
 
 ## Read next
 
+`docs/review.md` has the findings raised against this extraction, each with its failure
+scenario and the check that now covers it — including the one that matters most, where
+satisfying the contrast gate defeated the thing the colour was carrying.
+
 `docs/windows.md` has the window model, the keyboard equivalents, the clamps, the open
 sequence, and the table of deliberate departures from XP — including the contrast
 corrections, with the measured ratios, and the one failing surface that is kept on purpose
