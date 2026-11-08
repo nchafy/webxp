@@ -1,0 +1,205 @@
+/* The map layer's styling, shared by every app that puts a map in a window.
+ *
+ * Scoped on `.map-root`, which is the class `src/map/chrome.mjs` puts on the subtree it
+ * builds. `docs/apps.md` tells an app to scope its rules under `.app-<id>`, and that is
+ * right for an app's own stylesheet — but it cannot be the scope for rules thirty-one apps
+ * share, because each would need its own copy. A class that exists only where a map was
+ * built is as tight a scope and is the only one that can be shared.
+ *
+ * Declared by an app as `styles: ['../../src/map/map.css', 'app.css']`. The loader keys its
+ * link cache on the resolved href, so thirty-one apps asking for this file link it once.
+ */
+
+/* The base map's own styles.
+ *
+ * Ported from the original project's page stylesheet. Every rule is scoped under
+ * `.app-basemap`, which the loader puts on this app's window body — including MapLibre's own
+ * rules, because a bare `.maplibregl-canvas` would reach into any other app that ever draws
+ * a map.
+ *
+ * The other half of the port: rules written against `body` and `100vh` became rules against
+ * this app's root and `100%`. A window is not a viewport.
+ */
+.map-root { padding: 0; overflow: hidden; }
+
+.basemap-root {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+/* The map fills the app's root.
+ *
+ * The three-class selector is load-bearing, not tidiness. MapLibre puts its own
+ * `maplibregl-map` class on this same element, and the reduced copy of its stylesheet at the
+ * foot of this file sets `position: relative` on it. Scoping both rules under
+ * `.app-basemap` gave them equal specificity, so source order decided it — and MapLibre's
+ * block sits last. `relative` won, `inset: 0` stopped applying, and the element collapsed to
+ * 0 px high while the canvas inside it kept a stale 300 px.
+ *
+ * The result is the worst failure available: every tile fetched 200, MapLibre reported
+ * `styleLoaded`, `tilesLoaded` and 113 layers, and the window drew nothing but the holding
+ * colour. `scripts/check.py` now measures the canvas against the window and screenshots it,
+ * because none of those flags could tell the difference.
+ *
+ * Moving these rules out of `apps/basemap/app.css` into this shared file re-created that bug
+ * for a moment, and the re-creation is the instructive part. The old selector was
+ * `.app-basemap .basemap-root > .map` — three classes. The mechanical rescope made it
+ * `.map-root > .map` — two, exactly equal to MapLibre's `.map-root .maplibregl-map` further
+ * down, which still sits last. The win was never about which class names were used. It was
+ * about the count, and the count changed when the scope did.
+ *
+ * Hence two rules rather than one. The first sizes the container before MapLibre has touched
+ * it, which is when the box has to be right: `createBaseMap` measures on creation. The
+ * second exists only to outrank MapLibre's afterwards, and it does, because two classes on
+ * the same element plus a child combinator beats two classes whatever the source order.
+ *
+ * If you touch either selector, count the classes. `scripts/check.py` measures the canvas
+ * against the window and screenshots it, because no flag MapLibre exposes can tell a map
+ * that drew from a map that collapsed.
+ *
+ * The holding colour shows during a style load instead of a white flash. */
+.map-root > .map {
+  position: absolute;
+  inset: 0;
+  background: #e8e0d8;
+}
+.map-root > .map.maplibregl-map {
+  position: absolute;
+  inset: 0;
+}
+
+/* Floating chrome. The container ignores the pointer so clicks reach the canvas; each child
+   takes it back. */
+.map-root .overlays {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2;
+  padding: .5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: .5rem;
+  /* A tall position card must not push the status line off the bottom of a short window. */
+  overflow: hidden;
+}
+
+.map-root .overlays > * { pointer-events: auto; }
+
+.map-root .card { max-width: min(22rem, calc(100% - 1rem)); }
+
+/* The tilt control. Pressed means the camera is leaning, which the map sets — not the
+   button — so dragging to an angle lights it up too. */
+.map-root .layer-switch { display: flex; flex-wrap: wrap; gap: 3px; }
+
+.map-root .layer-switch button[aria-pressed="true"],
+.map-root .tilt-row button[aria-pressed="true"] {
+  background: linear-gradient(to bottom, var(--title-b), var(--title-a));
+  border-color: #0a1a4a;
+  color: #fff;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 35%);
+}
+
+.map-root .tilt-row { display: flex; align-items: center; gap: .45rem; margin-top: .4rem; }
+
+.map-root .tilt-note { font-size: 10px; color: var(--muted); }
+
+/* Zoom buttons, bottom-left over the canvas: a map control belongs on the map. */
+.map-root .map-zoom {
+  position: absolute;
+  left: .5rem;
+  bottom: .5rem;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* A text button's line box is taller than its glyph, so centring the box does not centre
+   what is drawn. Grid places the glyph itself. */
+.map-root .map-zoom button {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+}
+
+/* The compass sits a little apart and a little larger than the zoom pair: it answers "which
+   way is up", not "how close am I", and at 28px the needle was too small to read an angle
+   off at a glance. 40px, which is also a comfortable tap target. */
+.map-root .map-compass {
+  width: 40px;
+  height: 40px;
+  margin-top: 6px;
+  border-radius: 50%;
+}
+
+.map-root .map-compass svg { display: block; width: 34px; height: 34px; }
+
+.map-root .map-compass[hidden] { display: none; }
+
+.map-root .map-tilt[hidden] { display: none; }
+
+/* Attribution. Every source in `basemap.mjs` requires it, so this is a licence term and not
+   a nicety: nothing is allowed to cover it. */
+.map-root .map-attrib {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 4;
+  margin: 0;
+  padding: .1rem .4rem;
+  max-width: min(34rem, 70%);
+  font-size: 10px;
+  line-height: 1.5;
+  background: rgb(255 255 255 / 82%);
+  color: var(--ink);
+}
+
+.map-root .map-attrib a { color: var(--accent); }
+
+/* The live region that narrates state changes. Visible, because a status line is also how a
+   sighted reader learns the basemap changed or failed. */
+.map-root .map-status {
+  margin: 0;
+  padding: .15rem .45rem;
+  max-width: min(26rem, calc(100% - 1rem));
+  font-size: 11px;
+  background: rgb(255 255 255 / 82%);
+  border: 1px solid var(--rule);
+}
+
+.map-root .map-status:empty { display: none; }
+
+/* ---------------------------------------------------------------------------
+   MapLibre's own stylesheet, reduced to the rules that matter.
+   Copied from `maplibre-gl.css` (BSD-3-Clause; `vendor/LICENSE.txt` ships beside it). This
+   app draws its own zoom buttons and renders no MapLibre control, so the rest of the 10 KB
+   file matches nothing here. The touch-action rules are kept: dropping them breaks pinch
+   zoom, which no desktop check would catch.
+   --------------------------------------------------------------------------- */
+.map-root .maplibregl-map { overflow: hidden; position: relative; -webkit-tap-highlight-color: rgb(0 0 0 / 0); }
+
+.map-root .maplibregl-canvas { position: absolute; left: 0; top: 0; }
+
+.map-root .maplibregl-canvas-container.maplibregl-interactive { cursor: grab; user-select: none; }
+
+.map-root .maplibregl-canvas-container.maplibregl-interactive:active { cursor: grabbing; }
+
+.map-root .maplibregl-canvas-container.maplibregl-touch-zoom-rotate,
+.map-root .maplibregl-canvas-container.maplibregl-touch-zoom-rotate .maplibregl-canvas { touch-action: pan-x pan-y; }
+
+.map-root .maplibregl-canvas-container.maplibregl-touch-drag-pan,
+.map-root .maplibregl-canvas-container.maplibregl-touch-drag-pan .maplibregl-canvas { touch-action: pinch-zoom; }
+
+.map-root .maplibregl-canvas-container.maplibregl-touch-zoom-rotate.maplibregl-touch-drag-pan,
+.map-root .maplibregl-canvas-container.maplibregl-touch-zoom-rotate.maplibregl-touch-drag-pan .maplibregl-canvas { touch-action: none; }
+
+.map-root .maplibregl-ctrl-bottom-left,
+.map-root .maplibregl-ctrl-bottom-right,
+.map-root .maplibregl-ctrl-top-left,
+.map-root .maplibregl-ctrl-top-right { position: absolute; pointer-events: none; z-index: 2; }

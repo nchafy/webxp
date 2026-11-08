@@ -11,8 +11,6 @@
 
 import { group } from '../../src/widgets.mjs';
 
-const SVG = 'http://www.w3.org/2000/svg';
-
 //: Where the map opens. New York at z10 because all three basemaps have good coverage there,
 //: so switching between them on load shows three real maps rather than three grey squares.
 const CENTER = [-73.95, 40.7];
@@ -20,11 +18,6 @@ const ZOOM = 10;
 
 const CLICKED = 'clicked-point';
 
-const BASEMAP_BUTTONS = [
-  ['simple', 'Simple'],
-  ['satellite', 'Satellite'],
-  ['geography', 'Geography'],
-];
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -33,105 +26,32 @@ function el(tag, className, text) {
   return node;
 }
 
-function svg(tag, attrs) {
-  const node = document.createElementNS(SVG, tag);
-  for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, String(value));
-  return node;
-}
 
-/**
- * The compass: indicator and control in one, as a compass has always been.
+
+/* The subtree this app owns: the shared map chrome, plus the one card it adds.
  *
- * The rose turns with the map; pressing it faces north again. The `g` is rotated through its
- * SVG `transform` attribute rather than a style, so the needle keeps working under a strict
- * `style-src`.
+ * Everything that was here — the switcher, the Tilt row, the status line, the zoom pair,
+ * the compass, the credit — is now `buildMapChrome` in `src/map/chrome.mjs`, because every
+ * map app needs exactly that subtree and `createBaseMap` finds its controls by class
+ * inside it. Thirty-one copies of eighty lines was the alternative.
  */
-function compass() {
-  const button = el('button', 'map-compass');
-  button.type = 'button';
-  button.setAttribute('aria-label', 'Facing north. Press to reset, arrow keys to turn');
-
-  const face = svg('svg', { viewBox: '0 0 24 24', width: 34, height: 34, 'aria-hidden': 'true', focusable: 'false' });
-  face.append(svg('circle', { cx: 12, cy: 12, r: 10.5, fill: 'none', stroke: '#8a8a6a', 'stroke-width': 1 }));
-
-  const rose = svg('g', { class: 'map-compass-rose', transform: 'rotate(0 12 12)' });
-  // The red half is north, which needs no letter: it is the one convention every compass
-  // rose has kept.
-  rose.append(svg('polygon', { points: '12,2.5 15.2,12 12,9.8 8.8,12', fill: '#c8341a' }));
-  rose.append(svg('polygon', { points: '12,21.5 8.8,12 12,14.2 15.2,12', fill: '#6b6b55' }));
-  face.append(rose);
-  face.append(svg('circle', { cx: 12, cy: 12, r: 1.1, fill: '#3a3a3a' }));
-
-  button.append(face);
-  return button;
-}
-
-/** The whole subtree this app owns. Every control `basemap.mjs` looks for is in here. */
-function build() {
-  const root = el('div', 'basemap-root');
-  root.append(el('div', 'map'));
-
-  const overlays = el('div', 'overlays');
-
-  const card = el('div', 'card');
-  card.append(el('h2', null, 'Basemap'));
-
-  const layers = el('div', 'layer-switch');
-  layers.setAttribute('role', 'group');
-  layers.setAttribute('aria-label', 'Which basemap to show');
-  for (const [value, label] of BASEMAP_BUTTONS) {
-    const button = el('button', null, label);
-    button.type = 'button';
-    button.dataset.basemap = value;
-    button.setAttribute('aria-pressed', String(value === 'simple'));
-    layers.append(button);
-  }
-  card.append(layers);
-  card.append(el('p', 'hint', 'Click the map to read a coordinate.'));
-
-  // The tilt gesture is ctrl-drag on a desktop, which nobody finds, so there is a button for
-  // it. It only moves the camera: the 3D buildings follow the angle, not the button.
-  const tiltRow = el('div', 'tilt-row');
-  const tilt = el('button', 'map-tilt', 'Tilt');
-  tilt.type = 'button';
-  tilt.setAttribute('aria-pressed', 'false');
-  tiltRow.append(tilt, el('span', 'tilt-note', '3D buildings show from an angle, past zoom 14.'));
-  card.append(tiltRow);
-
-  overlays.append(card);
-
+async function build() {
+  // Imported here rather than at module scope. Every `app.mjs` is read at startup to build
+  // the Start menu, so a module-scope import of the map layer is startup cost for a desktop
+  // where no map has been opened.
+  const [{ buildMapChrome }, { BASEMAPS }] = await Promise.all([
+    import('../../src/map/chrome.mjs'),
+    import('../../src/map/basemap.mjs'),
+  ]);
+  const chrome = buildMapChrome({
+    basemaps: BASEMAPS,
+    hint: 'Click the map to read a coordinate.',
+  });
   // The position card, filled on click. Hidden until there is something to say.
   const position = el('div', 'card position-card');
   position.hidden = true;
-  overlays.append(position);
-
-  // Under the control card, in the same flex column, so it can never land on top of a
-  // control whose size changed.
-  const status = el('p', 'map-status');
-  status.setAttribute('role', 'status');
-  status.setAttribute('aria-live', 'polite');
-  overlays.append(status);
-
-  root.append(overlays);
-
-  // A map control belongs on the map, not in a card. The visible glyph is a symbol, so each
-  // button carries an aria-label: "+" is not a name. The minus is U+2212, not a hyphen, so
-  // it matches the plus optically.
-  const zoom = el('div', 'map-zoom');
-  const zoomIn = el('button', 'map-zoom-in', '+');
-  zoomIn.type = 'button';
-  zoomIn.setAttribute('aria-label', 'Zoom in');
-  const zoomOut = el('button', 'map-zoom-out', '−');
-  zoomOut.type = 'button';
-  zoomOut.setAttribute('aria-label', 'Zoom out');
-  zoom.append(zoomIn, zoomOut, compass());
-  root.append(zoom);
-
-  // Every basemap source requires attribution, so this is a licence term and not a nicety:
-  // nothing is allowed to cover it. Filled by basemap.mjs, which owns the per-source credit.
-  root.append(el('p', 'map-attrib'));
-
-  return { root, position };
+  chrome.cards.append(position);
+  return { root: chrome.root, position };
 }
 
 export default {
@@ -143,10 +63,10 @@ export default {
   width: 760,
   height: 520,
   status: true,
-  styles: ['app.css'],
+  styles: ['../../src/map/map.css', 'app.css'],
 
-  mount({ win }) {
-    const { root, position } = build();
+  async mount({ win }) {
+    const { root, position } = await build();
     win.setStatus('Click the map to read a coordinate.');
     // Stashed on the window, not in a module variable: two windows of one app would share a
     // module variable and the second would drive the first one's map.
@@ -167,7 +87,7 @@ export default {
 
     // Imported here rather than at module scope, so the 1.1 MB of MapLibre behind it is paid
     // when a window opens and not when the desktop starts.
-    const { createBaseMap } = await import('./basemap.mjs');
+    const { createBaseMap } = await import('../../src/map/basemap.mjs');
 
     //: The last clicked position, kept outside `draw` because `draw` is re-run from scratch
     //: on every basemap change and must be able to put the point back.
