@@ -179,6 +179,22 @@ Pass `tilt: false` for a day that must stay flat and north-up: it removes the Ti
 the compass rather than leaving them inert. Pass `detail: false` if nothing is ever selected.
 A day wanting a quiet backdrop uses `geography` — it does not mute the palette.
 
+### The drill-down panel
+
+`chrome.mjs` builds the element and `panel.mjs` drives it: `new Panel(chrome.detail)`, then
+`panel.open(title, content, footer)` and `panel.close()`.
+
+Set `panel.onClose` to undo whatever the panel was describing. **It may call `panel.close()`**
+— the obvious implementation is the app's own clear-everything routine, and closing the panel
+is part of clearing. `close()` guards against the re-entry rather than requiring every caller
+to think about it. Without that guard the cycle threw `RangeError: Maximum call stack size
+exceeded` out of MapLibre's `setPaintProperty`, which named neither the panel nor the
+recursion; `hidden` cannot break the cycle because it is only set when the 220 ms slide ends.
+
+Clear the map state unconditionally in `onClose`, not only when something is selected. A
+panel can be opened for a feature without a selection, and `if (selected)` left a highlight
+and an overlay painted with nothing on screen explaining them.
+
 ### `draw` is called once per basemap, not once per page
 
 `map.setStyle()` discards every source and layer added to the previous style. So

@@ -316,8 +316,13 @@ and compares it against the window's own size, because nothing cheaper could tel
 | `broken app` | Each way a spec can be wrong is rejected — and a valid one is accepted. |
 | `iframe app` | A `frame` app hosts its page, and the shim raises its window. |
 | `basemap app` | The ported project fills its window **and painted** — canvas measured against the window, plus a screenshot. |
+| `30DaysOfMaps folder` | A folder app derives its contents from `desktop.programs` and launches them; the shared `iconTile` reads on both the wallpaper and a window's sheet. |
+| `day 02 lines` | The `mount`/`ready` split on a real map app: data loaded, its own layers present by id on whatever basemap is remembered, and the status bar uncovered with the drill-down panel open at three window sizes. |
 | `scaffold a new app` | `--new`, reload, it is in the menu and it opens. |
 | `mount failure` | A throwing `mount` reports instead of hanging. |
 
 `scaffold a new app` is the one that matters most: it is the only check that walks the path a
 person actually takes.
+
+These ten are the contract's. The suite is thirty-three; the rest belong to the window
+manager and are described in `docs/windows.md`.
