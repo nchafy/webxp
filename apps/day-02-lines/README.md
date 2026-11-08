@@ -14,9 +14,20 @@ question. A polyline's length depends on the resolution it is measured at, which
 coastline paradox ([Mandelbrot
 1967](https://doi.org/10.1126/science.156.3775.636)) happening on a 5 km run.
 
-So the page measures the whole curve rather than its two ends. The slider simplifies the
+So the day measures the whole curve rather than its two ends. The slider simplifies the
 recorded trace at a tolerance the reader picks, and the total falls as the wobble comes
 out. There is no setting at which the number is right.
+
+## Where this code lives now
+
+This folder is the canonical copy. It was ported here from the 30daymapchallenge repo, where
+day 02 was a page of its own rather than an app, and that repo still holds its
+`days/02-lines/` — so for the moment `gpsnoise.py`, `prepare.py`, `street_segments.py` and
+`geo.mjs` exist twice on disk.
+
+Edit them **here**. The other copy is history, not a second implementation, and the two MUST
+NOT be hand-synced: if that tree is kept, its `days/02-lines/` should be deleted rather than
+maintained.
 
 ## The pipeline
 
