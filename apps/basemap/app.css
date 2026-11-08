@@ -1,5 +1,5 @@
 /* The Base map app's own styling. Everything a map app shares lives in
- * `src/map/map.css`, declared alongside this file.
+ * `shared/map/map.css`, declared alongside this file.
  */
 
 .app-basemap .hint { margin: .35rem 0 0; font-size: 11px; }

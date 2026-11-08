@@ -31,7 +31,7 @@ function el(tag, className, text) {
 /* The subtree this app owns: the shared map chrome, plus the one card it adds.
  *
  * Everything that was here — the switcher, the Tilt row, the status line, the zoom pair,
- * the compass, the credit — is now `buildMapChrome` in `src/map/chrome.mjs`, because every
+ * the compass, the credit — is now `buildMapChrome` in `shared/map/chrome.mjs`, because every
  * map app needs exactly that subtree and `createBaseMap` finds its controls by class
  * inside it. Thirty-one copies of eighty lines was the alternative.
  */
@@ -40,8 +40,8 @@ async function build() {
   // the Start menu, so a module-scope import of the map layer is startup cost for a desktop
   // where no map has been opened.
   const [{ buildMapChrome }, { BASEMAPS }] = await Promise.all([
-    import('../../src/map/chrome.mjs'),
-    import('../../src/map/basemap.mjs'),
+    import('../../shared/map/chrome.mjs'),
+    import('../../shared/map/basemap.mjs'),
   ]);
   const chrome = buildMapChrome({
     basemaps: BASEMAPS,
@@ -63,7 +63,7 @@ export default {
   width: 760,
   height: 520,
   status: true,
-  styles: ['../../src/map/map.css', 'app.css'],
+  styles: ['../../shared/map/map.css', 'app.css'],
 
   async mount({ win }) {
     const { root, position } = await build();
@@ -87,7 +87,7 @@ export default {
 
     // Imported here rather than at module scope, so the 1.1 MB of MapLibre behind it is paid
     // when a window opens and not when the desktop starts.
-    const { createBaseMap } = await import('../../src/map/basemap.mjs');
+    const { createBaseMap } = await import('../../shared/map/basemap.mjs');
 
     //: The last clicked position, kept outside `draw` because `draw` is re-run from scratch
     //: on every basemap change and must be able to put the point back.

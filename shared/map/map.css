@@ -1,12 +1,12 @@
 /* The map layer's styling, shared by every app that puts a map in a window.
  *
- * Scoped on `.map-root`, which is the class `src/map/chrome.mjs` puts on the subtree it
+ * Scoped on `.map-root`, which is the class `shared/map/chrome.mjs` puts on the subtree it
  * builds. `docs/apps.md` tells an app to scope its rules under `.app-<id>`, and that is
  * right for an app's own stylesheet — but it cannot be the scope for rules thirty-one apps
  * share, because each would need its own copy. A class that exists only where a map was
  * built is as tight a scope and is the only one that can be shared.
  *
- * Declared by an app as `styles: ['../../src/map/map.css', 'app.css']`. The loader keys its
+ * Declared by an app as `styles: ['../../shared/map/map.css', 'app.css']`. The loader keys its
  * link cache on the resolved href, so thirty-one apps asking for this file link it once.
  */
 
