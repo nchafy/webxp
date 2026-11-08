@@ -1728,11 +1728,24 @@ def check_scaffold(page) -> list[str]:
         time.sleep(1.2)
 
         state = page.evaluate(
-            "(() => ({ loaded: window.webxpApps.loaded,"
-            " broken: window.webxpApps.broken,"
-            " inMenu: [...document.querySelectorAll('.start-item')]"
-            "   .some((b) => b.textContent.includes('Scaffold Probe')) }))()"
+            "(async () => {"
+            " const { APPS } = await import('/apps/manifest.mjs');"
+            " return { loaded: window.webxpApps.loaded,"
+            "   broken: window.webxpApps.broken,"
+            "   manifest: APPS,"
+            "   inMenu: [...document.querySelectorAll('.start-item')]"
+            "     .some((b) => b.textContent.includes('Scaffold Probe')) }; })()",
+            await_promise=True,
         )
+        # Asked of the browser, not of the disk. If the generator wrote the app and the page
+        # cannot see it, the page is reading a stale manifest — a different fault with a
+        # different fix, and one this check used to report as "the manifest missed it".
+        on_disk = (REPO_ROOT / "apps" / app_id / "app.mjs").is_file()
+        if on_disk and app_id not in state["manifest"]:
+            bad.append(
+                f"scaffold: apps/{app_id}/app.mjs is on disk and the manifest the browser "
+                "loaded does not list it — a stale read, not a generator fault"
+            )
         if app_id in state["broken"]:
             bad.append(
                 f"scaffold: the generated app does not satisfy the contract it was generated "
@@ -1862,6 +1875,19 @@ def main(argv: list[str] | None = None) -> int:
             page = browser.page()
             page.call("Runtime.enable")
             page.call("Log.enable")
+            # No HTTP cache for the run.
+            #
+            # `scaffold a new app` writes an app folder, regenerates `apps/manifest.mjs` and
+            # reloads. `http.server` validates with `Last-Modified`, whose granularity is one
+            # second, so a manifest rewritten inside the same second as an earlier fetch
+            # answers 304 and Chrome keeps the previous module. The check then reports the new
+            # app missing from the loaded list — blaming the generator for a stale read,
+            # intermittently, which is the worst kind of failure a harness can produce.
+            #
+            # Reproduced by `scripts/inspect_manifest_cache.py`, which forces the one-second
+            # window on purpose: 2 stale reads in 5 rounds with the cache on, 0 in 5 with it
+            # off. Re-run that script to re-confirm rather than trusting this comment.
+            page.clear_cache()
             page.call(
                 "Emulation.setDeviceMetricsOverride",
                 width=width,
