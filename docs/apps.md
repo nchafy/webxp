@@ -181,9 +181,68 @@ Every app's `app.mjs` is imported at startup so the Start menu can be built, so 
 work is startup cost for an app nobody opened. A dynamic `import()` inside `mount` is paid
 when the window opens.
 
-Shared dependencies are free to share: ES modules dedupe by resolved URL, so five apps
-importing `/vendor/maplibre-gl.mjs` download it once and get one module instance. Vendor
-inside your folder when the dep is yours alone; point at a shared path when it is not.
+## Sharing a dependency between apps
+
+Vendor inside your folder while the dependency is yours alone. Move it to `shared/` when a
+second app needs it.
+
+```
+webxp/
+  src/                  the window manager: theme, shell, window, loader, widgets
+  shared/
+    map/
+      basemap.mjs       the engine
+      chrome.mjs        the controls, as a subtree an app drops in
+      map.css           scoped on the class chrome.mjs sets
+      vendor/maplibre-gl.mjs
+  apps/
+    basemap/app.mjs     -> ../../shared/map/
+    day-02-lines/app.mjs -> ../../shared/map/
+```
+
+**`shared/` is a sibling of `src/`, not a directory inside it.** `src/` is the window
+manager. A 1.6 MB map engine in there means webxp ships a map engine, which it does not:
+`shared/` says the true thing — shared between apps, not part of the window manager. Nothing
+technical turns on this. ES modules dedupe by resolved URL, so thirty apps importing one path
+download it once and get one module instance wherever that path lives; the directory name is
+for the reader.
+
+A shared module gets no special treatment from the loader. It is a path, and `styles` entries
+resolve relative to the app folder like any other:
+
+```js
+styles: ['../../shared/map/map.css', 'app.css'],
+```
+
+### Import a shared engine inside `mount`, never at module scope
+
+This is the rule that costs something to get wrong, and it is a consequence of sharing rather
+than of any one dependency.
+
+```js
+// no — the whole desktop now pays for this at startup
+import { createBaseMap } from '../../shared/map/basemap.mjs';
+
+// yes — paid when a window opens
+async mount({ win }) {
+  const { createBaseMap } = await import('../../shared/map/basemap.mjs');
+}
+```
+
+Every `app.mjs` is imported at startup so the Start menu can be built. A module-scope import
+of a shared engine therefore loads that engine for every reader, including the ones who never
+open the app — and once thirty apps point at one engine, one of them importing it eagerly
+spends the whole desktop's startup budget.
+
+It is worse than it sounds, because a shared module can reach back and do this to you. A
+`chrome.mjs` that imported `BASEMAPS` from `basemap.mjs` pulled the engine in at module scope
+through what looked like a cheap import of a control builder. The symptom was a newly
+scaffolded app missing from the loaded list — a long way from the cause. The fix was to make
+the presets an argument, `buildMapChrome({ basemaps })`, so the shared chrome module imports
+nothing at all.
+
+**A shared module meant for `mount` should import nothing at module scope itself.** That is
+the property that makes it safe for an app to import it eagerly by mistake.
 
 ## Hosting a project you already have
 
@@ -220,7 +279,8 @@ From porting the 30 Day Map Challenge base map into `apps/basemap/`:
    keeping them would have been two of everything.
 3. **Page-level CSS becomes window-level CSS.** Rules written against `body` and `100vh`
    became rules against the app's own class and `100%`.
-4. **Vendored dependencies move into the folder.** They are the app's, so they live with it.
+4. **Vendored dependencies move into the folder** — until a second app wants them, at which
+   point they move again, to `shared/`. See "Sharing a dependency between apps".
 5. **Scoping flattens specificity, and that changes who wins.** This one cost the most. The
    original relied on `.window-body > .map` outranking MapLibre's own `.maplibregl-map` to
    keep `position: absolute` on the map container. Scoping both rules under `.app-basemap`
@@ -228,8 +288,11 @@ From porting the 30 Day Map Challenge base map into `apps/basemap/`:
    MapLibre's `position: relative` won, the container collapsed to 0 px high, and the window
    drew nothing while every flag read healthy.
 
-   When you scope a stylesheet that already fought a specificity battle, re-check who wins.
-   `apps/basemap/app.css` now uses a three-class selector and says why.
+   When you scope a stylesheet that already fought a specificity battle, **count the
+   classes**. Stating it in terms of the selector's class names is the wrong abstraction: the
+   same rule re-broke on the move to `shared/map/`, because rescoping it from
+   `.app-basemap .basemap-root > .map` to `.map-root > .map` dropped it from three classes to
+   two and tied MapLibre's rule again. The count is the invariant.
 6. **Anything measuring its container goes in `ready`.** See above.
 
 The lesson behind 5 and 6: **look at the window**. `tilesLoaded: true` and a blank rectangle
