@@ -4,6 +4,8 @@
  * two programs showing a record show it the same way.
  */
 
+import { icon } from './icons.mjs';
+
 //: The schemes a cell may link to. `table` and `group` are the shared renderer for "a
 //: record", so the moment a cell's value comes from anywhere but a literal in the program
 //: source — a fetch, a query string, a file a user opened — `javascript:` in an href is a
@@ -145,6 +147,38 @@ export function sheet(children) {
   element.className = 'sheet';
   element.append(...[].concat(children || []));
   return element;
+}
+
+/**
+ * One icon tile: a picture above a name, activating to open something.
+ *
+ * The desktop's icons and a folder window's icons are the same tile on two surfaces, so the
+ * shape is here and only the surface is styled per caller. `.icon-tile` carries the box —
+ * the width a label wraps at, the gap, the absence of button chrome — and the caller's own
+ * class carries what the surface changes, which is the label colour: white with a shadow
+ * over a wallpaper, dark over a window's sheet.
+ *
+ * It is a button, not a link. Opening a program is a call, not a navigation, and a link with
+ * a dead href promises the keyboard and the context menu something that is not there.
+ *
+ * @param {object} spec
+ * @param {string} spec.name              The label. Also the accessible name.
+ * @param {string} [spec.icon]            A key of `ICON_NAMES`.
+ * @param {string} [spec.className]       Surface class, added beside `icon-tile`.
+ * @param {number} [spec.size]            Icon size in CSS pixels.
+ * @param {() => void} spec.onOpen
+ * @returns {HTMLButtonElement}
+ */
+export function iconTile(spec) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = spec.className ? `icon-tile ${spec.className}` : 'icon-tile';
+  button.append(icon(spec.icon, spec.size || 32));
+  const name = document.createElement('span');
+  name.textContent = spec.name;
+  button.append(name);
+  button.addEventListener('click', spec.onOpen);
+  return button;
 }
 
 /**

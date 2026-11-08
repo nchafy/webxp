@@ -58,7 +58,11 @@
   list-style: none;
 }
 
-.desktop-icon {
+/* The tile's box, shared by the desktop and by any folder window that shows the same icons.
+   The surface — label colour, shadow, hover wash — belongs to the caller's own class,
+   because white-on-wallpaper and dark-on-sheet are different problems. `widgets.iconTile`
+   builds it. */
+.icon-tile {
   display: grid;
   justify-items: center;
   align-content: start;
@@ -70,22 +74,25 @@
   border: 1px solid transparent;
   border-radius: 2px;
   box-shadow: none;
-  color: #fff;
   font-size: 11px;
   line-height: 1.25;
   text-align: center;
+}
+.icon-tile:active { background: none; box-shadow: none; }
+.icon-tile span { overflow-wrap: anywhere; }
+
+.desktop-icon {
+  color: #fff;
   /* Luna's icon label: white text on whatever the wallpaper happens to be, which is
      unreadable without this. The shadow is the contrast mechanism, not decoration. */
   text-shadow: 0 1px 2px rgb(0 0 0 / 85%), 0 0 3px rgb(0 0 0 / 65%);
 }
-.desktop-icon:active { background: none; box-shadow: none; }
 .desktop-icon:hover,
 .desktop-icon:focus-visible {
   background: rgb(10 36 106 / 42%);
   border-color: rgb(255 255 255 / 45%);
 }
 .desktop-icon svg { filter: drop-shadow(1px 1px 2px rgb(0 0 0 / 45%)); }
-.desktop-icon span { overflow-wrap: anywhere; }
 
 /* ---------------------------------------------------------------------------
    The taskbar.

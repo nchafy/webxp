@@ -58,6 +58,7 @@ PROGRAMS = {
     "windows": ("Window list", True),
     "webview": ("Webview", True),
     "basemap": ("Base map", True),
+    "map-challenge": ("30DaysOfMaps", True),
     "about": ("About webxp", False),
 }
 
@@ -436,7 +437,7 @@ def check_boot(page) -> list[str]:
 def check_launch_all(page) -> list[str]:
     """Every program opens, gets a button, and does not land on top of the last one."""
     bad = []
-    for program in ("notepad", "display", "windows", "webview", "basemap", "about"):
+    for program in ("notepad", "display", "windows", "webview", "basemap", "map-challenge", "about"):
         launch(page, program)
     state = probe(page)
 
@@ -1683,6 +1684,118 @@ def check_singleton(page) -> list[str]:
     return bad
 
 
+#: How many day apps the folder must show. The challenge has thirty days, and the folder is
+#: the only place they are reachable from, so a filter that quietly drops one is invisible.
+WANT_DAYS = 30
+
+
+def check_map_challenge_folder(page) -> list[str]:
+    """The folder lists every day, opens one as its own window, and reads on a white sheet.
+
+    Three separate things can go wrong here and only the first is obvious:
+
+    1. The membership filter. The folder derives its contents from `desktop.programs`, so a
+       wrong prefix shows nothing, or shows the whole desktop. Both are asserted: thirty
+       days present, and no non-day program among them.
+    2. The launch route. A tile that builds but opens nothing looks identical to one that
+       works until it is clicked.
+    3. The surface. `iconTile` is shared with the desktop, where the label is white with a
+       shadow because it sits on a wallpaper. Inherited onto the folder's white sheet that
+       is invisible text — which renders as a grid of unlabelled icons, not as an error. The
+       desktop's own icon is measured in the same breath, so the split cannot be fixed in one
+       direction by breaking the other.
+    """
+    bad = []
+    launch(page, "map-challenge")
+
+    state = page.evaluate(
+        "(() => { const w = window.webxp.windows.find((x) => x.programId === 'map-challenge');"
+        " if (!w) return { error: 'no folder window' };"
+        " const tiles = [...w.bodyEl.querySelectorAll('.day-grid .folder-icon')];"
+        " const label = tiles.length ? tiles[0].querySelector('span') : null;"
+        " const deskIcon = document.querySelector('.desktop-icons .desktop-icon');"
+        " const style = label ? getComputedStyle(label) : null;"
+        " const deskStyle = deskIcon ? getComputedStyle(deskIcon) : null;"
+        " return { tiles: tiles.map((t) => t.textContent),"
+        "   boxes: tiles.map((t) => { const r = t.getBoundingClientRect();"
+        "     return { w: Math.round(r.width), h: Math.round(r.height) }; }),"
+        "   svgs: tiles.filter((t) => t.querySelector('svg')).length,"
+        "   folderColor: style ? style.color : '',"
+        "   folderShadow: style ? style.textShadow : '',"
+        "   deskColor: deskStyle ? deskStyle.color : '',"
+        "   deskShadow: deskStyle ? deskStyle.textShadow : '',"
+        "   programs: [...window.webxp.programs.keys()] }; })()"
+    )
+    if state.get("error"):
+        return [f"folder: {state['error']}"]
+
+    tiles = state["tiles"]
+    days = [p for p in state["programs"] if p.startswith("day-")]
+    if len(days) != WANT_DAYS:
+        bad.append(f"folder: {len(days)} day apps registered, want {WANT_DAYS}")
+    if len(tiles) != len(days):
+        bad.append(f"folder: {len(tiles)} tiles for {len(days)} day apps")
+    if state["svgs"] != len(tiles):
+        bad.append(f"folder: {state['svgs']} of {len(tiles)} tiles drew an icon")
+
+    # The membership control. A filter of `() => true` would also satisfy every count above
+    # once the numbers happened to line up; this fails on it.
+    strays = [t for t in tiles if not t.startswith("Day ")]
+    if strays:
+        bad.append(f"folder: non-day programs listed: {strays[:3]}")
+    if tiles and not tiles[0].startswith("Day 01"):
+        bad.append(f"folder: first tile is {tiles[0]!r}, want Day 01 — the sort is by id")
+    if tiles and not tiles[-1].startswith("Day 30"):
+        bad.append(f"folder: last tile is {tiles[-1]!r}, want Day 30")
+
+    # The tile's box comes from `.icon-tile` in the shell, not from this app. A zero-width or
+    # unstyled tile means the shared rule stopped reaching it.
+    flat = [b for b in state["boxes"] if b["w"] < 40 or b["h"] < 30]
+    if flat:
+        bad.append(f"folder: {len(flat)} tiles are smaller than an icon, e.g. {flat[0]}")
+
+    if state["folderColor"] != "rgb(0, 0, 0)":
+        bad.append(
+            f"folder: the label colour is {state['folderColor']!r}, want black — a white "
+            "label on the folder's white sheet is invisible, not broken"
+        )
+    if state["folderShadow"] not in ("none", ""):
+        bad.append(
+            f"folder: the label carries text-shadow {state['folderShadow']!r} — that is the "
+            "wallpaper's contrast mechanism and has no job on a sheet"
+        )
+    # The other half of the split, measured here so neither surface can be fixed by breaking
+    # the other.
+    if state["deskColor"] != "rgb(255, 255, 255)":
+        bad.append(f"folder: the desktop icon's label is {state['deskColor']!r}, want white")
+    if state["deskShadow"] in ("none", ""):
+        bad.append(
+            "folder: the desktop icon lost its text-shadow — white on a wallpaper is "
+            "unreadable without it"
+        )
+
+    # Clicking a tile opens that day, as its own window rather than as a pane in this one.
+    before = len(probe(page)["wins"])
+    opened = page.evaluate(
+        "(() => { const w = window.webxp.windows.find((x) => x.programId === 'map-challenge');"
+        " const tile = w && w.bodyEl.querySelector('.day-grid .folder-icon');"
+        " if (!tile) return false; tile.click(); return true; })()"
+    )
+    if not opened:
+        return bad + ["folder: no tile to click"]
+    time.sleep(0.6)
+    after = probe(page)
+    if len(after["wins"]) != before + 1:
+        bad.append(
+            f"folder: clicking a tile took {before} windows to {len(after['wins'])}, want one more"
+        )
+    if window_of(after, "day-01-points") is None:
+        bad.append("folder: clicking the first tile did not open day-01-points")
+    if after["active"] != "day-01-points":
+        bad.append(f"folder: the day opened behind {after['active']!r} instead of on top")
+    return bad
+
+
 def check_manifest_current(page) -> list[str]:
     """The generated manifest agrees with the folders on disk.
 
@@ -1789,6 +1902,7 @@ CHECKS = (
     ("broken app", check_broken_app),
     ("iframe app", check_iframe_app),
     ("basemap app", check_basemap_app),
+    ("30DaysOfMaps folder", check_map_challenge_folder),
     ("active styling", check_active_styling),
     ("loading frame", check_loading_frame),
     ("drag", check_drag),
@@ -1827,7 +1941,26 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="invert the drag assertion, so the run must report a failure",
     )
+    parser.add_argument(
+        "--only",
+        action="append",
+        metavar="SUBSTRING",
+        help="run just the checks whose name contains SUBSTRING; repeatable. For proving one "
+        "check can fail, not for reporting a clean tree.",
+    )
     args = parser.parse_args(argv)
+
+    checks = CHECKS
+    if args.only:
+        checks = tuple(
+            (name, fn) for name, fn in CHECKS
+            if any(want.lower() in name.lower() for want in args.only)
+        )
+        # A filter that matches nothing would otherwise run zero checks and report success,
+        # which is the one outcome a harness must never produce.
+        if not checks:
+            print(f"--only matched no checks: {args.only}", file=sys.stderr)
+            return 1
 
     out_dir = REPO_ROOT / args.out
     out_dir.mkdir(exist_ok=True)
@@ -1874,7 +2007,7 @@ def main(argv: list[str] | None = None) -> int:
             # is measured.
             time.sleep(1.0)
 
-            for name, check in CHECKS:
+            for name, check in checks:
                 if check is check_drag and args.prove_failure:
                     found = check(page, invert=True)
                 else:

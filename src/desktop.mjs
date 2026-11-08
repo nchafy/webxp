@@ -11,6 +11,7 @@
 
 import { XPWindow, zoom } from './window.mjs';
 import { icon } from './icons.mjs';
+import { iconTile } from './widgets.mjs';
 
 //: The lowest z-index a window gets. Above the desktop icons, below the taskbar.
 const Z_BASE = 10;
@@ -521,18 +522,15 @@ export class Desktop {
       .filter((program) => program.onDesktop)
       .map((program) => {
         const item = document.createElement('li');
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'desktop-icon';
-        button.append(icon(program.icon, 32));
-        const name = document.createElement('span');
-        name.textContent = program.name;
-        button.append(name);
-        // XP opened a desktop icon on a double click. A single activation is used here
-        // because a double click has no keyboard equivalent and no touch equivalent; the
-        // Start menu lists the same programs, so neither route is the only one.
-        button.addEventListener('click', () => this.launch(program.id));
-        item.append(button);
+        item.append(iconTile({
+          name: program.name,
+          icon: program.icon,
+          className: 'desktop-icon',
+          // XP opened a desktop icon on a double click. A single activation is used here
+          // because a double click has no keyboard equivalent and no touch equivalent; the
+          // Start menu lists the same programs, so neither route is the only one.
+          onOpen: () => this.launch(program.id),
+        }));
         return item;
       });
     this.iconsEl.replaceChildren(...rows);
