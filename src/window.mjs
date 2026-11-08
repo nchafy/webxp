@@ -89,6 +89,7 @@ export class XPWindow {
    * @param {boolean} [spec.maximizable]   Default true.
    * @param {boolean} [spec.maximized]     Open maximised.
    * @param {boolean} [spec.status]        Give it a status bar at the foot.
+   * @param {string} [spec.bodyClass]      Added to the client area, for an app's own CSS.
    * @param {object} host                  See the note at the top of this file.
    */
   constructor(spec, host) {
@@ -164,6 +165,9 @@ export class XPWindow {
 
     const body = document.createElement('div');
     body.className = 'window-body is-loading';
+    // The hook an app's own stylesheet hangs off, so two apps' rules cannot reach each
+    // other's content. `src/apps.mjs` sets it to `app-<id>` for every loaded app.
+    if (spec.bodyClass) body.classList.add(spec.bodyClass);
     body.append(loadingBlock());
 
     el.append(bar, body);

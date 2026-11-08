@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A hosted page</title>
+<style>
+  /* This page's own styles, deliberately not webxp's. It is a separate document and does
+     not inherit the theme — which is the trade-off the `frame` route makes. */
+  body {
+    margin: 0;
+    padding: 1.5rem;
+    font: 14px/1.6 Georgia, "Times New Roman", serif;
+    color: #222;
+    background: #fbfaf7;
+  }
+  h1 { margin: 0 0 .6rem; font-size: 19px; }
+  p { max-width: 36rem; }
+  code { font-family: "Lucida Console", Monaco, monospace; font-size: 12px; background: #eee; padding: 0 .2rem; }
+</style>
+</head>
+<body>
+  <h1>This is a separate document</h1>
+  <p>It is served from <code>apps/webview/page.html</code> and hosted in an iframe inside a
+    webxp window. It knows nothing about the window manager, and the window manager knows
+    nothing about it beyond its URL.</p>
+  <p>Notice two things. Its serif type and warm background are its own — it does not inherit
+    the Luna theme. And the first click anywhere in this page only raises the window; the
+    click after that reaches the page. That is the focus shim, and it is what every window
+    manager does.</p>
+  <p>Drag the title bar and the window still moves, because the pointer is lifted off the
+    window body for the duration of a drag.</p>
+</body>
+</html>

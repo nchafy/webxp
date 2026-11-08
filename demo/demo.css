@@ -1,51 +1,9 @@
-/* The demo's own rules. Nothing here belongs in `src/`: these are three programs' content
-   and the three wallpapers one of them switches between. */
+/* The host page's own rules. Nothing here belongs in `src/`, and nothing here belongs to an
+   app: every app's styles live in its own folder, scoped under its own class.
 
-/* ---------------------------------------------------------------------------
-   Wallpapers, chosen by Display Properties. Classes rather than inline styles, so a strict
-   `style-src` needs no exception for a background change.
-   --------------------------------------------------------------------------- */
-
-/* Luna's Bliss, without the photograph: a sky that lightens to the horizon over a green
-   rise. A 2 MB hillside is not worth a round trip to look at behind a window. */
-.desktop.wall-bliss {
-  background-image:
-    radial-gradient(120% 80% at 50% 118%, #7cb342 0 28%, #4e8f2f 42%, transparent 62%),
-    linear-gradient(to bottom, #1d4f8c 0%, #3a7cc0 45%, #86b8e0 78%, #cfe3f2 100%);
-}
-
-/* The default XP installed on a machine with no wallpaper set. */
-.desktop.wall-flat { background-image: none; background-color: var(--desktop); }
-
-.desktop.wall-night {
-  background-image:
-    radial-gradient(90% 60% at 50% 115%, #1b2a3c 0 40%, transparent 70%),
-    linear-gradient(to bottom, #05080f 0%, #0d1726 55%, #1b2f48 100%);
-}
-
-/* ---------------------------------------------------------------------------
-   Notepad.
-   --------------------------------------------------------------------------- */
-
-.notepad-area {
-  display: block;
-  width: 100%;
-  height: 100%;
-  padding: .4rem .5rem;
-  font: 13px/1.5 "Lucida Console", Monaco, monospace;
-  background: var(--bg);
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-  resize: none;
-}
-
-/* ---------------------------------------------------------------------------
-   Window list.
-   --------------------------------------------------------------------------- */
-
-.win-list { font-variant-numeric: tabular-nums; }
-.win-list tbody th { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 11rem; }
+   The wallpapers used to live here. They moved to `src/shell.css`, because an app offering a
+   wallpaper picker should depend on the window manager and not on whichever page happens to
+   be hosting it. */
 
 /* ---------------------------------------------------------------------------
    The no-script message. The shell is built in JavaScript because windows are: a desktop

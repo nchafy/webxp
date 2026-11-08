@@ -1,0 +1,11 @@
+/* Window list's own styles, scoped under the class the loader puts on its window body. */
+
+.app-windows .win-list { font-variant-numeric: tabular-nums; }
+
+/* A long window title must not widen the table past its window. */
+.app-windows .win-list tbody th {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 11rem;
+}

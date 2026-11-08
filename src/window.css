@@ -228,6 +228,42 @@
 }
 
 /* ---------------------------------------------------------------------------
+   Hosted content: a whole page in a window, for an app declared with `frame: { src }`.
+   --------------------------------------------------------------------------- */
+
+.app-frame-wrap { position: relative; width: 100%; height: 100%; }
+
+.app-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  /* Hosted pages are usually white; this stops a flash of the bisque face while one loads. */
+  background: #fff;
+}
+
+/* The focus shim.
+ *
+ * A pointer event inside an iframe does not cross the document boundary, so the window's own
+ * focus handler never sees a click on hosted content and the window cannot be raised by
+ * clicking it. This is a transparent layer that exists only while the window is inactive:
+ * clicking it raises the window, at which point the layer stops existing and the next click
+ * reaches the page.
+ *
+ * Driven entirely by `:not(.is-active)` rather than by a class the loader toggles, so there
+ * is no second copy of "is this window focused" to fall out of step with the first. */
+.app-frame-shim { display: none; }
+.window:not(.is-active) .app-frame-shim {
+  display: block;
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  /* Transparent, but it has to be a paint target to receive the pointer at all. */
+  background: rgb(0 0 0 / 0%);
+  cursor: default;
+}
+
+/* ---------------------------------------------------------------------------
    Resize handles. Eight of them, overlapping the frame by 3px on each side: XP let you
    grab an edge from slightly outside it, and a 1px border is not a target.
    --------------------------------------------------------------------------- */

@@ -25,6 +25,7 @@ import argparse
 import base64
 import json
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -55,12 +56,34 @@ PROGRAMS = {
     "notepad": ("Untitled - Notepad", True),
     "display": ("Display Properties", True),
     "windows": ("Window list", True),
+    "webview": ("Webview", True),
     "about": ("About webxp", False),
 }
 
 #: Settling time after an animated state change. `--zoom-ms` is 160; this is comfortably
 #: past it plus a frame, without being long enough to hide a hang.
 SETTLE_S = 0.45
+
+def apps_on_disk() -> list[str]:
+    """Every app folder, in the order `scripts/apps.py` writes them to the manifest.
+
+    Read from the filesystem rather than from the manifest on purpose: a check that reads the
+    manifest to find out what should be in the manifest cannot catch a stale one.
+    """
+    root = REPO_ROOT / "apps"
+    if not root.is_dir():
+        return []
+    return sorted(
+        child.name
+        for child in root.iterdir()
+        if child.is_dir() and (child / "app.mjs").is_file()
+    )
+
+
+APPS_ON_DISK = apps_on_disk()
+
+#: Set by `main`, so a check that has to reload the page can reach the server.
+BASE_URL = ""
 
 #: Console messages that are noise rather than a defect. Empty on purpose: this page makes
 #: no network requests beyond its own modules, so there is nothing legitimate to filter and
@@ -370,7 +393,7 @@ def check_boot(page) -> list[str]:
 def check_launch_all(page) -> list[str]:
     """Every program opens, gets a button, and does not land on top of the last one."""
     bad = []
-    for program in ("notepad", "display", "windows", "about"):
+    for program in ("notepad", "display", "windows", "webview", "about"):
         launch(page, program)
     state = probe(page)
 
@@ -975,6 +998,219 @@ def check_link_schemes(page) -> list[str]:
     return bad + drain_expecting(page, "refused a cell link", "link schemes")
 
 
+def check_app_loading(page) -> list[str]:
+    """Every folder in the manifest became a registered program, in manifest order."""
+    bad = []
+    state = page.evaluate(
+        "(() => ({ manifest: window.webxpApps ? null : 'webxpApps missing',"
+        " loaded: window.webxpApps ? window.webxpApps.loaded : [],"
+        " broken: window.webxpApps ? Object.keys(window.webxpApps.broken) : [],"
+        " registered: [...window.webxp.programs.keys()],"
+        " menu: [...document.querySelectorAll('.start-item')].map((b) => b.textContent) }))()"
+    )
+    if state["manifest"]:
+        return [f"app loading: {state['manifest']}"]
+    if state["broken"]:
+        bad.append(f"app loading: these apps did not load: {state['broken']}")
+    if sorted(state["loaded"]) != sorted(APPS_ON_DISK):
+        bad.append(
+            f"app loading: loaded {sorted(state['loaded'])}, the folders on disk are "
+            f"{sorted(APPS_ON_DISK)}"
+        )
+    # Manifest order is the Start menu's order. Imports resolve in whatever order they
+    # finish, so without ordered registration the menu would shuffle between loads.
+    if state["registered"] != APPS_ON_DISK:
+        bad.append(
+            f"app loading: registered in order {state['registered']}, want manifest order "
+            f"{APPS_ON_DISK}"
+        )
+    if len(state["menu"]) != len(APPS_ON_DISK):
+        bad.append(f"app loading: {len(state['menu'])} Start menu rows for {len(APPS_ON_DISK)} apps")
+    return bad
+
+
+def check_app_styles(page) -> list[str]:
+    """An app's stylesheet is linked once, applies, and is scoped to its own windows."""
+    bad = []
+    # Notepad declares `styles: ['app.css']`, whose only rule targets `.app-notepad`.
+    launch(page, "notepad")
+    probe_result = page.evaluate(
+        "(() => { const wins = window.webxp.windows.filter((w) => w.programId === 'notepad');"
+        " const links = [...document.querySelectorAll('link[rel=stylesheet]')]"
+        "   .filter((l) => l.href.includes('/apps/notepad/app.css'));"
+        " const area = wins.length ? wins[0].bodyEl.querySelector('.notepad-area') : null;"
+        " const readme = window.webxp.windows.find((w) => w.programId === 'readme');"
+        " return { links: links.length,"
+        "          bodyClass: wins.length ? wins[0].bodyEl.className : '',"
+        "          font: area ? getComputedStyle(area).fontFamily : '',"
+        "          readmeClass: readme ? readme.bodyEl.className : '',"
+        "          windows: wins.length }; })()"
+    )
+    if probe_result["links"] != 1:
+        bad.append(
+            f"app styles: {probe_result['links']} links to apps/notepad/app.css, want exactly "
+            "1 — N windows of one app must share one stylesheet"
+        )
+    if "app-notepad" not in probe_result["bodyClass"]:
+        bad.append(f"app styles: window body class is {probe_result['bodyClass']!r}, want app-notepad")
+    # The rule only applies through the scoping class, so a monospace font here proves both
+    # that the stylesheet loaded and that the class is what connected it.
+    if "Lucida Console" not in probe_result["font"]:
+        bad.append(
+            f"app styles: the textarea font is {probe_result['font']!r} — apps/notepad/app.css "
+            "did not apply"
+        )
+    if "app-notepad" in probe_result["readmeClass"]:
+        bad.append("app styles: another app's window carries the app-notepad class")
+    return bad
+
+
+def check_broken_app(page) -> list[str]:
+    """An app whose spec is wrong is reported, and still appears saying what is wrong.
+
+    A broken app that is simply absent from the Start menu is the worst outcome: the question
+    "did I forget the folder, or is the manifest stale, or did I misname it" has no answer on
+    screen. `loadApp` registers an entry that explains itself instead.
+    """
+    bad = []
+    result = page.evaluate(
+        "(async () => {"
+        " const { validate, loadApp } = await import('/src/apps.mjs');"
+        # Straight at `validate`, which is the function the contract actually lives in.
+        " const cases = {"
+        "   idMismatch: validate({ id: 'other', name: 'X', mount(){} }, 'mine'),"
+        "   noName: validate({ id: 'mine', mount(){} }, 'mine'),"
+        "   noFill: validate({ id: 'mine', name: 'X' }, 'mine'),"
+        "   bothFills: validate({ id: 'mine', name: 'X', mount(){}, frame: { src: 'a' } }, 'mine'),"
+        "   badIcon: validate({ id: 'mine', name: 'X', mount(){}, icon: 'nope' }, 'mine'),"
+        "   typo: validate({ id: 'mine', name: 'X', mount(){}, singelton: true }, 'mine'),"
+        "   good: validate({ id: 'mine', name: 'X', mount(){} }, 'mine'),"
+        " };"
+        # And at a folder that does not exist, which is the manifest-is-stale case.
+        " const missing = await loadApp('does-not-exist');"
+        " return { cases, missingProblems: missing.problems.length,"
+        "          missingHasProgram: typeof missing.program.mount === 'function' }; })()",
+        await_promise=True,
+    )
+    for name in ("idMismatch", "noName", "noFill", "bothFills", "badIcon", "typo"):
+        if not result["cases"][name]:
+            bad.append(f"broken app: validate() accepted the {name} case")
+    # The negative control: a valid spec must pass, or the validator could be rejecting
+    # everything and every assertion above would still hold.
+    if result["cases"]["good"]:
+        bad.append(f"broken app: validate() rejected a valid spec — {result['cases']['good']}")
+    if not result["missingProblems"]:
+        bad.append("broken app: loading a folder that does not exist reported no problem")
+    if not result["missingHasProgram"]:
+        bad.append(
+            "broken app: a folder that failed to load produced no program, so it would be "
+            "silently absent from the Start menu"
+        )
+    # Asking for a folder that does not exist is a 404 the browser logs. Drained here so it
+    # cannot be mistaken for a defect by whichever check happens to sweep next, and required,
+    # because its absence would mean the import did not actually go out.
+    return bad + drain_expecting(page, "apps/does-not-exist/app.mjs", "broken app")
+
+
+def check_iframe_app(page) -> list[str]:
+    """A `frame:` app hosts its page, and clicking it raises its window.
+
+    The shim is the whole reason `frame` is a first-class kind: a pointer event inside an
+    iframe does not reach the parent document, so without it a hosted app cannot be raised
+    by clicking it.
+    """
+    bad = []
+    launch(page, "webview")
+    shape = page.evaluate(
+        "(() => { const w = window.webxp.windows.find((w) => w.programId === 'webview');"
+        " if (!w) return null;"
+        " const frame = w.bodyEl.querySelector('iframe.app-frame');"
+        " const shim = w.bodyEl.querySelector('.app-frame-shim');"
+        " const r = frame ? frame.getBoundingClientRect() : null;"
+        " return { hasFrame: !!frame, src: frame ? frame.src : '',"
+        "          title: frame ? frame.title : '',"
+        "          sandbox: frame ? frame.getAttribute('sandbox') : null,"
+        "          w: r ? Math.round(r.width) : 0, h: r ? Math.round(r.height) : 0,"
+        "          shimShown: shim ? getComputedStyle(shim).display : 'absent' }; })()"
+    )
+    if shape is None or not shape["hasFrame"]:
+        return ["iframe app: no iframe in the Webview window"]
+    if not shape["src"].endswith("/apps/webview/page.html"):
+        bad.append(f"iframe app: src is {shape['src']!r}, want it resolved against the app folder")
+    if not shape["title"]:
+        bad.append("iframe app: the frame has no title, so it is an unnamed document in the tab order")
+    if shape["sandbox"] is None:
+        bad.append("iframe app: the declared sandbox was not applied")
+    if shape["w"] < 100 or shape["h"] < 100:
+        bad.append(f"iframe app: the frame laid out at {shape['w']}x{shape['h']}")
+    # Focused window: no shim, so clicks reach the page.
+    if shape["shimShown"] != "none":
+        bad.append(
+            f"iframe app: the shim is {shape['shimShown']} on the focused window, so clicks "
+            "cannot reach the hosted page"
+        )
+
+    # Unfocused window: the shim must be there to catch the click that raises it.
+    launch(page, "notepad")
+    unfocused = page.evaluate(
+        "(() => { const w = window.webxp.windows.find((w) => w.programId === 'webview');"
+        " const shim = w.bodyEl.querySelector('.app-frame-shim');"
+        " const r = shim.getBoundingClientRect();"
+        " return { display: getComputedStyle(shim).display, active: w.el.classList.contains('is-active'),"
+        "          w: Math.round(r.width), h: Math.round(r.height) }; })()"
+    )
+    if unfocused["active"]:
+        bad.append("iframe app: Webview is still active after launching Notepad over it")
+    elif unfocused["display"] == "none":
+        bad.append(
+            "iframe app: no shim on the unfocused window — clicking the hosted page would "
+            "not raise its window"
+        )
+    elif unfocused["w"] < 100 or unfocused["h"] < 100:
+        bad.append(f"iframe app: the shim laid out at {unfocused['w']}x{unfocused['h']}")
+
+    # And clicking the shim must actually raise the window.
+    #
+    # Moved somewhere nothing else covers first. The cascade stacks every window near the
+    # top-left, so the shim of an unfocused window is usually underneath the one that
+    # unfocused it — and a click there lands on the wrong window and looks like the shim
+    # failing. `moveTo` does not change focus, so the window stays unfocused.
+    page.evaluate(
+        "(() => { const s = window.webxp.surface.getBoundingClientRect();"
+        " const w = window.webxp.windows.find((w) => w.programId === 'webview');"
+        " w.moveTo(Math.round(s.width) - w.box.w - 20, Math.round(s.height) - w.box.h - 20); })()"
+    )
+    time.sleep(0.15)
+    rect = rect_of(page, f"{win_selector(page, 'webview')} .app-frame-shim")
+    if rect is None:
+        return bad + ["iframe app: the shim has no box to click"]
+
+    x = rect["x"] + rect["w"] / 2
+    y = rect["y"] + rect["h"] / 2
+    # What is actually under the pointer. Without this, a click that misses reports as a
+    # product defect — which is exactly what happened the first time this check ran.
+    on_top = page.evaluate(
+        f"(() => {{ const e = document.elementFromPoint({x}, {y});"
+        " return e ? e.className : 'nothing'; })()"
+    )
+    if "app-frame-shim" not in str(on_top):
+        return bad + [
+            f"iframe app: could not isolate the shim to click it — {on_top!r} is on top at "
+            f"({round(x)}, {round(y)}). This is a harness problem, not a product one."
+        ]
+
+    mouse(page, "mousePressed", x, y, buttons=1)
+    mouse(page, "mouseReleased", x, y)
+    time.sleep(0.15)
+    after = probe(page)
+    if after["active"] != "webview":
+        bad.append(
+            f"iframe app: clicking the shim left {after['active']!r} active, not the "
+            "window that was clicked"
+        )
+    return bad
+
+
 def check_min_size(page) -> list[str]:
     """Dragging the corner far past the minimum stops at the minimum."""
     selector = win_selector(page, "readme")
@@ -1256,19 +1492,129 @@ def check_singleton(page) -> list[str]:
     if state["active"] != "display":
         bad.append(f"singleton: relaunch left {state['active']!r} active")
 
-    # Notepad is not a singleton, so the same move must open a second one. Without this the
-    # check above would also pass on a desktop that refuses to open anything twice.
+    # Notepad is not a singleton, so the same move must open one more. Without this the check
+    # above would also pass on a desktop that refuses to open anything twice.
+    #
+    # Counted relative to what is already open rather than against a fixed number: other
+    # checks open Notepad too, and an absolute expectation here breaks whenever one of them
+    # changes. It did.
+    notepads_before = sum(1 for w in state["wins"] if w["program"] == "notepad")
     launch(page, "notepad")
     after = probe(page)
-    notepads = sum(1 for w in after["wins"] if w["program"] == "notepad")
-    if notepads != 2:
-        bad.append(f"singleton control: {notepads} Notepad windows after a relaunch, want 2")
+    notepads_after = sum(1 for w in after["wins"] if w["program"] == "notepad")
+    if notepads_after != notepads_before + 1:
+        bad.append(
+            f"singleton control: {notepads_before} Notepad windows became {notepads_after} "
+            "after a relaunch, want one more"
+        )
+    return bad
+
+
+def check_manifest_current(page) -> list[str]:
+    """The generated manifest agrees with the folders on disk.
+
+    A stale manifest is the one failure mode of this whole arrangement that looks like
+    nothing: the app is simply not there. This runs the same `--check` a person would.
+    """
+    result = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "apps.py"), "--check"],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+    if result.returncode != 0:
+        return [
+            "manifest: scripts/apps.py --check failed — "
+            + (result.stderr.strip() or result.stdout.strip()).replace("\n", " | ")
+        ]
+    return []
+
+
+def check_scaffold(page) -> list[str]:
+    """Adding a folder adds an app: scaffold, reload, and it is there and it launches.
+
+    This is the end-to-end form of the contract, and the only check that exercises the path a
+    person actually takes. It reloads the page, so it runs last.
+    """
+    bad = []
+    app_id = "scaffold-probe"
+    folder = REPO_ROOT / "apps" / app_id
+    created = False
+    try:
+        made = subprocess.run(
+            [sys.executable, str(REPO_ROOT / "scripts" / "apps.py"), "--new", app_id],
+            capture_output=True, text=True, cwd=REPO_ROOT,
+        )
+        if made.returncode != 0:
+            return [f"scaffold: --new failed: {made.stderr.strip() or made.stdout.strip()}"]
+        created = True
+        if not (folder / "app.mjs").is_file() or not (folder / "app.css").is_file():
+            bad.append("scaffold: --new did not write both app.mjs and app.css")
+
+        page.navigate(BASE_URL + "/")
+        time.sleep(1.2)
+
+        state = page.evaluate(
+            "(() => ({ loaded: window.webxpApps.loaded,"
+            " broken: window.webxpApps.broken,"
+            " inMenu: [...document.querySelectorAll('.start-item')]"
+            "   .some((b) => b.textContent.includes('Scaffold Probe')) }))()"
+        )
+        if app_id in state["broken"]:
+            bad.append(
+                f"scaffold: the generated app does not satisfy the contract it was generated "
+                f"from: {state['broken'][app_id]}"
+            )
+        if app_id not in state["loaded"]:
+            bad.append(f"scaffold: {app_id} is not in the loaded list — the manifest missed it")
+        if not state["inMenu"]:
+            bad.append("scaffold: the new app is not in the Start menu")
+
+        # And it has to actually open. A scaffold that produces an app which fails to mount
+        # is worse than no scaffold, because it teaches the contract wrong.
+        page.evaluate(f"window.webxp.launch({json.dumps(app_id)})")
+        time.sleep(0.8)
+        opened = page.evaluate(
+            "(() => { const w = window.webxp.windows.find((w) => w.programId === %s);"
+            " if (!w) return null;"
+            " return { loading: w.bodyEl.classList.contains('is-loading'),"
+            "          text: w.bodyEl.textContent.slice(0, 60),"
+            "          bodyClass: w.bodyEl.className }; })()"
+            % json.dumps(app_id)
+        )
+        if opened is None:
+            bad.append("scaffold: the new app did not open")
+        else:
+            if opened["loading"]:
+                bad.append("scaffold: the new app is stuck on the loading marquee")
+            if f"app-{app_id}" not in opened["bodyClass"]:
+                bad.append(f"scaffold: body class is {opened['bodyClass']!r}, want app-{app_id}")
+            if "Scaffold Probe" not in opened["text"]:
+                bad.append(f"scaffold: the window does not show its content — {opened['text']!r}")
+    finally:
+        if created:
+            shutil.rmtree(folder, ignore_errors=True)
+        subprocess.run(
+            [sys.executable, str(REPO_ROOT / "scripts" / "apps.py")],
+            capture_output=True, text=True, cwd=REPO_ROOT,
+        )
+        page.navigate(BASE_URL + "/")
+        time.sleep(1.0)
+        # The scaffolded app's stylesheet 404s nothing and the reloads log nothing, but the
+        # navigations buffer events that the end-of-run sweep would otherwise attribute to
+        # whatever ran last.
+        console_errors(page)
     return bad
 
 
 CHECKS = (
+    ("manifest is current", check_manifest_current),
     ("boot", check_boot),
     ("launch all", check_launch_all),
+    ("app loading", check_app_loading),
+    ("app styles", check_app_styles),
+    ("broken app", check_broken_app),
+    ("iframe app", check_iframe_app),
     ("active styling", check_active_styling),
     ("loading frame", check_loading_frame),
     ("drag", check_drag),
@@ -1293,6 +1639,8 @@ CHECKS = (
     # Last, because it registers a program and provokes a console error. Its cleanup puts
     # the desktop back, but a check that deliberately breaks something belongs at the end.
     ("mount failure", check_mount_failure),
+    # Last: it writes a folder and reloads the page, so it hands the desktop back fresh.
+    ("scaffold a new app", check_scaffold),
 )
 
 
@@ -1310,6 +1658,8 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = REPO_ROOT / args.out
     out_dir.mkdir(exist_ok=True)
     base = f"http://127.0.0.1:{args.port}"
+    global BASE_URL
+    BASE_URL = base
 
     # Loopback only. Nothing here is meant to be reachable from another machine.
     server = subprocess.Popen(

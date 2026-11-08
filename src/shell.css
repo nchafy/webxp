@@ -10,9 +10,32 @@
   position: fixed;
   inset: 0 0 var(--taskbar-h) 0;
   overflow: hidden;
-  /* Flat Luna blue, which is what XP showed with no wallpaper set. A page that wants a
-     wallpaper paints one on `.desktop` itself; `demo/demo.css` has three. */
+  /* Flat Luna blue, which is what XP showed with no wallpaper set. The three wallpapers
+     below are opt-in classes. */
   background: var(--desktop);
+}
+
+/* ---------------------------------------------------------------------------
+   Wallpapers. Classes rather than inline styles, so a strict `style-src` needs no exception
+   for a background change, and shipped with the shell rather than with the page so that an
+   app offering a wallpaper picker depends only on webxp.
+   --------------------------------------------------------------------------- */
+
+/* Luna's Bliss, without the photograph: a sky that lightens to the horizon over a green
+   rise. A 2 MB hillside is not worth a round trip to look at behind a window. */
+.desktop.wall-bliss {
+  background-image:
+    radial-gradient(120% 80% at 50% 118%, #7cb342 0 28%, #4e8f2f 42%, transparent 62%),
+    linear-gradient(to bottom, #1d4f8c 0%, #3a7cc0 45%, #86b8e0 78%, #cfe3f2 100%);
+}
+
+/* What XP showed with no wallpaper set. */
+.desktop.wall-flat { background-image: none; background-color: var(--desktop); }
+
+.desktop.wall-night {
+  background-image:
+    radial-gradient(90% 60% at 50% 115%, #1b2a3c 0 40%, transparent 70%),
+    linear-gradient(to bottom, #05080f 0%, #0d1726 55%, #1b2f48 100%);
 }
 
 /* ---------------------------------------------------------------------------

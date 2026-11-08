@@ -290,6 +290,7 @@ export class Desktop {
       maximizable: program.maximizable,
       maximized: program.maximized,
       status: program.status,
+      bodyClass: program.bodyClass,
     }, this);
     win.programId = id;
 

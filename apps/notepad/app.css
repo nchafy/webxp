@@ -1,0 +1,20 @@
+/* Notepad's own styles.
+ *
+ * Scoped under `.app-notepad`, which the loader puts on this app's window body. A bare
+ * `.notepad-area` would reach into every other app's windows.
+ */
+
+.app-notepad .notepad-area {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: .4rem .5rem;
+  font: 13px/1.5 "Lucida Console", Monaco, monospace;
+  background: var(--bg);
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  /* The window's own grips are the resize affordance; a second one in the corner of the
+     textarea would be a control that resizes the wrong thing. */
+  resize: none;
+}

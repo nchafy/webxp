@@ -1,20 +1,31 @@
-/* The demo desktop. Everything specific to it is here or in `programs.mjs`. */
+/* The host page.
+ *
+ * It owns the desktop's name and its wallpaper. It owns no programs: every app is a folder
+ * under `apps/`, listed in the generated `apps/manifest.mjs`, and the loader registers them.
+ * Adding an app to this desktop means adding a folder, never editing this file.
+ */
 
 import { Desktop } from '../src/webxp.mjs';
-import { PROGRAMS } from './programs.mjs';
+import { loadApps } from '../src/apps.mjs';
+import { APPS } from '../apps/manifest.mjs';
 
 const desktop = new Desktop({
   root: document.getElementById('webxp'),
   name: 'webxp',
   tagline: 'a Windows XP window manager',
-  footer: 'Programs are registered, not hard-coded. See demo/programs.mjs.',
-  programs: PROGRAMS,
+  footer: 'Every program here is a folder under apps/. See docs/apps.md.',
 });
 
 desktop.surface.classList.add('wall-bliss');
-desktop.autostart();
 
-// For the devtools console and for `scripts/check.py`, which reads the geometry rather than
-// trusting a screenshot. Not a test hook: the check could read the same numbers off the
-// custom properties, and this is the handle a person would want anyway.
+// For the devtools console and for `scripts/check.py`, which reads geometry rather than
+// trusting a screenshot. Published before the apps load, so a desktop whose apps failed is
+// still inspectable.
 window.webxp = desktop;
+
+const { loaded, broken } = await loadApps(desktop, APPS);
+// What loaded and what did not, for the console and for the checks. The loader already
+// reports a broken app to the console and registers an entry that explains itself.
+window.webxpApps = { loaded, broken };
+
+await desktop.autostart();
