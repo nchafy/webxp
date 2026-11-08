@@ -18,6 +18,25 @@
  * `.map`, `.map-status`, `.map-attrib`, `.map-compass`, `.map-compass-rose`,
  * `.map-zoom-in`, `.map-zoom-out`, `.map-tilt` and `[data-basemap]`. Renaming one here
  * silently unwires that control: the map still draws, the button just stops doing anything.
+ *
+ * ## The structure, and the one part of it that must not be rearranged
+ *
+ *     .map-root             a column: the map area, then the credit
+ *       .map-area           position: relative, and the whole stacking context
+ *         .map              the MapLibre container, inset 0
+ *         .overlays         inset over the map; control cards stack here
+ *           .card           the basemap switcher and Tilt
+ *           .overlay-cards  where an app appends its own
+ *           .map-status     a live region, under the cards so it cannot cover one
+ *         .map-zoom         zoom pair and compass, bottom-left over the canvas
+ *         .detail           the drill-down panel, docked right, hidden until used
+ *       .map-attrib         the credit — a row of the column, NOT a layer over the map
+ *
+ * The credit's position is a licence term for all three basemap sources. It floated over
+ * the canvas at bottom-right once, which is where `.detail` docks one layer above, so the
+ * credit vanished the moment anything was selected — on every viewport, and nothing caught
+ * it for a day. A row of the column cannot be covered and has no stacking order to get
+ * wrong. It MUST NOT be moved back over the canvas, hidden, truncated, or made dismissable.
  */
 
 /* This module imports nothing, and that is deliberate.
@@ -34,6 +53,10 @@
  * So the presets arrive as an argument and the caller imports them when a window opens. */
 
 const SVG = 'http://www.w3.org/2000/svg';
+
+//: Per-subtree, so two map windows do not both claim `#detail-title`. `aria-labelledby`
+//: takes an id, and a duplicate id makes one panel announce the other's heading.
+let instances = 0;
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -93,13 +116,25 @@ function compass() {
  *        compass that indicates something you cannot change is furniture.
  * @param {string} [opts.hint]        A line of copy under the switcher, for a day that wants
  *        to say what to do first.
- * @returns {{root: HTMLElement, cards: HTMLElement, status: HTMLElement, card: HTMLElement}}
+ * @param {boolean} [opts.detail=true] Build the drill-down panel's shell. An app that never
+ *        selects anything passes `false`; the element is `hidden` either way, so the cost of
+ *        leaving it is six nodes.
+ * @returns {{root: HTMLElement, area: HTMLElement, overlays: HTMLElement,
+ *            cards: HTMLElement, card: HTMLElement, status: HTMLElement,
+ *            detail: HTMLElement|null}}
  */
 export function buildMapChrome(opts = {}) {
   const tilt = opts.tilt !== false;
+  const n = ++instances;
 
   const root = el('div', 'map-root');
-  root.append(el('div', 'map'));
+
+  // The map and everything floating over it share one positioning context, and the credit
+  // sits outside it. See the structure note at the top: this is what makes "nothing can
+  // cover the credit" a fact about the box tree rather than a z-index argument.
+  const area = el('div', 'map-area');
+  root.append(area);
+  area.append(el('div', 'map'));
 
   const overlays = el('div', 'overlays');
 
@@ -149,7 +184,7 @@ export function buildMapChrome(opts = {}) {
   status.setAttribute('aria-live', 'polite');
   overlays.append(status);
 
-  root.append(overlays);
+  area.append(overlays);
 
   // A map control belongs on the map, not in a card. The visible glyph is a symbol, so each
   // button carries an aria-label: "+" is not a name. The minus is U+2212, not a hyphen, so
@@ -163,13 +198,32 @@ export function buildMapChrome(opts = {}) {
   zoomOut.setAttribute('aria-label', 'Zoom out');
   zoom.append(zoomIn, zoomOut);
   if (tilt) zoom.append(compass());
-  root.append(zoom);
+  area.append(zoom);
+
+  // The drill-down panel's shell. Built here because every map app that lets you select
+  // something wants the same six nested elements, and `map.css` already styles them; the
+  // behaviour is `panel.mjs`, which an app wires to this element.
+  let detail = null;
+  if (opts.detail !== false) {
+    detail = el('aside', 'detail');
+    detail.hidden = true;
+    const head = el('div', 'detail-head');
+    const title = el('h2');
+    title.id = `detail-title-${n}`;
+    detail.setAttribute('aria-labelledby', title.id);
+    const close = el('button', 'detail-close title-box close', '✕');
+    close.type = 'button';
+    close.setAttribute('aria-label', 'Close details');
+    head.append(title, close);
+    detail.append(head, el('div', 'detail-body'), el('p', 'detail-foot'));
+    area.append(detail);
+  }
 
   // Every basemap source requires attribution, so this is a licence term and not a nicety:
   // nothing is allowed to cover it. Filled by `basemap.mjs`, which owns the per-source
-  // credit. It is the last child of the root and outside `.overlays` on purpose — the
-  // overlay column is `inset: 0`, so a credit inside it would be coverable.
+  // credit. It is a row of the root's column and a sibling of `.map-area`, which is what
+  // makes it uncoverable — see the structure note at the top of this file.
   root.append(el('p', 'map-attrib'));
 
-  return { root, overlays, cards, card, status };
+  return { root, area, overlays, cards, card, status, detail };
 }

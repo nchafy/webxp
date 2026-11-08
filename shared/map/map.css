@@ -20,53 +20,51 @@
  * The other half of the port: rules written against `body` and `100vh` became rules against
  * this app's root and `100%`. A window is not a viewport.
  */
-.map-root { padding: 0; overflow: hidden; }
-
-.basemap-root {
-  position: relative;
-  width: 100%;
+/* A column: the map area, then the credit. `chrome.mjs` carries why the credit is a row of
+   this column and not a layer over the canvas. */
+.map-root {
+  display: flex;
+  flex-direction: column;
   height: 100%;
+  padding: 0;
+  overflow: hidden;
 }
 
-/* The map fills the app's root.
+/* Everything that floats over the map shares this stacking context, and the credit sits
+   outside it. `min-height: 0` because a flex item's default `min-height: auto` refuses to
+   shrink below its content, which here is a map that would push the credit off the bottom. */
+.map-root .map-area {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* The map fills the area.
  *
- * The three-class selector is load-bearing, not tidiness. MapLibre puts its own
- * `maplibregl-map` class on this same element, and the reduced copy of its stylesheet at the
- * foot of this file sets `position: relative` on it. Scoping both rules under
- * `.app-basemap` gave them equal specificity, so source order decided it — and MapLibre's
- * block sits last. `relative` won, `inset: 0` stopped applying, and the element collapsed to
- * 0 px high while the canvas inside it kept a stale 300 px.
+ * The class count is load-bearing, not tidiness. MapLibre puts its own `maplibregl-map` class
+ * on this same element, and the reduced copy of its stylesheet at the foot of this file sets
+ * `position: relative` on it. When the two selectors tie on specificity, source order decides
+ * — and MapLibre's block sits last. `relative` wins, `inset: 0` stops applying, and the
+ * element collapses to 0 px high while the canvas inside it keeps a stale 300 px.
  *
- * The result is the worst failure available: every tile fetched 200, MapLibre reported
- * `styleLoaded`, `tilesLoaded` and 113 layers, and the window drew nothing but the holding
- * colour. `scripts/check.py` now measures the canvas against the window and screenshots it,
- * because none of those flags could tell the difference.
+ * That is the worst failure available: every tile fetches 200, MapLibre reports `styleLoaded`,
+ * `tilesLoaded` and 113 layers, and the window draws nothing but the holding colour. No flag
+ * MapLibre exposes can tell a map that drew from a map that collapsed, so `scripts/check.py`
+ * measures the canvas against `.map-area` and screenshots it.
  *
- * Moving these rules out of `apps/basemap/app.css` into this shared file re-created that bug
- * for a moment, and the re-creation is the instructive part. The old selector was
- * `.app-basemap .basemap-root > .map` — three classes. The mechanical rescope made it
- * `.map-root > .map` — two, exactly equal to MapLibre's `.map-root .maplibregl-map` further
- * down, which still sits last. The win was never about which class names were used. It was
- * about the count, and the count changed when the scope did.
+ * It has been got wrong twice, both times by renaming rather than by touching this rule.
+ * `.app-basemap .basemap-root > .map` was three classes; the move into this shared file made
+ * it `.map-root > .map`, two — exactly equal to MapLibre's `.map-root .maplibregl-map`. The
+ * win was never about which names were used. It is the count.
  *
- * Hence two rules rather than one. The first sizes the container before MapLibre has touched
- * it, which is when the box has to be right: `createBaseMap` measures on creation. The
- * second exists only to outrank MapLibre's afterwards, and it does, because two classes on
- * the same element plus a child combinator beats two classes whatever the source order.
- *
- * If you touch either selector, count the classes. `scripts/check.py` measures the canvas
- * against the window and screenshots it, because no flag MapLibre exposes can tell a map
- * that drew from a map that collapsed.
+ * So: three classes, which beats MapLibre's two on specificity and needs no help from source
+ * order. If you touch this selector, count the classes.
  *
  * The holding colour shows during a style load instead of a white flash. */
-.map-root > .map {
+.map-root .map-area > .map {
   position: absolute;
   inset: 0;
   background: #e8e0d8;
-}
-.map-root > .map.maplibregl-map {
-  position: absolute;
-  inset: 0;
 }
 
 /* Floating chrome. The container ignores the pointer so clicks reach the canvas; each child
@@ -146,17 +144,23 @@
 
 /* Attribution. Every source in `basemap.mjs` requires it, so this is a licence term and not
    a nicety: nothing is allowed to cover it. */
+/* The credit. A row of `.map-root`'s column and a sibling of `.map-area`, so it is outside
+   every stacking context the map builds and nothing can cover it. It was `position: absolute`
+   at bottom-right once, which is where `.detail` docks — see `chrome.mjs`. It MUST stay a row,
+   and MUST NOT be hidden, truncated at any viewport, or made dismissable: it is the licence
+   term for all three sources.
+
+   `flex-shrink: 0` so a tall map cannot squeeze it away, and the text wraps rather than
+   clipping, because a truncated credit is a missing credit. */
 .map-root .map-attrib {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  z-index: 4;
+  flex: 0 0 auto;
   margin: 0;
   padding: .1rem .4rem;
-  max-width: min(34rem, 70%);
   font-size: 10px;
   line-height: 1.5;
-  background: rgb(255 255 255 / 82%);
+  text-align: right;
+  background: var(--face);
+  border-top: 1px solid var(--rule);
   color: var(--ink);
 }
 
@@ -174,6 +178,83 @@
 }
 
 .map-root .map-status:empty { display: none; }
+
+/* ---------------------------------------------------------------------------
+   The drill-down panel. Docked right when there is room, a bottom sheet when there is not.
+   `chrome.mjs` builds it; `panel.mjs` opens and fills it.
+   --------------------------------------------------------------------------- */
+.map-root .detail {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(25rem, 42%);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  background: var(--face);
+  border-left: 1px solid var(--title-a);
+  box-shadow: -3px 0 8px rgb(0 0 0 / 25%);
+  transform: translateX(100%);
+  transition: transform 220ms ease-out;
+}
+
+.map-root .detail.is-open { transform: translateX(0); }
+.map-root .detail[hidden] { display: none; }
+
+.map-root .detail-head {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  flex: 0 0 auto;
+  padding: .3rem .25rem .3rem .6rem;
+  /* Flat, not a gradient: a gradient across a 28 px bar bands visibly and reads as an
+     artifact rather than as chrome. */
+  background: var(--title-a);
+  border-bottom: 1px solid #06143c;
+}
+
+.map-root .detail-head h2 {
+  margin: 0;
+  flex: 1 1 auto;
+  font-size: 12px;
+  color: #fff;
+  text-shadow: 0 1px 1px rgb(0 0 0 / 45%);
+}
+
+.map-root .detail-body { flex: 1 1 auto; overflow-y: auto; padding: .6rem; }
+
+.map-root .detail-foot {
+  flex: 0 0 auto;
+  padding: .45rem .6rem;
+  border-top: 1px solid var(--sunk);
+  background: var(--face);
+  font-size: 11px;
+}
+
+.map-root .detail-foot:empty { display: none; }
+
+/* A container query, not `@media`. The panel is inside a window that the reader resizes,
+   and `@media` asks how big the screen is — which is not the question a 400 px-wide window
+   is asking. `window` is the container name `src/window.css` puts on every window body. */
+@container window (max-width: 52rem) {
+  .map-root .detail {
+    top: auto;
+    left: 0;
+    width: auto;
+    max-height: 48%;
+    border-left: 0;
+    border-top: 1px solid var(--title-a);
+    transform: translateY(100%);
+  }
+  .map-root .detail.is-open { transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* WCAG 2.3.3. */
+  .map-root .detail,
+  .map-root .detail.is-open { transition: none; }
+}
 
 /* ---------------------------------------------------------------------------
    MapLibre's own stylesheet, reduced to the rules that matter.

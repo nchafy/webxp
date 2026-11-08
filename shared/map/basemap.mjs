@@ -690,5 +690,16 @@ export async function createBaseMap(options = {}) {
     redraw() {
       runDraw();
     },
+    /**
+     * Let go of the canvas. An app MUST call this from `win.onClose`.
+     *
+     * MapLibre holds a WebGL context, several workers and a ResizeObserver on the container.
+     * A window closed without this leaks all of them, and a few open-and-close cycles is
+     * enough to lose the context on some drivers — after which every later map in the
+     * session fails to create.
+     */
+    destroy() {
+      map.remove();
+    },
   };
 }

@@ -1285,17 +1285,33 @@ def check_basemap_app(page) -> list[str]:
             " const map = w.base.map;"
             " const canvas = w.bodyEl.querySelector('.maplibregl-canvas');"
             " const holder = w.bodyEl.querySelector('.map');"
-            " const rootEl = w.bodyEl.querySelector('.basemap-root');"
+            # `.map-area` is what the canvas is supposed to fill. The selector matters: this
+            # read `.basemap-root`, a class no element has carried since the map layer moved
+            # to `shared/`, so `root` came back null and the comparison below — the one
+            # assertion this check exists for — was skipped on every run while reporting ok.
+            " const areaEl = w.bodyEl.querySelector('.map-area');"
+            " const attribEl = w.bodyEl.querySelector('.map-attrib');"
             " const cr = canvas ? canvas.getBoundingClientRect() : null;"
             " const hr = holder ? holder.getBoundingClientRect() : null;"
-            " const rr = rootEl ? rootEl.getBoundingClientRect() : null;"
+            " const ar = areaEl ? areaEl.getBoundingClientRect() : null;"
+            " const tr = attribEl ? attribEl.getBoundingClientRect() : null;"
+            # What sits on top of the credit's own midpoint. If anything but the credit is
+            # there, it is covered — which is a licence problem, not a layout nit.
+            " const onCredit = tr && tr.width"
+            "   ? (document.elementFromPoint(tr.left + tr.width / 2, tr.top + tr.height / 2)"
+            "      || {}).className || ''"
+            "   : 'no credit';"
             " return { stage: map.loaded() ? 'ready' : 'style',"
             "   basemap: w.base.basemap,"
             "   canvas: cr ? { w: Math.round(cr.width), h: Math.round(cr.height) } : null,"
             "   canvasRect: cr ? { x: cr.left, y: cr.top, w: cr.width, h: cr.height } : null,"
             "   holder: hr ? { w: Math.round(hr.width), h: Math.round(hr.height) } : null,"
-            "   root: rr ? { w: Math.round(rr.width), h: Math.round(rr.height) } : null,"
-            "   attrib: (w.bodyEl.querySelector('.map-attrib') || {}).innerHTML || '',"
+            "   area: ar ? { w: Math.round(ar.width), h: Math.round(ar.height) } : null,"
+            "   areaBottom: ar ? Math.round(ar.bottom) : null,"
+            "   creditBox: tr ? { w: Math.round(tr.width), h: Math.round(tr.height) } : null,"
+            "   creditTop: tr ? Math.round(tr.top) : null,"
+            "   onCredit: String(onCredit),"
+            "   attrib: (attribEl || {}).innerHTML || '',"
             "   layers: map.getStyle() ? map.getStyle().layers.map((l) => l.id) : [],"
             "   status: (w.bodyEl.querySelector('.map-status') || {}).textContent || '' }; })()"
         )
@@ -1319,16 +1335,43 @@ def check_basemap_app(page) -> list[str]:
             f"basemap app: the canvas laid out at {state['canvas']} — the map was built "
             "before its container had a box"
         )
-    # Against the app's own root, not against `.map`. `.map` is the element a stylesheet
-    # accident can collapse to 0px high while the canvas inside it keeps a stale size, so
-    # comparing the two agrees with itself and proves nothing. The root is the window.
-    if state["root"] and state["canvas"]:
+    # Against `.map-area`, not against `.map`. `.map` is the element a stylesheet accident can
+    # collapse to 0px high while the canvas inside it keeps a stale size, so comparing the two
+    # agrees with itself and proves nothing. The area is the room the map was given.
+    #
+    # Guarding on a selector is what let this assertion die silently once, so a missing area is
+    # a failure rather than a skip.
+    if not state["area"]:
+        bad.append("basemap app: no .map-area — nothing to measure the canvas against")
+    elif state["canvas"]:
         for axis in ("w", "h"):
-            if abs(state["canvas"][axis] - state["root"][axis]) > 6:
+            if abs(state["canvas"][axis] - state["area"][axis]) > 6:
                 bad.append(
                     f"basemap app: canvas {axis} is {state['canvas'][axis]}px in a "
-                    f"{state['root'][axis]}px window — the map is not filling its window"
+                    f"{state['area'][axis]}px area — the map is not filling its window"
                 )
+
+    # The credit is a licence term for all three sources: it has to be there, and it has to be
+    # somewhere nothing can cover.
+    #
+    # Two assertions, because "nothing covers it" and "nothing can cover it" are different
+    # claims and only the second is the invariant. `elementFromPoint` catches a credit that is
+    # covered right now — but this app docks nothing over it, so moving the credit back onto
+    # the canvas passed that assertion while re-creating the exact bug. What fails on it is the
+    # geometry: a row of the column starts where the map area ends, and a credit that overlaps
+    # the area is a credit in a stacking context the map controls, whatever is on top today.
+    if not state["creditBox"] or state["creditBox"]["h"] < 8:
+        bad.append(f"basemap app: the credit laid out at {state['creditBox']} — it must be visible")
+    elif "map-attrib" not in state["onCredit"]:
+        bad.append(
+            f"basemap app: {state['onCredit']!r} sits on top of the credit — attribution is a "
+            "licence term and cannot be covered"
+        )
+    elif state["areaBottom"] is not None and state["creditTop"] < state["areaBottom"] - 1:
+        bad.append(
+            f"basemap app: the credit starts at y={state['creditTop']} but the map area runs to "
+            f"y={state['areaBottom']} — it is over the canvas, where a docked panel covers it"
+        )
     if state["holder"] and (state["holder"]["w"] < 200 or state["holder"]["h"] < 200):
         bad.append(
             f"basemap app: the .map holder laid out at {state['holder']} — a rule it needs "
