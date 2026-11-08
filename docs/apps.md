@@ -214,6 +214,11 @@ resolve relative to the app folder like any other:
 styles: ['../../shared/map/map.css', 'app.css'],
 ```
 
+**A shared module documents its own shape.** `shared/map/README.md` carries the map subtree,
+what `buildMapChrome` builds and why it is laid out that way; this file does not restate it,
+because two renderings of one structure is how they drift apart. Read the shared module's own
+README before building against it.
+
 ### Import a shared engine inside `mount`, never at module scope
 
 This is the rule that costs something to get wrong, and it is a consequence of sharing rather
@@ -289,10 +294,10 @@ From porting the 30 Day Map Challenge base map into `apps/basemap/`:
    drew nothing while every flag read healthy.
 
    When you scope a stylesheet that already fought a specificity battle, **count the
-   classes**. Stating it in terms of the selector's class names is the wrong abstraction: the
-   same rule re-broke on the move to `shared/map/`, because rescoping it from
-   `.app-basemap .basemap-root > .map` to `.map-root > .map` dropped it from three classes to
-   two and tied MapLibre's rule again. The count is the invariant.
+   classes**. The count is the invariant; the class names are not. The same rule has broken
+   twice on rescopes that looked purely mechanical, each time landing on exactly MapLibre's
+   specificity. `shared/map/map.css` carries the live selector and a note to count before
+   touching it.
 6. **Anything measuring its container goes in `ready`.** See above.
 
 The lesson behind 5 and 6: **look at the window**. `tilesLoaded: true` and a blank rectangle

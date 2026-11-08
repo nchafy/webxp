@@ -289,6 +289,37 @@ mistake that makes a suite report clean over broken behaviour.
 - The same check closed the window a later check depended on. It now records window ids
   before it runs and closes only what it opened.
 
+## The pattern worth naming: a check that cannot fail
+
+Four incidents in two days, and they are the same defect wearing different clothes. In every
+one the check was **silent and reported success**, which is strictly worse than no check: a
+missing check is a known gap, while this one answers "is that covered?" with yes.
+
+| What died | How | Found by |
+| --- | --- | --- |
+| The title-bar contrast assertion | Read `color` off the bar, not the heading that carries the white text. Compared black to black. | Self-review (finding 2) |
+| The canvas-fills-window assertion | Guarded on `if state["root"] and …`, where `.basemap-root` stopped existing when the map moved to `shared/`. The guard went false; the line printed ok. | The other session, probing a live window: `{"basemapRoot": false, "mapRoot": true}` |
+| `scaffold a new app` | Read a stale `apps/manifest.mjs` over HTTP and blamed the generator. Intermittent, so a retry "fixed" it. | A re-run that passed |
+| `--only <substring>` | A filter matching nothing ran zero checks and exited 0. | The other session, on writing it |
+
+Three rules come out of it, and they are cheap:
+
+1. **A guard on a selector is a guard on a spelling.** `if element:` turns a renamed class
+   into a skipped assertion. A missing precondition MUST be a failure, not a branch that
+   quietly does nothing. `basemap app` now says `no .map-area — nothing to measure the canvas
+   against`.
+2. **Assert against the thing, not against a sibling of the thing.** Comparing the canvas to
+   `.map` — the element a stylesheet accident collapses — is an assertion that agrees with
+   itself. Measure against the room the content was given.
+3. **A passing retry is a finding, not a fix.** The stale-manifest flake passed on re-run and
+   would have been shrugged off; forcing the window deliberately
+   (`scripts/inspect_manifest_cache.py`) turned a guess into 2 stale reads in 5 rounds with
+   the cache on and 0 in 5 with it off.
+
+The general form: **a check whose precondition can go false without failing is not a check.**
+Every assertion added since is written so that the absence of what it measures is itself a
+failure, and shown failing against the defect it describes before it is believed.
+
 ## Not addressed
 
 - **The Start button fails SC 1.4.3 at 2.16:1.** Deliberate, excluded from the sweep, and
