@@ -145,6 +145,10 @@ def main() -> int:
     skipped_spacing = 0
     skipped_speed = 0
     used_activities = 0
+    #: One set across every file: `prepare.activity_id` mutates it to keep two filenames with
+    #: the same stem apart. A fresh `set()` per call makes that inert — see the note in
+    #: `street_segments.py`, where the same mistake also double-counted an activity.
+    used_ids: set[str] = set()
 
     for i, path in enumerate(files, 1):
         if i % 50 == 0:
@@ -169,7 +173,7 @@ def main() -> int:
             continue
 
         kept_any = False
-        aid = prepare.activity_id(path, set())
+        aid = prepare.activity_id(path, used_ids)
         for lat, lon, infl, speed, simp, i0, i1, geom in windows_for(track):
             if not np.isfinite(speed) or not (SPEED_BAND_MS[0] <= speed <= SPEED_BAND_MS[1]):
                 skipped_speed += 1
@@ -222,12 +226,15 @@ def main() -> int:
     # line. The relationship is visibly curved -- +4.5% at 2.0-2.5 m/s falling to +1.7% at
     # 4.0-4.5 -- and a straight line through that would leave structure in the residual at
     # both ends, which is exactly where the slow, built-up windows are.
-    order = np.argsort(speed)
-    n_bins = max(8, min(40, len(rows) // 400))
-    bin_of = np.empty(len(rows), dtype=int)
-    bin_of[order] = np.minimum((np.arange(len(rows)) * n_bins) // len(rows), n_bins - 1)
-    expected = np.array([np.median(infl[bin_of == b]) for b in range(n_bins)])
-    residual = infl - expected[bin_of]
+    #
+    # `gn.speed_residuals`, not a copy of it. This was reimplemented inline, and the two had
+    # already diverged: the shared version falls back to one global median when there are
+    # fewer than 800 windows, the inline copy always binned into at least 8. Below 8 windows
+    # that meant medianing empty bins, so every residual came out identically 0 and `r_after`
+    # came out `nan` — and `abs(nan) > 0.1` is False, so the warning below never fired. The
+    # speed control became a silent no-op. Measured divergence at n=300: 6.89 points, against
+    # the 2.35-point spatial spread this whole file exists to measure.
+    residual, n_bins = gn.speed_residuals(speed, infl)
 
     r_after = float(np.corrcoef(speed, residual)[0, 1])
     print(f"\n--- after removing the speed trend ({n_bins} equal-count speed bins) ---")

@@ -234,14 +234,31 @@ def traversals(edges, matched, offset, shape_x, shape_y, raw_x, raw_y, times, fr
         if not (np.isfinite(match_x[p0 : p1 + 1]).all()):
             continue
 
+        # Two index spaces, and mixing them was a real defect.
+        #
+        # `p0`/`p1` index this *chunk*: they come from `enumerate(matched)`, and `match_x` is
+        # built from that same list. But `raw_x`, `raw_y` and `times` are the whole trace, so
+        # reading them needs the offset. Without it, a traversal in the second chunk measured
+        # a different part of the run — on a 5,000-point trace whose second leg was 20 km
+        # away, the traversal reported at points 3999..4999 got recorded_m 2971.5 where the
+        # truth for that span is 10978.9, and −1.0% inflation where it is +265.9%.
+        #
+        # It reached the published output: 85 of 401 activities exceed one chunk, and 174 of
+        # 395 streets carried at least one contaminated crossing, which is what put the
+        # contaminated subset at 32.7% negative inflation against 4.8% for the clean one.
+        # The speed gate in `main` then admits or drops the traversal on `dt` computed here,
+        # so it was selection bias as well as a wrong number. Wrong values persist in
+        # `street-cache.jsonl`, so correcting this needs a `--fresh` rebuild.
+        g0, g1 = offset + p0, offset + p1
+
         # Both lengths over the same point span: the raw positions, and the snapped
         # positions of those same points.
         snapped = gn.plane_length(match_x[p0 : p1 + 1], match_y[p0 : p1 + 1])
-        recorded = gn.plane_length(raw_x[p0 : p1 + 1], raw_y[p0 : p1 + 1])
+        recorded = gn.plane_length(raw_x[g0 : g1 + 1], raw_y[g0 : g1 + 1])
         if snapped < MIN_TRAVERSAL_M or recorded <= 0:
             continue
 
-        t0, t1 = times[p0], times[p1]
+        t0, t1 = times[g0], times[g1]
         dt = t1 - t0 if np.isfinite(t0) and np.isfinite(t1) else float("nan")
         speed = snapped / dt if dt and dt > 0 and np.isfinite(dt) else float("nan")
 
@@ -254,8 +271,8 @@ def traversals(edges, matched, offset, shape_x, shape_y, raw_x, raw_y, times, fr
             "recorded_m": recorded,
             "inflation": recorded / snapped,
             "speed_ms": speed,
-            "i0": int(offset + p0),
-            "i1": int(offset + p1),
+            "i0": int(g0),
+            "i1": int(g1),
             "geometry": np.column_stack([shape_x[b : e + 1], shape_y[b : e + 1]]),
             "shape_span": (int(b), int(e)),
         }
@@ -306,6 +323,15 @@ def main() -> int:
     fresh_count = 0
     skipped_sport = skipped_spacing = 0
 
+    #: One set across every file, which is the whole mechanism.
+    #:
+    #: `prepare.activity_id` mutates this to hand out a distinct id when two filenames reduce
+    #: to the same stem, and its docstring says so. Passing a fresh `set()` per call made it
+    #: inert: `a.gpx` and `a.gpx.gz` both became `a`, the second file hit the resume cache as
+    #: already measured, and the *first* file's traversals were appended twice — doubling one
+    #: activity's weight in every per-way median while `acts` still counted one.
+    used_ids: set[str] = set()
+
     for n, path in enumerate(files, 1):
         print(f"[{n}/{len(files)}] {path.name}", flush=True)
         try:
@@ -330,7 +356,7 @@ def main() -> int:
             skipped_spacing += 1
             continue
 
-        aid = prepare.activity_id(path, set())
+        aid = prepare.activity_id(path, used_ids)
 
         # One record per traversal, in a form that survives a round trip through the cache.
         # The geometry travels as lat/lon pairs: it is what the output needs, and a numpy

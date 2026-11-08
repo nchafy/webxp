@@ -1610,12 +1610,47 @@ def check_keyboard(page) -> list[str]:
 def check_focus_order(page) -> list[str]:
     """Clicking a window raises it above the one that was on top."""
     bad = []
+    # Opens its own Notepad if an earlier check has not. It relied on one being there, which
+    # made it unrunnable alone — and a check that cannot be run by itself cannot be shown to
+    # fail by itself either.
+    if window_of(probe(page), "notepad") is None:
+        launch(page, "notepad")
     state = probe(page)
     notepad = need(state, "notepad")
 
-    body = rect_of(page, f"{win_selector(page, 'notepad')} .window-title")
+    selector = win_selector(page, "notepad")
+    body = rect_of(page, f"{selector} .window-title")
     if body is None:
         return ["focus: Notepad has no laid-out title bar"]
+
+    # What is actually under the pointer, before clicking there.
+    #
+    # This check computes a rect and clicks it blind, so anything covering that point gets the
+    # click and the result reads as a product failure: "active is 'day-02-lines' after clicking
+    # Notepad" is a true sentence about a click that never reached Notepad. It happened, on a
+    # 1040x680 window another check had left open.
+    #
+    # A harness MUST fail when it cannot reach what it was pointed at, and MUST say which kind
+    # of failure it is. This is the harness's problem, not the window manager's.
+    x = body["x"] + 40
+    y = body["y"] + body["h"] / 2
+    covered = page.evaluate(
+        "(() => { const hit = document.elementFromPoint(%f, %f);"
+        " if (!hit) return 'nothing';"
+        " const win = hit.closest('.window');"
+        " const wanted = document.querySelector(%s);"
+        " if (win === wanted) return '';"
+        " const other = win ? (win.querySelector('.window-title span') || {}).textContent : null;"
+        " return other ? `the ${other} window` : 'the desktop'; })()"
+        % (x, y, json.dumps(selector))
+    )
+    if covered:
+        return [
+            f"focus: cannot isolate Notepad's title bar — {covered} is at ({x:.0f}, {y:.0f}). "
+            "This is a harness problem, not a product one: an earlier check left a window over "
+            "the click target."
+        ]
+
     mouse(page, "mousePressed", body["x"] + 40, body["y"] + body["h"] / 2, buttons=1)
     mouse(page, "mouseReleased", body["x"] + 40, body["y"] + body["h"] / 2)
     time.sleep(0.1)
@@ -1839,6 +1874,107 @@ def check_map_challenge_folder(page) -> list[str]:
     return bad
 
 
+#: Window sizes the drill-down panel is opened at, with a long footer, to ask whether it
+#: covers the status bar. All are reachable by dragging a grip (`MIN_W`/`MIN_H` in
+#: `src/window.mjs`), and each was a confirmed failure before `.detail` got `overflow:
+#: hidden`: the head and foot are fixed-height and only the body shrank, so a long footer
+#: pushed content past the sheet's 48% cap and painted over the bar.
+#:
+#: Three, not the sixty-four a full sweep covers: the short-and-wide corner is where the
+#: overhang was largest, and a check that takes a minute gets run.
+PANEL_SIZES = ((420, 140), (240, 200), (820, 200))
+
+
+def day_02_panel_sweep(page) -> list[str]:
+    """Open the drill-down panel and check it covers neither pane of the status bar.
+
+    The rest of `check_day_02` tests one window size with the panel shut, which is exactly
+    the gap this closes: the panel is `position: absolute; z-index: 5` and `.map-bar` is not
+    positioned, so anything overflowing the panel paints over the credit and the live region.
+    """
+    bad = []
+    opened = page.evaluate(
+        "(() => { const w = window.webxp.windows.find((x) => x.programId === 'day-02-lines');"
+        " if (!w || !w.lines) return 'no day 02 window';"
+        " const cell = w.lines.firstCellWithPasses();"
+        " if (!cell) return 'no segment with crossings in the loaded data';"
+        " w.lines.openSegment(cell); return ''; })()"
+    )
+    if opened:
+        # Not a product failure and not silence: the committed synthetic data carries no
+        # street file, so this cannot run on a clean clone. Say which it was.
+        return [f"day 02 panel: skipped — {opened}. Not a layout result either way."]
+    time.sleep(1.0)
+
+    for width, height in PANEL_SIZES:
+        page.evaluate(
+            "(() => { const w = window.webxp.windows.find((x) => x.programId === 'day-02-lines');"
+            " if (w.state === 'max') w.toggleMaximize();"
+            " w.el.style.left = '10px'; w.el.style.top = '10px';"
+            " w.el.style.width = %d + 'px'; w.el.style.height = %d + 'px'; })()"
+            % (width, height)
+        )
+        time.sleep(0.15)
+        hit = page.evaluate(
+            "(() => { const w = window.webxp.windows.find((x) => x.programId === 'day-02-lines');"
+            " const at = (sel) => { const e = w.bodyEl.querySelector(sel);"
+            "   if (!e) return 'missing';"
+            "   const r = e.getBoundingClientRect();"
+            "   if (!r.width || !r.height) return 'zero';"
+            "   const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);"
+            "   return top ? String(top.className || top.tagName) : 'nothing'; };"
+            " return { status: at('.map-status'), credit: at('.map-attrib'),"
+            "   panelShut: !!w.bodyEl.querySelector('.detail').hidden }; })()"
+        )
+        if hit["panelShut"]:
+            bad.append(f"day 02 panel: the panel closed itself at {width}x{height}")
+            continue
+        if "map-status" not in hit["status"]:
+            bad.append(
+                f"day 02 panel: at {width}x{height} the panel's {hit['status']!r} covers the "
+                "status line — a failure reported there would be reported to nobody"
+            )
+        if "map-attrib" not in hit["credit"]:
+            bad.append(
+                f"day 02 panel: at {width}x{height} the panel's {hit['credit']!r} covers the "
+                "credit — attribution is a licence term for three tile sources"
+            )
+
+    # The close box, which is its own defect class.
+    #
+    # `onClose` is where the app undoes what the panel described, and the natural way to
+    # write that calls a routine which itself closes the panel — a cycle. It threw
+    # `RangeError: Maximum call stack size exceeded` out of MapLibre's `setPaintProperty`,
+    # naming neither the panel nor the recursion. The console sweep at the end of the run
+    # catches the error now that something clicks the box; this also asserts the map state
+    # actually went away, which is the reason `onClose` exists.
+    closed = page.evaluate(
+        "(() => { const w = window.webxp.windows.find((x) => x.programId === 'day-02-lines');"
+        " if (w.state === 'max') w.toggleMaximize();"
+        " w.el.style.width = '1000px'; w.el.style.height = '640px';"
+        " const box = w.bodyEl.querySelector('.detail-close');"
+        " if (!box) return { error: 'no close box' };"
+        " box.click();"
+        " return { error: '' }; })()"
+    )
+    if closed.get("error"):
+        return bad + [f"day 02 panel: {closed['error']}"]
+    time.sleep(0.6)
+    after = page.evaluate(
+        "(() => { const w = window.webxp.windows.find((x) => x.programId === 'day-02-lines');"
+        " return { cell: !!w.lines.selectedCell(), ghosts: w.lines.ghostCount(),"
+        "   shut: !!w.bodyEl.querySelector('.detail').hidden }; })()"
+    )
+    if not after["shut"]:
+        bad.append("day 02 panel: the close box did not close the panel")
+    if after["cell"] or after["ghosts"]:
+        bad.append(
+            f"day 02 panel: closing left state on the map (cell={after['cell']}, "
+            f"ghosts={after['ghosts']}) — a halo and a worm with nothing explaining them"
+        )
+    return bad
+
+
 def check_day_02(page) -> list[str]:
     """Day 02 draws its runs, measures one, and the measurement answers the slider.
 
@@ -1977,11 +2113,18 @@ def check_day_02(page) -> list[str]:
                 f"day 02: {state['onStatus']!r} sits on top of the status line — a failure "
                 "reported there would be reported to nobody"
             )
-    if state["creditTop"] is not None and state["areaBottom"] is not None:
-        if state["creditTop"] < state["areaBottom"] - 1:
-            bad.append("day 02: the credit is over the canvas")
+    # A missing credit is a failure, not a skip. This read
+    # `if state["creditTop"] is not None and ...`, which meant deleting `.map-attrib` — the
+    # licence failure itself — made the check report ok. The same mistake as the
+    # `.basemap-root` guard fixed earlier in this file, re-made two screens later.
+    if state["creditTop"] is None:
+        bad.append("day 02: no .map-attrib — the basemap credit is a licence term for three sources")
+    elif state["areaBottom"] is not None and state["creditTop"] < state["areaBottom"] - 1:
+        bad.append("day 02: the credit is over the canvas")
     if not re.search(r"\d", state["status"] or ""):
         bad.append(f"day 02: the status line says {state['status']!r}, with no figure in it")
+
+    bad += day_02_panel_sweep(page)
 
     # Closed before handing the desktop back. This window is 1040x680 and lands on top of
     # almost everything, and `focus order` reads z-indexes and clicks taskbar buttons — it

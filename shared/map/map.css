@@ -221,6 +221,14 @@
   box-shadow: -3px 0 8px rgb(0 0 0 / 25%);
   transform: translateX(100%);
   transition: transform 220ms ease-out;
+  /* Nothing paints outside the panel's own box.
+     The bottom-sheet branch below caps the sheet at 48% of the map area, but the head and
+     the foot are `flex: 0 0 auto` and only the body shrinks — so a long footer pushed the
+     content past that cap, and since the panel is positioned and `.map-bar` is not, the
+     overflow painted over the status line and the licence credit. Measured across 64
+     window sizes within the drag limits: 36 of them covered one or both, as wide as
+     820 x 200, with the footer overhanging by up to 146 px. */
+  overflow: hidden;
 }
 
 .map-root .detail.is-open { transform: translateX(0); }
@@ -246,10 +254,24 @@
   text-shadow: 0 1px 1px rgb(0 0 0 / 45%);
 }
 
-.map-root .detail-body { flex: 1 1 auto; overflow-y: auto; padding: .6rem; }
+/* `min-height: 0` is what lets this actually shrink: a flex item defaults to
+   `min-height: auto`, which refuses to go below its content and is what pushed the foot
+   out of the panel on a short window. */
+.map-root .detail-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: .6rem;
+}
 
+/* The foot scrolls rather than growing without limit. It carries a sentence whose length
+   depends on the data — "N of M crossings drawn on top of each other…" — so it is not
+   something a layout can assume the height of. */
 .map-root .detail-foot {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 50%;
+  overflow-y: auto;
   padding: .45rem .6rem;
   border-top: 1px solid var(--sunk);
   background: var(--face);

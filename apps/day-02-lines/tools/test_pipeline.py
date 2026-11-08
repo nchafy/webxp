@@ -20,6 +20,11 @@ import pathlib
 import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
+#: The app folder. `fixture/` and `data/` live beside `app.mjs`, one level above these
+#: scripts. Anchored on `HERE` this found neither, printed "run make_fixture.py first" and
+#: returned 1 without executing a single `check()` — while the README cited its output as
+#: live evidence.
+APP = HERE.parent
 FAILURES: list[str] = []
 
 # How far the matched length may sit from the route it was generated from. Measured at
@@ -35,8 +40,8 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 
 def main() -> int:
-    fixture = HERE / "fixture"
-    data = HERE / "data"
+    fixture = APP / "fixture"
+    data = APP / "data"
     truth_path = fixture / "truth.json"
     if not truth_path.is_file():
         print(f"no fixture truth at {truth_path}; run make_fixture.py first")

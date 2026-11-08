@@ -461,6 +461,75 @@ def _sabotage_precision():
     return lambda: setattr(gn, "decode_polyline", original)
 
 
+def test_traversal_indices_are_trace_indices() -> None:
+    """A traversal past the first match chunk measures its own stretch of the trace.
+
+    `street_segments.traversals` gets chunk-local point indices and whole-trace position
+    arrays, so the whole-trace reads need the chunk's offset added. They did not have it,
+    and every traversal past point 3,999 was measured against the *first* chunk's
+    coordinates — 174 of 395 streets in the published output carried at least one. Nothing
+    caught it because the numbers stayed plausible.
+
+    The fixture is the shape that makes it visible: a clean straight leg, then a jittered
+    leg far enough away that reading the wrong one cannot pass for noise.
+    """
+    import street_segments as ss
+
+    n_a, n_b = 4000, 1000
+    lat_a = np.full(n_a, 40.0)
+    lon_a = np.linspace(-74.0, -73.99, n_a)
+    rng = np.random.default_rng(11)
+    lat_b = 40.0 + rng.normal(0, 3e-5, n_b)
+    lon_b = np.linspace(-73.8, -73.79, n_b) + rng.normal(0, 3e-5, n_b)
+    lat = np.concatenate([lat_a, lat_b])
+    lon = np.concatenate([lon_a, lon_b])
+    raw_x, raw_y, frame = gn.project(lat, lon)
+    times = np.arange(lat.size, dtype=float)
+
+    # One chunk that starts at the jittered leg, all of it on one way.
+    offset = n_a
+    matched = [
+        {"lat": float(lat[offset + i]), "lon": float(lon[offset + i]), "edge_index": 0}
+        for i in range(n_b)
+    ]
+    edges = [{
+        "way_id": 1, "names": ["Test Street"], "road_class": "residential",
+        "begin_shape_index": 0, "end_shape_index": n_b - 1,
+    }]
+    sx = (lon[offset:] - frame["lon0"]) * frame["kx"]
+    sy = (lat[offset:] - frame["lat0"]) * frame["ky"]
+
+    got = list(ss.traversals(edges, matched, offset, sx, sy, raw_x, raw_y, times, frame))
+    check("traversals: one traversal over the chunk", len(got) == 1, f"got {len(got)}")
+    if not got:
+        return
+    t = got[0]
+
+    # The truth for the span it reports, measured directly from the whole-trace arrays.
+    want = gn.plane_length(raw_x[t["i0"] : t["i1"] + 1], raw_y[t["i0"] : t["i1"] + 1])
+    off_by = abs(t["recorded_m"] - want) / want
+    check(
+        "traversals: recorded length matches the span it reports",
+        off_by < 1e-9,
+        f"recorded {t['recorded_m']:.1f} m vs {want:.1f} m over points "
+        f"{t['i0']}..{t['i1']} ({off_by:.1%} out)",
+    )
+    # This check's own negative control: the defect was reading at the un-offset indices, so
+    # that read must produce a visibly different number on this fixture. If it did not, the
+    # assertion above would pass whether the offset were applied or not.
+    wrong = gn.plane_length(raw_x[0:n_b], raw_y[0:n_b])
+    check(
+        "traversals: the un-offset read is distinguishable",
+        abs(wrong - want) / want > 0.5,
+        f"correct {want:.1f} m, un-offset {wrong:.1f} m",
+    )
+    check(
+        "traversals: the reported span is the chunk's own",
+        (t["i1"] - t["i0"]) == n_b - 1,
+        f"span {t['i0']}..{t['i1']}, want {offset}..{offset + n_b - 1}",
+    )
+
+
 TESTS = [
     test_degree_lengths,
     test_projection_round_trip,
@@ -472,6 +541,7 @@ TESTS = [
     test_simplification_recovers_truth,
     test_distance_unit_resolution,
     test_activity_id_collisions,
+    test_traversal_indices_are_trace_indices,
     test_file_parsers,
 ]
 

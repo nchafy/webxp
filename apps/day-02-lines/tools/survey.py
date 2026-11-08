@@ -23,8 +23,11 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import gpsnoise as gn  # noqa: E402
 import prepare  # noqa: E402
 
-#: Matches `match_trace`'s default, so the request estimate is the real one.
-CHUNK = 1500
+#: Imported, not copied. This read 1500 under a comment claiming it matched `match_trace`'s
+#: default, which is 15000 — so the printed request count and the sustained-load estimate
+#: came out 10x high, and that figure exists to inform a politeness decision about a
+#: volunteer-run service.
+CHUNK = gn.MATCH_CHUNK
 
 
 def main() -> int:

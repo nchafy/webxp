@@ -68,8 +68,10 @@ paint override can put back a layer that was never in the style. positron is a
 deliberately monochrome canvas style; it is the right basemap for a choropleth and
 the wrong one for a general-purpose map.
 
-`scripts/check.py` asserts that all three parks render green space, so this cannot
-regress quietly.
+This was measured with `scripts/inspect_style.py`, which dumps a style's layer ids: compare
+`positron` and `liberty` before doubting it. The 30daymapchallenge repo's harness asserted
+the three parks render green; webxp's does not, so this one *can* regress quietly and is
+listed under "Not checked" below.
 
 ### The satnav palette
 
@@ -125,9 +127,16 @@ the credit disappeared the moment anything was selected, on every viewport, and 
 caught it for a day. A status bar cannot be covered at any size and has no stacking order
 to get wrong — and an XP window had one anyway.
 
-`scripts/check.py` now asserts this with `elementFromPoint` at three points across the
-strip, with the panel both shut and open. That question — "what would the reader's cursor
+`scripts/check.py` asserts it with `elementFromPoint` at the midpoint of each pane: once in
+`basemap app` with the panel shut, and in `day 02 lines` at three window sizes with the
+panel open and carrying its longest footer. That question — "what would the reader's cursor
 actually hit here?" — is the one a `visibility` or `z-index` comparison does not answer.
+
+It is also asserted *geometrically*: the credit must start below `.map-area`. The positional
+check alone is not enough, and the gap is instructive. Floating the credit back into the
+corner passed `elementFromPoint`, because the base map app docks nothing over it — the bug
+survived the check written for it. An assertion that only holds for the app that happens to
+be open is not an assertion about the invariant.
 
 ## Writing a map app
 
@@ -228,6 +237,30 @@ one check, which is how that is done.
 
 `scripts/inspect_style.py` dumps a basemap style's layer ids, which is how the palette's keys
 were measured rather than guessed.
+
+### Not checked
+
+Written down because an unlisted gap reads as coverage, and "is that covered?" answered with
+a confident yes is worse than answered with no.
+
+- **The parks.** Nothing asserts Central Park, Prospect Park and Flushing Meadows render
+  green space, so the `positron` finding above can regress quietly. Re-measure with
+  `inspect_style.py`.
+- **The 3D buildings and the compass.** The pitch gate (`building-3d` showing at ≥12° and
+  hiding below 8°) and the rose's `-bearing` rotation are both load-bearing and both
+  unasserted here. A needle rotated the wrong way looks plausible and points at the wrong
+  quarter of the sky.
+- **The JS/Python geometry pair.** `apps/day-02-lines/geo.mjs` and `tools/gpsnoise.py`
+  implement the same Douglas-Peucker and the same local-plane length, and they are supposed
+  to agree to the millimetre. That agreement has been measured by hand (≤0.5 mm across all
+  twelve rungs, identical kept-point counts) but no check enforces it, so a divergence would
+  be found by noticing a wrong number on screen.
+- **A clean clone's segment feature.** `apps/day-02-lines/data/` carries no
+  `street-noise.json`, so on a fresh checkout the choropleth, its legend, the drill-down and
+  the ghost worm never execute. `day 02 lines` says so rather than passing silently, but the
+  code path is unexercised in CI terms.
+- **An app's own stylesheet.** `app styles` only tests Notepad, so a scoping mistake in any
+  other app's CSS is not caught.
 
 A harness that cannot reach what it was pointed at must fail rather than pass. Two ways it
 has not: `http.server` exits immediately when its port is taken, the readiness probe then

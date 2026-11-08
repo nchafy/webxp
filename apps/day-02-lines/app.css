@@ -24,7 +24,7 @@
    because `::-webkit-slider-thumb` and `::-moz-range-thumb` cannot be combined in one
    rule -- a selector list containing an unknown pseudo-element is dropped whole, so
    merging them would silently style neither. */
-.trackbar { display: flex; align-items: center; gap: .45rem; margin-top: .4rem; }
+.app-day-02-lines .trackbar { display: flex; align-items: center; gap: .45rem; margin-top: .4rem; }
 
 .app-day-02-lines .trackbar input[type="range"] {
   flex: 1 1 10rem;
@@ -84,21 +84,21 @@
 }
 
 /* The reading the slider produces. Big enough to be the answer rather than a caption. */
-.readout { margin: .45rem 0 0; font-variant-numeric: tabular-nums; }
+.app-day-02-lines .readout { margin: .45rem 0 0; font-variant-numeric: tabular-nums; }
 
-.readout b { font-size: 15px; }
+.app-day-02-lines .readout b { font-size: 15px; }
 
-.readout .delta { color: #8a2a12; font-weight: 700; }
+.app-day-02-lines .readout .delta { color: #8a2a12; font-weight: 700; }
 
-.readout .sub { display: block; font-size: 10px; color: var(--muted); }
+.app-day-02-lines .readout .sub { display: block; font-size: 10px; color: var(--muted); }
 
 /* The two lines' key. The swatch is a line, not a box, because that is what it stands
    for on the map. */
-.key { margin: .4rem 0 0; display: grid; gap: .25rem; }
+.app-day-02-lines .key { margin: .4rem 0 0; display: grid; gap: .25rem; }
 
-.key div { display: flex; align-items: center; gap: .4rem; font-size: 11px; }
+.app-day-02-lines .key div { display: flex; align-items: center; gap: .4rem; font-size: 11px; }
 
-.key i { display: block; width: 18px; height: 0; border-top-width: 3px; border-top-style: solid; }
+.app-day-02-lines .key i { display: block; width: 18px; height: 0; border-top-width: 3px; border-top-style: solid; }
 
 /* The segment key. The swatch is a line because the marks are lines, and it carries the
    class's own width as well as its colour -- width is the second channel on the map, so a
@@ -112,7 +112,7 @@
   outline: 1px solid #14161a;
 }
 
-.noise-legend div { font-variant-numeric: tabular-nums; }
+.app-day-02-lines .noise-legend div { font-variant-numeric: tabular-nums; }
 
 /* A row in the detail panel that is a target: one crossing of a segment, or the way back
    up. Flat and full-width, because a column of era-correct bevelled buttons reads as a

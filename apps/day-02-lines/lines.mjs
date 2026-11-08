@@ -92,18 +92,18 @@ const FULL = 1;
 
 const NOISE = 'noise';
 
-/* There is no scrim any more, and that is a fix rather than a simplification.
+/* Two surfaces, at two scales, and the scrim is the one that needs placing carefully.
  *
- * The first version dimmed the basemap with a `background` layer so the ramp would have a
- * deterministic surface to be validated against. Reading the live layer order showed why
- * that could not work: this page's overlay goes in at `ctx.beforeId`, which the base map
- * chooses so that *place labels stay above the data* -- and that left fifty basemap layers
- * above the scrim. Bridges, one-way arrows and every label painted at full brightness over
- * a dimmed map, which is exactly the wrong-order mess it looked like.
+ * Each coloured line gets its own casing, which gives that mark a known surface without
+ * touching anything else's stacking. That is the local half and the rest of this file works
+ * the same way.
  *
- * A casing under each coloured line does the same job locally and correctly: it gives every
- * mark its own known surface without touching anything else's stacking. The rest of this
- * page already works that way. */
+ * The scrim is the global half: it dims the whole basemap while the segments are up, so an
+ * olive-and-yellow satnav palette stops competing with a diverging ramp. It has to go in
+ * *above* every basemap layer, not at `ctx.beforeId`. `beforeId` is chosen so place labels
+ * stay above the data, which is right for a line and wrong for a scrim — added there it
+ * left fifty basemap layers on top of it, and bridges, one-way arrows and every label
+ * painted at full brightness over a dimmed map. */
 const NOISE_CASING_INK = '#14161a';
 const NOISE_SCRIM = 'noise-scrim';
 
@@ -166,6 +166,31 @@ const GHOSTS = 'ghosts';
 //: How many crossings the worm draws. A cap, not a sample of convenience: the panel still
 //: lists the extremes, and the ghosts are there to be *looked* at.
 const GHOST_CAP = 12;
+
+/**
+ * `cap` items spread evenly across `items`, both ends included.
+ *
+ * The worm exists to show the *spread* of a street's crossings — the panel says so: "the
+ * width of that bundle is the noise". `passes` arrives sorted noisiest-first
+ * (`street_segments.py` writes `sorted(..., key=-adjusted_pts)`), so taking the first
+ * `GHOST_CAP` drew the worst twelve and the bundle's width was the width of the tail.
+ *
+ * Measured on the 401-activity export: 193 of 395 streets carry more than twelve crossings,
+ * and on the worst (197 crossings) the drawn twelve averaged +20.76 adjusted points against
+ * +4.84 across all of them — the overlay overstated that street's noise by 4.3x, which is
+ * the one number on the page a reader is invited to judge by eye.
+ *
+ * Evenly spaced over the sorted list is a quantile sample: it keeps both extremes and the
+ * middle, so the bundle spans what the street actually did. Deterministic, so the same
+ * segment draws the same worm twice.
+ */
+function evenSample(items, cap) {
+  if (items.length <= cap) return items;
+  const step = (items.length - 1) / (cap - 1);
+  const out = [];
+  for (let i = 0; i < cap; i += 1) out.push(items[Math.round(i * step)]);
+  return out;
+}
 
 //: Low enough that one ghost is a hint and a dozen stacked is solid, so the overlay
 //: encodes how many passes agreed as well as where they did.
@@ -392,10 +417,23 @@ export async function startDay({ win, chrome }) {
 
     //: `base.say` owns the status region -- it is what `createBaseMap` uses for its own
     //: messages, and writing `statusEl.textContent` beside it was a second renderer of one
-    //: line. `statusEl` is kept so a check can read it back.
+    //: line.
+    //:
+    //: Writes straight to the element until the map exists. `base` is a `const` declared
+    //: further down, so an `if (base)` here before that line throws `ReferenceError` on the
+    //: temporal dead zone rather than falling through -- which made the fallback branch it
+    //: was written for unreachable twice over, since `statusEl` was also still null.
+    //: `chrome.status` is in scope from the first line and is the same element.
     function setStatus(text) {
-      if (base) base.say(text);
-      else if (statusEl) statusEl.textContent = text;
+      try {
+        if (base) {
+          base.say(text);
+          return;
+        }
+      } catch {
+        // Not yet initialised; fall through to the element.
+      }
+      if (chrome.status) chrome.status.textContent = text;
     }
 
     function fmtKm(metres) {
@@ -537,8 +575,16 @@ export async function startDay({ win, chrome }) {
 
       const box = boundsOfCoords(chosen.flatMap((f) => f.geometry.coordinates));
       if (!box) return;
-      const overlays = document.querySelector('.overlays > *');
-      const gutter = overlays ? Math.ceil(overlays.getBoundingClientRect().width) + 24 : 24;
+      // This window's own control column, not the first one in the document.
+      //
+      // It was `document.querySelector('.overlays > *')`, which is what `docs/apps.md`
+      // forbids by name: with the Base map window also open it resolved inside *that*
+      // window and returned its basemap card. Measured — open Base map, narrow it to
+      // 260 px, then open this day: the gutter came out 250 where this window's own card
+      // is 264, so the camera was padded by the wrong amount and the cells sat behind the
+      // cards. It kept resolving into the other window even after that one was minimised.
+      const column = chrome.overlays.firstElementChild;
+      const gutter = column ? Math.ceil(column.getBoundingClientRect().width) + 24 : 24;
       const canvas = map.getCanvas();
       // On a narrow viewport the cards take most of the width, so a left gutter would leave
       // nothing to draw in; there, pad evenly and accept the overlap.
@@ -559,7 +605,7 @@ export async function startDay({ win, chrome }) {
      * and they would be a second copy of coordinates that already exist -- fine until the grid
      * is rebuilt against changed data and the two disagree. `docCache` makes a revisit free. */
     async function drawGhosts(map, passes) {
-      const wanted = passes.slice(0, GHOST_CAP);
+      const wanted = evenSample(passes, GHOST_CAP);
       const results = await Promise.allSettled(wanted.map((p) => loadFocus(p.activity)));
       ghostSpans = wanted.filter((_p, i) => results[i].status === 'fulfilled');
       const source = map.getSource(GHOSTS);
@@ -625,6 +671,13 @@ export async function startDay({ win, chrome }) {
       const rows = (summary && summary.activities) || [];
       let recorded = 0;
       let matched = 0;
+      //: The recorded total over *only* the rows that also matched, which is the one the
+      //: percentage is allowed to use. Dividing the all-rows total by the matched total
+      //: compares different sets of activities: with 9 of 10 runs snapping, 9 km recorded
+      //: against 8.5 km matched plus one unmatched 10 km run, the card read "+123.5%" where
+      //: the truth was +5.9%. Both totals are still shown in full, because the headline is
+      //: "how far did I record", not "how far of it could be matched".
+      let recordedWhereMatched = 0;
       let strava = 0;
       let matchedCount = 0;
       let stravaCount = 0;
@@ -632,6 +685,7 @@ export async function startDay({ win, chrome }) {
         recorded += row.recorded_m || 0;
         if (row.matched_m) {
           matched += row.matched_m;
+          recordedWhereMatched += row.recorded_m || 0;
           matchedCount += 1;
         }
         if (row.strava_m) {
@@ -639,7 +693,15 @@ export async function startDay({ win, chrome }) {
           stravaCount += 1;
         }
       }
-      return { count: rows.length, recorded, matched, strava, matchedCount, stravaCount };
+      return {
+        count: rows.length,
+        recorded,
+        recordedWhereMatched,
+        matched,
+        strava,
+        matchedCount,
+        stravaCount,
+      };
     }
 
     /* The whole history, from figures `prepare.py` computed at full resolution. Never from the
@@ -657,9 +719,11 @@ export async function startDay({ win, chrome }) {
       const sub = document.createElement('span');
       sub.className = 'sub';
       const bits = [];
-      if (a.matchedCount) {
-        const gap = ((a.recorded / a.matched - 1) * 100).toFixed(1);
-        bits.push(`snapped to the map ${fmtBigKm(a.matched)} — recording is +${gap}%`);
+      if (a.matchedCount && a.matched > 0) {
+        // Over the matched activities only, on both sides of the division.
+        const gap = ((a.recordedWhereMatched / a.matched - 1) * 100).toFixed(1);
+        const sign = gap >= 0 ? '+' : '';
+        bits.push(`snapped to the map ${fmtBigKm(a.matched)} — recording is ${sign}${gap}%`);
       }
       if (a.stravaCount) {
         bits.push(`Strava says ${fmtBigKm(a.strava)}`);
@@ -719,12 +783,14 @@ export async function startDay({ win, chrome }) {
 
     //: Coalesce slider input into one update per frame. Dragging fires `input` far more often
     //: than the display can change.
-    let pending = false;
+    //: The handle is kept so `onClose` can cancel it. Closing the window within one frame of
+    //: a slider drag otherwise ran `applyTolerance` against a map that `destroy()` had
+    //: already removed.
+    let pendingFrame = 0;
     function scheduleUpdate(map) {
-      if (pending) return;
-      pending = true;
-      requestAnimationFrame(() => {
-        pending = false;
+      if (pendingFrame) return;
+      pendingFrame = requestAnimationFrame(() => {
+        pendingFrame = 0;
         applyTolerance(map);
       });
     }
@@ -898,8 +964,9 @@ export async function startDay({ win, chrome }) {
         `Segment at ${props.lat.toFixed(4)}, ${props.lon.toFixed(4)}`,
         groups,
         drawn
-          ? `${drawn} of ${passes.length} crossings drawn on top of each other. The width of ` +
-            `that bundle is the noise — pick one to pull it to the front.`
+          ? `${drawn} of ${passes.length} crossings drawn on top of each other, spread evenly ` +
+            `from the noisiest to the quietest. The width of that bundle is the noise — pick ` +
+            `one to pull it to the front.`
           : 'No individual crossings were kept for this segment.'
       );
     }
@@ -1149,10 +1216,10 @@ export async function startDay({ win, chrome }) {
                 'line-join': 'round',
                 visibility: showNoise ? 'visible' : 'none',
               },
-              // Each segment's own surface. This is what replaced a full-screen scrim: the
-              // scrim sat below fifty basemap layers, so bridges and labels painted over it at
-              // full brightness, and the ramp it was meant to give a surface to was being
-              // judged against a colour that was not actually behind the marks.
+              // Each segment's own surface, so the ramp is judged against a known colour
+              // rather than against whatever basemap happens to be under that street. The
+              // scrim handles the same problem globally; this one is per-mark and is what
+              // makes the ramp's contrast ratios mean anything.
               paint: { 'line-color': NOISE_CASING_INK, 'line-width': noiseCasingExpression() },
             }
           );
@@ -1227,9 +1294,12 @@ export async function startDay({ win, chrome }) {
     });
 
     if (!base) {
-      // `createBaseMap` has already put the reason in the status line inside the frame it
-      // built, so returning that frame shows it rather than an empty window.
-      return win.bodyEl.firstElementChild;
+      // `createBaseMap` has already written the reason into the status line, which is in the
+      // bar and already on screen, so there is nothing to insert — and nothing to return:
+      // this runs from `ready`, whose return value the desktop discards. It used to
+      // `return win.bodyEl.firstElementChild`, which was both dead and, by then, the
+      // loading marquee rather than the map.
+      return;
     }
 
     // A window closed during the await never gets `setContent`, so `onClose` has already
@@ -1257,7 +1327,15 @@ export async function startDay({ win, chrome }) {
 
     // The program owns what it started: webxp destroys the window's DOM but knows nothing
     // about a WebGL context or a ResizeObserver.
-    win.onClose = () => base.destroy();
+    win.onClose = () => {
+      // The frame first: a queued `applyTolerance` would otherwise run against a map that
+      // `destroy()` has already removed.
+      if (pendingFrame) {
+        cancelAnimationFrame(pendingFrame);
+        pendingFrame = 0;
+      }
+      base.destroy();
+    };
 
     {
       const { map } = base;
@@ -1442,9 +1520,14 @@ export async function startDay({ win, chrome }) {
       });
 
       if (panel) {
-        panel.onClose = () => {
-          if (focus) clearSelection(map);
-        };
+        // Unconditionally, not `if (focus)`.
+        //
+        // A segment can be opened with no run selected, which sets `selectedCell` and draws
+        // the ghosts but leaves `focus` null. Closing the panel then left the white halo on
+        // the segment and the worm on the map with nothing on screen explaining either, and
+        // only a later `clearSelection` removed them. `clearSelection` already handles both
+        // halves and is safe when there is nothing to clear.
+        panel.onClose = () => clearSelection(map);
       }
     }
 

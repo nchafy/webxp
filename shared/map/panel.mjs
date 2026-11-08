@@ -26,6 +26,9 @@ export class Panel {
     this.foot = root.querySelector('.detail-foot');
     this.timer = null;
     this.onClose = null;
+    //: True while `onClose` is running, so a `close()` from inside it is a no-op. See
+    //: `close`.
+    this.closing = false;
 
     const close = root.querySelector('.detail-close');
     if (close) close.addEventListener('click', () => this.close());
@@ -60,15 +63,35 @@ export class Panel {
     });
   }
 
+  /**
+   * Close the panel, and tell the owner once.
+   *
+   * Re-entrant by necessity, not by taste. `onClose` is where an app undoes whatever the
+   * panel was describing, and the natural way to write that is to call the app's own
+   * "clear everything" routine — which itself closes the panel, because closing it is part
+   * of clearing. That is a cycle: `close` -> `onClose` -> clear -> `close`.
+   *
+   * `hidden` cannot break it, because it is only set when the slide finishes; for those
+   * 220 ms the panel is still open by every test available. So a flag is set *before*
+   * `onClose` runs and a second call during it returns immediately. Without this, clicking
+   * the panel's close box threw `RangeError: Maximum call stack size exceeded` out of
+   * MapLibre's `setPaintProperty`, which named neither the panel nor the cycle.
+   */
   close() {
-    if (this.root.hidden) return;
+    if (this.root.hidden || this.closing) return;
+    this.closing = true;
     this.root.classList.remove('is-open');
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = setTimeout(() => {
       this.root.hidden = true;
       this.timer = null;
     }, SLIDE_MS);
-    if (this.onClose) this.onClose();
+    try {
+      if (this.onClose) this.onClose();
+    } finally {
+      // Cleared in `finally` so a throwing `onClose` cannot wedge the panel shut.
+      this.closing = false;
+    }
   }
 
   get isOpen() {

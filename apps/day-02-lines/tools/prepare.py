@@ -24,6 +24,7 @@ import argparse
 import csv
 import json
 import pathlib
+import subprocess
 import sys
 import traceback
 
@@ -33,6 +34,18 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import gpsnoise as gn  # noqa: E402
 
 HERE = pathlib.Path(__file__).resolve().parent
+
+#: The app folder, which is this script's parent -- not its own directory.
+#:
+#: These scripts live in `tools/` and the data lives one level up, beside `app.mjs`, because
+#: that is where the browser fetches it from: `lines.mjs` resolves `private/` and `data/`
+#: against its own module URL. Anchoring on `HERE` instead put the output in
+#: `tools/private/`, which `.gitignore`'s `apps/day-*/private/` does not match -- so the
+#: documented command wrote 401 real traces to a *tracked* path while its own help text said
+#: the destination was ignored. Verified with `git check-ignore`: `tools/private/` exits 1,
+#: `private/` exits 0.
+APP = HERE.parent
+
 ACTIVITY_SUFFIXES = (".gpx", ".fit", ".tcx", ".gpx.gz", ".fit.gz", ".tcx.gz")
 
 #: Where a real run writes, and where the page looks first.
@@ -46,8 +59,44 @@ ACTIVITY_SUFFIXES = (".gpx", ".fit", ".tcx", ".gpx.gz", ".fit.gz", ".tcx.gz")
 #: So: `data/` holds the synthetic fixture and is committed, `private/` holds real output
 #: and cannot be, and `map.mjs` tries `private/` first and falls back to `data/`. Writing
 #: into `data/` now takes an explicit `--out`, which is what regenerating the fixture does.
-PRIVATE_OUT = HERE / "private"
-FIXTURE_OUT = HERE / "data"
+PRIVATE_OUT = APP / "private"
+FIXTURE_OUT = APP / "data"
+
+
+def destination_would_be_published(path: pathlib.Path) -> bool:
+    """Whether writing real traces to `path` could end up in a commit.
+
+    Asks `git check-ignore` rather than matching the path against a pattern here, because
+    the pattern and the path have already disagreed once: the default pointed at
+    `tools/private/`, which `apps/day-*/private/` does not match, while the help text said
+    it was ignored. A directory is probed through a file inside it, since `check-ignore`
+    answers about paths and the rule that matters is the one covering the files that land
+    there.
+
+    Three answers, and the middle one is the only refusal:
+
+    - ignored by git -> safe, it cannot be committed from here;
+    - tracked by git -> **published**, this is the case worth refusing;
+    - not a repository at all -> safe, there is nothing to commit it to. A path under
+      `/tmp` or a home directory is a legitimate destination and must not be blocked.
+
+    A git that will not run is treated as "not a repository": it cannot be the case that
+    the path is tracked, because nothing here is tracking anything.
+    """
+    probe = path / ".ignore-probe"
+    # Run from an existing ancestor: `check-ignore` needs a cwd inside the work tree, and
+    # the destination itself may not exist yet.
+    cwd = next((p for p in [path, *path.parents] if p.is_dir()), None)
+    try:
+        result = subprocess.run(
+            ["git", "check-ignore", "-q", str(probe)],
+            cwd=cwd,
+            capture_output=True,
+        )
+    except OSError:
+        return False
+    # 0 = ignored, 1 = not ignored, 128 = not a repository or another git error.
+    return result.returncode == 1
 
 #: Decimal places the coordinates are written at, and quantised to *before* anything is
 #: measured. About 0.11 m at this latitude -- an order of magnitude finer than the
@@ -285,6 +334,21 @@ def main() -> int:
         print(f"writing to {out} -- this directory is COMMITTED. Only the fixture belongs here.")
     else:
         print(f"writing to {out}")
+        # And then ask git, rather than trusting the path to match a pattern.
+        #
+        # The constant pointed at `tools/private/` for a while, which `apps/day-*/private/`
+        # does not match: the help text said "gitignored", `git` disagreed, and the
+        # documented command would have published 401 home-to-home traces. A string that
+        # looks right is not the same as a destination git will refuse to track, so this
+        # asks the only authority on the question.
+        if destination_would_be_published(out):
+            raise SystemExit(
+                f"refusing to write real activity data to {out}\n"
+                "  That path is inside a git repository and is not ignored, so the next\n"
+                "  `git add` would publish it. An activity trace records where someone\n"
+                "  lives and when they are out.\n"
+                "  Add it to .gitignore, or pass --out somewhere outside the repository."
+            )
 
     args.out.mkdir(parents=True, exist_ok=True)
     measured: list[tuple[pathlib.Path, gn.Measured]] = []
@@ -349,22 +413,37 @@ def main() -> int:
     # resolved against an inflated reference cannot separate kilometres from miles.
     n_matched = sum(1 for _p, m in measured if m.matched_m)
     ref_kind = "matched" if n_matched >= max(3, len(measured) // 2) else "recorded"
-    if all_dist_cols:
+    if all_dist_cols and ref_kind == "recorded":
+        # Refused, not warned-and-resolved.
+        #
+        # The only reference left is the recorded length, which is inflated by exactly the
+        # noise this tool measures. For a median inflation anywhere in roughly [1.46, 1.79],
+        # miles is the single unit that fits within UNIT_TOLERANCE and was accepted with a
+        # confident-looking "Distance: miles" line — so a kilometres column came out 1.609x
+        # wrong, and that number reaches a reader as "Strava says N km".
+        #
+        # Printing a warning and resolving anyway is the worst of both: the run looks
+        # discriminating, because a second column in the same output genuinely was refused.
+        # An absent figure is honest; a figure out by the miles-per-kilometre factor is not.
+        print("\nNot resolving the CSV distance columns.")
+        print(f"  Only {n_matched} of {len(measured)} activities matched, so the only")
+        print("  reference available is the recorded length -- which is inflated by the very")
+        print("  noise this measures. Against it, kilometres and miles are indistinguishable")
+        print("  (a km column lands about 1.6x out and reads as a clean fit for miles).")
+        print("  No Strava distance will be written. Re-run with matching to resolve it.")
+    elif all_dist_cols:
         print(f"\nResolving CSV distance columns against the {ref_kind} length:")
-        if ref_kind == "recorded":
-            print("  warning: too few activities matched, so the reference is the inflated")
-            print("  recorded length. Kilometres and miles may be indistinguishable.")
-    for col in sorted(all_dist_cols):
-        pairs = []
-        for p, m in measured:
-            v = (csv_rows.get(p.name, {}).get("distances") or {}).get(col)
-            ref = m.matched_m if ref_kind == "matched" else m.recorded_m
-            if v is not None and ref and ref > 0:
-                pairs.append((v, ref))
-        scale, note = resolve_distance_unit(pairs, col, ref_kind)
-        print(f"  {note}")
-        if scale:
-            scale_for[col] = scale
+        for col in sorted(all_dist_cols):
+            pairs = []
+            for p, m in measured:
+                v = (csv_rows.get(p.name, {}).get("distances") or {}).get(col)
+                ref = m.matched_m
+                if v is not None and ref and ref > 0:
+                    pairs.append((v, ref))
+            scale, note = resolve_distance_unit(pairs, col, ref_kind)
+            print(f"  {note}")
+            if scale:
+                scale_for[col] = scale
     if all_dist_cols and not scale_for:
         print("  no distance column resolved: the page will show no Strava figure.")
 
