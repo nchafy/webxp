@@ -28,15 +28,22 @@
  *           .card           the basemap switcher and Tilt
  *           .overlay-cards  where an app appends its own
  *           .map-status     a live region, under the cards so it cannot cover one
- *         .map-zoom         zoom pair and compass, bottom-left over the canvas
+ *         .map-zoom         zoom pair and compass, bottom-right over the canvas
  *         .detail           the drill-down panel, docked right, hidden until used
- *       .map-attrib         the credit — a row of the column, NOT a layer over the map
+ *       .map-bar            the status bar — a row of the column, NOT a layer over the map
+ *         .map-status       a live region: what the map is doing, and what failed
+ *         .map-attrib       the credit
  *
- * The credit's position is a licence term for all three basemap sources. It floated over
- * the canvas at bottom-right once, which is where `.detail` docks one layer above, so the
- * credit vanished the moment anything was selected — on every viewport, and nothing caught
- * it for a day. A row of the column cannot be covered and has no stacking order to get
- * wrong. It MUST NOT be moved back over the canvas, hidden, truncated, or made dismissable.
+ * The bar is the part that must not be rearranged. The credit is a licence term for all
+ * three basemap sources, and it floated over the canvas at bottom-right once — which is
+ * where `.detail` docks one layer above, so it vanished the moment anything was selected, on
+ * every viewport, and nothing caught it for a day. The status line had the same problem by a
+ * different route: inside the scrolling overlay column it went below the fold once an app had
+ * four cards, so a failure was reported to nobody.
+ *
+ * A row of the column cannot be covered, cannot be scrolled away, and has no stacking order
+ * to get wrong. Neither pane MUST be moved back over the canvas, hidden, truncated, or made
+ * dismissable.
  */
 
 /* This module imports nothing, and that is deliberate.
@@ -121,7 +128,11 @@ function compass() {
  *        leaving it is six nodes.
  * @returns {{root: HTMLElement, area: HTMLElement, overlays: HTMLElement,
  *            cards: HTMLElement, card: HTMLElement, status: HTMLElement,
- *            detail: HTMLElement|null}}
+ *            detail: HTMLElement|null, instance: number}}
+ *          `instance` is a serial for this subtree. An app that needs an id — `label[for]`
+ *          and `aria-describedby` take one — must suffix it, because two windows of one app
+ *          would otherwise mint the same id twice and a label would point at the other
+ *          window's control.
  */
 export function buildMapChrome(opts = {}) {
   const tilt = opts.tilt !== false;
@@ -174,15 +185,9 @@ export function buildMapChrome(opts = {}) {
 
   overlays.append(card);
 
-  // Where an app appends its own cards: after the basemap card, before the status line, so
-  // the live region can never end up on top of a control whose size changed.
+  // Where an app appends its own cards.
   const cards = el('div', 'overlay-cards');
   overlays.append(cards);
-
-  const status = el('p', 'map-status');
-  status.setAttribute('role', 'status');
-  status.setAttribute('aria-live', 'polite');
-  overlays.append(status);
 
   area.append(overlays);
 
@@ -219,11 +224,21 @@ export function buildMapChrome(opts = {}) {
     area.append(detail);
   }
 
-  // Every basemap source requires attribution, so this is a licence term and not a nicety:
-  // nothing is allowed to cover it. Filled by `basemap.mjs`, which owns the per-source
-  // credit. It is a row of the root's column and a sibling of `.map-area`, which is what
-  // makes it uncoverable — see the structure note at the top of this file.
-  root.append(el('p', 'map-attrib'));
+  // The status bar: what the map is saying, and who the tiles belong to. A row of the root's
+  // column and a sibling of `.map-area`, which is what makes both uncoverable — see the
+  // structure note at the top of this file.
+  //
+  // The status line was inside `.overlays` to begin with, under the cards. That column
+  // scrolls, so day 02's four cards pushed the live region below the fold: it still held the
+  // right text and a reader never saw it, which for "the map could not start" is a silent
+  // failure. A bar cannot be scrolled away or covered.
+  const bar = el('div', 'map-bar');
+  const status = el('p', 'map-status');
+  status.setAttribute('role', 'status');
+  status.setAttribute('aria-live', 'polite');
+  // Filled by `basemap.mjs`, which owns the per-source credit.
+  bar.append(status, el('p', 'map-attrib'));
+  root.append(bar);
 
-  return { root, area, overlays, cards, card, status, detail };
+  return { root, area, overlays, cards, card, status, bar, detail, instance: n };
 }

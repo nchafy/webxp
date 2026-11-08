@@ -1,0 +1,62 @@
+{
+ "202610200000.gpx.gz": {
+  "name": "Riverside morning",
+  "sport": "Run",
+  "route_m": 1540.0,
+  "recorded_m": 2165.4,
+  "spacing_m": 2.5,
+  "sigma_m": 1.5,
+  "predicted_inflation": 1.404,
+  "points": 617
+ },
+ "202610200001.gpx.gz": {
+  "name": "Central Park loop",
+  "sport": "Run",
+  "route_m": 3452.0,
+  "recorded_m": 5925.2,
+  "spacing_m": 3.0,
+  "sigma_m": 2.5,
+  "predicted_inflation": 1.7316,
+  "points": 1151
+ },
+ "202610200002.gpx.gz": {
+  "name": "Battery to Tribeca",
+  "sport": "Walk",
+  "route_m": 2048.0,
+  "recorded_m": 7553.3,
+  "spacing_m": 1.5,
+  "sigma_m": 3.0,
+  "predicted_inflation": 3.6548,
+  "points": 1362
+ },
+ "202610200003.gpx.gz": {
+  "name": "Prospect Park easy",
+  "sport": "Run",
+  "route_m": 1131.0,
+  "recorded_m": 1544.2,
+  "spacing_m": 3.5,
+  "sigma_m": 2.0,
+  "predicted_inflation": 1.3677,
+  "points": 323
+ },
+ "202610200004.gpx.gz": {
+  "name": "Hudson River ride",
+  "sport": "Ride",
+  "route_m": 4816.0,
+  "recorded_m": 5775.1,
+  "spacing_m": 6.0,
+  "sigma_m": 2.5,
+  "predicted_inflation": 1.1932,
+  "points": 802
+ },
+ "202610200005.gpx.gz": {
+  "name": "Flushing Meadows trees",
+  "sport": "Run",
+  "route_m": 1178.0,
+  "recorded_m": 2937.0,
+  "spacing_m": 3.0,
+  "sigma_m": 4.0,
+  "predicted_inflation": 2.5266,
+  "points": 393
+ }
+}

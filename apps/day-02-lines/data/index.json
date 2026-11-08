@@ -1,0 +1,83 @@
+{
+ "activities": [
+  {
+   "id": "202610200000",
+   "name": "Riverside morning",
+   "sport": "Run",
+   "date": "Oct 20, 2026, 07:30:00 AM",
+   "points": 617,
+   "step_m": 3.43,
+   "duration_s": 616.0,
+   "recorded_m": 2167.125,
+   "matched_m": 1532.064,
+   "strava_m": 1540.0,
+   "match_note": ""
+  },
+  {
+   "id": "202610200001",
+   "name": "Central Park loop",
+   "sport": "Run",
+   "date": "Oct 21, 2026, 08:30:00 AM",
+   "points": 1151,
+   "step_m": 4.97,
+   "duration_s": 1150.0,
+   "recorded_m": 5925.804,
+   "matched_m": 3449.522,
+   "strava_m": 3450.0,
+   "match_note": ""
+  },
+  {
+   "id": "202610200002",
+   "name": "Battery to Tribeca",
+   "sport": "Walk",
+   "date": "Oct 22, 2026, 09:30:00 AM",
+   "points": 1362,
+   "step_m": 5.26,
+   "duration_s": 1361.0,
+   "recorded_m": 7555.245,
+   "matched_m": 2037.656,
+   "strava_m": 2050.0,
+   "match_note": ""
+  },
+  {
+   "id": "202610200003",
+   "name": "Prospect Park easy",
+   "sport": "Run",
+   "date": "Oct 23, 2026, 07:30:00 AM",
+   "points": 323,
+   "step_m": 4.75,
+   "duration_s": 322.0,
+   "recorded_m": 1545.394,
+   "matched_m": 1125.746,
+   "strava_m": 1130.0,
+   "match_note": ""
+  },
+  {
+   "id": "202610200004",
+   "name": "Hudson River ride",
+   "sport": "Ride",
+   "date": "Oct 24, 2026, 08:30:00 AM",
+   "points": 802,
+   "step_m": 7.13,
+   "duration_s": 801.0,
+   "recorded_m": 5775.226,
+   "matched_m": 4797.453,
+   "strava_m": 4820.0,
+   "match_note": ""
+  },
+  {
+   "id": "202610200005",
+   "name": "Flushing Meadows trees",
+   "sport": "Run",
+   "date": "Oct 25, 2026, 09:30:00 AM",
+   "points": 393,
+   "step_m": 7.14,
+   "duration_s": 392.0,
+   "recorded_m": 2937.855,
+   "matched_m": 1177.01,
+   "strava_m": 1180.0,
+   "match_note": ""
+  }
+ ],
+ "failures": []
+}

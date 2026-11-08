@@ -79,13 +79,26 @@
   flex-direction: column;
   align-items: flex-start;
   gap: .5rem;
-  /* A tall position card must not push the status line off the bottom of a short window. */
-  overflow: hidden;
+  /* The column scrolls rather than running off the bottom.
+
+     A full-page map could assume more height than its controls needed. A window cannot: at
+     600 px tall day 02's four cards reached the floor, sat on top of the zoom pair, and left
+     nothing to look at. `overflow: hidden` clips them instead, which is the same loss without
+     a way to reach what is missing. `min-height: 0` is what lets a flex child actually
+     scroll. */
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+  /* The scroll container covers the map, so the pointer is given back where there is no card.
+     `.overlays > *` takes it again per card. */
+  scrollbar-gutter: stable;
 }
 
 .map-root .overlays > * { pointer-events: auto; }
 
-.map-root .card { max-width: min(22rem, calc(100% - 1rem)); }
+/* Narrower than a page's cards. A window is the width the reader chose, and a control column
+   taking two thirds of it is not a control column. */
+.map-root .card { max-width: min(15rem, calc(100% - 1rem)); }
 
 /* The tilt control. Pressed means the camera is leaning, which the map sets — not the
    button — so dragging to an angle lights it up too. */
@@ -104,9 +117,15 @@
 .map-root .tilt-note { font-size: 10px; color: var(--muted); }
 
 /* Zoom buttons, bottom-left over the canvas: a map control belongs on the map. */
+/* Bottom-right, opposite the control column.
+ *
+ * It was bottom-left, which is the same corner the overlay column grows into: day 02's four
+ * cards reach the floor of a 600 px window and land on the zoom pair. The column scrolls now,
+ * but putting the two stacks in one corner means any future card can re-create the collision.
+ * Opposite corners cannot collide. */
 .map-root .map-zoom {
   position: absolute;
-  left: .5rem;
+  right: .5rem;
   bottom: .5rem;
   z-index: 3;
   display: flex;
@@ -144,40 +163,45 @@
 
 /* Attribution. Every source in `basemap.mjs` requires it, so this is a licence term and not
    a nicety: nothing is allowed to cover it. */
-/* The credit. A row of `.map-root`'s column and a sibling of `.map-area`, so it is outside
-   every stacking context the map builds and nothing can cover it. It was `position: absolute`
-   at bottom-right once, which is where `.detail` docks — see `chrome.mjs`. It MUST stay a row,
-   and MUST NOT be hidden, truncated at any viewport, or made dismissable: it is the licence
-   term for all three sources.
+/* The status bar: a row of `.map-root`'s column and a sibling of `.map-area`, so it sits
+   outside every stacking context the map builds. `chrome.mjs` carries why both panes are here
+   rather than over the canvas. `flex: 0 0 auto` so a tall map cannot squeeze it away.
 
-   `flex-shrink: 0` so a tall map cannot squeeze it away, and the text wraps rather than
-   clipping, because a truncated credit is a missing credit. */
-.map-root .map-attrib {
+   The panes wrap on a narrow window instead of either one truncating. A truncated credit is a
+   missing credit, and a truncated error names the wrong thing. */
+.map-root .map-bar {
   flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0 .6rem;
+  padding: .12rem .45rem;
+  background: var(--face);
+  border-top: 1px solid var(--rule);
+}
+
+/* The live region that narrates state changes, including the ones that are failures. Visible,
+   because a status line is also how a sighted reader learns the basemap changed or could not
+   load. It takes the room the credit does not need. */
+.map-root .map-status {
+  flex: 1 1 12rem;
   margin: 0;
-  padding: .1rem .4rem;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink);
+}
+
+.map-root .map-attrib {
+  flex: 0 1 auto;
+  margin: 0;
   font-size: 10px;
   line-height: 1.5;
   text-align: right;
-  background: var(--face);
-  border-top: 1px solid var(--rule);
   color: var(--ink);
 }
 
 .map-root .map-attrib a { color: var(--accent); }
-
-/* The live region that narrates state changes. Visible, because a status line is also how a
-   sighted reader learns the basemap changed or failed. */
-.map-root .map-status {
-  margin: 0;
-  padding: .15rem .45rem;
-  max-width: min(26rem, calc(100% - 1rem));
-  font-size: 11px;
-  background: rgb(255 255 255 / 82%);
-  border: 1px solid var(--rule);
-}
-
-.map-root .map-status:empty { display: none; }
 
 /* ---------------------------------------------------------------------------
    The drill-down panel. Docked right when there is room, a bottom sheet when there is not.

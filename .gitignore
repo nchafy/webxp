@@ -3,3 +3,17 @@
 __pycache__/
 screenshots/
 .claude/
+
+# Real Strava exports and anything built from them. An activity trace is a record of where
+# someone lives and when they are not home, so it does not go in a public repo. Day 02's
+# `fixture/` and the `data/` built from it are synthetic and ARE committed, so the window
+# renders for someone without an export.
+#
+# `tools/prepare.py` writes to `private/` by default for this reason. Pointing its `--out` at
+# `data/` publishes real traces; it prints its destination so that is a decision rather than
+# an accident.
+apps/day-*/private/
+strava/
+strava-export/
+strava_export*/
+export_*/

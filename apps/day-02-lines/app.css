@@ -1,0 +1,142 @@
+/* Day 02 — Lines. This day's own controls and its key.
+ *
+ * The map's furniture is `shared/map/map.css`, declared beside this one in `styles`.
+ * Only what this day adds is here: the tolerance slider, the distance readout, the key
+ * and the noise legend.
+ *
+ * Scoped under `.app-day-02-lines`, the class the loader puts on this app's window body.
+ * An unscoped rule here would reach into every other window that ever draws a map.
+ */
+
+/* Day 2's own widgets: the tolerance trackbar, its readout, the two keys, and a row in the
+ * detail panel that is a target.
+ *
+ * Separate from `lib/map.css` because these belong to one day rather than to every map. A
+ * second day wanting a slider should take this file as a starting point, not import it --
+ * the day owns its own controls.
+ */
+
+/* Trackbar. Luna called a slider a trackbar and drew it as a sunken groove with a raised
+   pointer; this is that, in the existing tokens, with no new colour introduced.
+
+   The thumb is 24px tall against Luna's 21, for the same reason the title-bar boxes are:
+   a 24px target is the smallest SC 2.5.8 accepts. Both vendor prefixes are written out
+   because `::-webkit-slider-thumb` and `::-moz-range-thumb` cannot be combined in one
+   rule -- a selector list containing an unknown pseudo-element is dropped whole, so
+   merging them would silently style neither. */
+.trackbar { display: flex; align-items: center; gap: .45rem; margin-top: .4rem; }
+
+.app-day-02-lines .trackbar input[type="range"] {
+  flex: 1 1 10rem;
+  min-width: 7rem;
+  height: 24px;
+  margin: 0;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+}
+
+.app-day-02-lines .trackbar input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  background: var(--sunk);
+  border: 1px solid var(--sunken);
+  border-radius: 0;
+  box-shadow: inset 1px 1px 2px rgb(0 0 0 / 22%);
+}
+
+.app-day-02-lines .trackbar input[type="range"]::-moz-range-track {
+  height: 4px;
+  background: var(--sunk);
+  border: 1px solid var(--sunken);
+  border-radius: 0;
+  box-shadow: inset 1px 1px 2px rgb(0 0 0 / 22%);
+}
+
+.app-day-02-lines .trackbar input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 11px;
+  height: 24px;
+  /* Centre an 11x24 thumb on a 4px track: (4 + 2 border - 24) / 2. */
+  margin-top: -9px;
+  background: linear-gradient(to bottom, var(--raised) 0%, var(--face) 45%, var(--sunk) 100%);
+  border: 1px solid #003c74;
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 1px var(--raised);
+}
+
+.app-day-02-lines .trackbar input[type="range"]::-moz-range-thumb {
+  width: 11px;
+  height: 24px;
+  background: linear-gradient(to bottom, var(--raised) 0%, var(--face) 45%, var(--sunk) 100%);
+  border: 1px solid #003c74;
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 1px var(--raised);
+}
+
+/* A tabular figure beside a slider that is being dragged: without a fixed width the
+   number's own width changes as it counts, and the control jitters under the cursor. */
+.app-day-02-lines .trackbar output {
+  min-width: 4.2rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* The reading the slider produces. Big enough to be the answer rather than a caption. */
+.readout { margin: .45rem 0 0; font-variant-numeric: tabular-nums; }
+
+.readout b { font-size: 15px; }
+
+.readout .delta { color: #8a2a12; font-weight: 700; }
+
+.readout .sub { display: block; font-size: 10px; color: var(--muted); }
+
+/* The two lines' key. The swatch is a line, not a box, because that is what it stands
+   for on the map. */
+.key { margin: .4rem 0 0; display: grid; gap: .25rem; }
+
+.key div { display: flex; align-items: center; gap: .4rem; font-size: 11px; }
+
+.key i { display: block; width: 18px; height: 0; border-top-width: 3px; border-top-style: solid; }
+
+/* The segment key. The swatch is a line because the marks are lines, and it carries the
+   class's own width as well as its colour -- width is the second channel on the map, so a
+   key showing only colour would be describing half the encoding. Set per row by map.mjs. */
+.app-day-02-lines .noise-legend i {
+  width: 20px;
+  height: 0;
+  border-top-style: solid;
+  /* Mirrors the casing under each segment on the map, so a near-zero class is visible in
+     the key for the same reason it is visible on the map. */
+  outline: 1px solid #14161a;
+}
+
+.noise-legend div { font-variant-numeric: tabular-nums; }
+
+/* A row in the detail panel that is a target: one crossing of a segment, or the way back
+   up. Flat and full-width, because a column of era-correct bevelled buttons reads as a
+   toolbar rather than as a list. */
+.app-day-02-lines .pass-row {
+  display: block;
+  width: 100%;
+  min-height: 24px;
+  margin: 0;
+  padding: .2rem .35rem;
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.app-day-02-lines .pass-row:hover,
+.app-day-02-lines .pass-row:focus-visible {
+  background: var(--title-b);
+  border-color: var(--title-a);
+  color: #fff;
+}

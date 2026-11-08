@@ -25,7 +25,7 @@ python3 -m venv .venv
 .venv/bin/python scripts/check.py
 ```
 
-Thirty-two checks drive real input through the Chrome DevTools Protocol and read the geometry
+Thirty-three checks drive real input through the Chrome DevTools Protocol and read the geometry
 back. A window manager cannot be checked by screenshot: an inert frame and a working one are
 the same picture, and what separates them is whether the numbers changed after a drag.
 

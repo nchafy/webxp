@@ -1839,6 +1839,168 @@ def check_map_challenge_folder(page) -> list[str]:
     return bad
 
 
+def check_day_02(page) -> list[str]:
+    """Day 02 draws its runs, measures one, and the measurement answers the slider.
+
+    This is the only day with real content, and it is the first app to use `shared/map/` from
+    somewhere other than `apps/basemap/`. Three things are asserted, in the order they can go
+    wrong:
+
+    1. It loaded data and drew. The day reads from `private/` first and the committed
+       synthetic `data/` second, so a working day is either — but a day that found neither
+       reports "no activities" and looks like an empty map, not like an error.
+    2. The measurement responds. Simplifying a trace must shorten it: that is the whole
+       argument the day makes, and a slider wired to nothing looks identical.
+    3. The status bar and the credit are both readable. Both were inside layers that could
+       cover or scroll them, and both failures were silent.
+    """
+    bad = []
+    page.evaluate("window.webxp.launch('day-02-lines')")
+
+    # It fetches an index, a per-activity document and the street file, then builds 124 layers.
+    # Polled rather than slept through.
+    deadline = time.monotonic() + 60
+    state = None
+    while time.monotonic() < deadline:
+        state = page.evaluate(
+            "(() => { const w = window.webxp.windows.find((x) => x.programId === 'day-02-lines');"
+            " if (!w) return { stage: 'no window' };"
+            " if (w.bodyEl.classList.contains('is-loading')) return { stage: 'loading' };"
+            " if (!w.lines || !w.base) return { stage: 'no day',"
+            "   status: (w.bodyEl.querySelector('.map-status') || {}).textContent || '' };"
+            " const map = w.base.map;"
+            " const area = w.bodyEl.querySelector('.map-area');"
+            " const statusEl = w.bodyEl.querySelector('.map-status');"
+            " const attribEl = w.bodyEl.querySelector('.map-attrib');"
+            " const sr = statusEl && statusEl.getBoundingClientRect();"
+            " const ar = area && area.getBoundingClientRect();"
+            " const tr = attribEl && attribEl.getBoundingClientRect();"
+            " const onStatus = sr && sr.width"
+            "   ? (document.elementFromPoint(sr.left + 4, sr.top + sr.height / 2) || {}).className || ''"
+            "   : 'no status';"
+            " return { stage: map.loaded() ? 'ready' : 'style',"
+            "   status: statusEl ? statusEl.textContent : '',"
+            "   activities: w.lines.activities().length,"
+            "   dataDir: w.lines.dataDir() || '',"
+            "   aggregate: w.lines.aggregate ? w.lines.aggregate() : null,"
+            "   cells: w.lines.noiseCells(),"
+            "   basemap: w.base.basemap,"
+            # The day's own layers, by id. Counting the style's total asserts the symptom and
+            # gets the wrong answer: `basemap app` leaves satellite remembered in
+            # localStorage, so this window opens on a four-layer raster style and a threshold
+            # tuned to liberty's hundred-odd fails on a day that drew correctly.
+            "   own: ['all', 'all-hit', 'matched', 'focus'].filter((id) => map.getLayer(id)),"
+            "   statusTop: sr ? Math.round(sr.top) : null,"
+            "   areaBottom: ar ? Math.round(ar.bottom) : null,"
+            "   creditTop: tr ? Math.round(tr.top) : null,"
+            "   onStatus: String(onStatus),"
+            "   cards: w.bodyEl.querySelectorAll('.overlay-cards .card').length }; })()"
+        )
+        if state and state.get("stage") == "ready":
+            break
+        time.sleep(0.6)
+
+    if not state or state.get("stage") != "ready":
+        stage = (state or {}).get("stage", "unknown")
+        said = (state or {}).get("status", "")
+        return [
+            f"day 02: never became ready (stopped at {stage!r}"
+            + (f", status says {said!r}" if said else "")
+            + "). If this machine has no network, that is the cause, not the app."
+        ]
+
+    if state["activities"] < 1:
+        bad.append(
+            f"day 02: loaded {state['activities']} activities from {state['dataDir']!r} — "
+            "neither private/ nor the committed data/ answered"
+        )
+    if state["cards"] < 3:
+        bad.append(f"day 02: {state['cards']} of its own cards built, want at least 3")
+    # `draw` is re-run from scratch against every style, so the day's layers must be present
+    # whatever basemap this window opened on — including the raster ones, where a day that
+    # only ever drew over liberty would silently have no overlay.
+    missing = {"all", "all-hit", "matched", "focus"} - set(state["own"])
+    if missing:
+        bad.append(
+            f"day 02: on the {state['basemap']!r} basemap these layers are absent: "
+            f"{sorted(missing)} — the day's overlay was not added"
+        )
+
+    # The argument. Simplifying has to shorten, and the two ends have to differ by more than
+    # rounding, or the slider is wired to something inert.
+    if state["activities"]:
+        # `select` fetches that run's full-resolution document, so it is asynchronous. Reading
+        # the measurement in the same turn returns null and looks like a dead slider.
+        wanted = page.evaluate(
+            "(() => { const w = window.webxp.windows.find((x) => x.programId === 'day-02-lines');"
+            " const id = w.lines.activities()[0];"
+            " w.lines.select(id); return id; })()"
+        )
+        measured = {"id": wanted, "selected": None, "raw": None, "coarse": None}
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            measured = page.evaluate(
+                "(() => { const w = window.webxp.windows.find((x) => x.programId === 'day-02-lines');"
+                " const at = (t) => w.lines.focusLengthAt(t);"
+                " return { id: %s, selected: w.lines.selectedId(),"
+                "   raw: at(0), coarse: at(60) }; })()" % json.dumps(wanted)
+            )
+            if measured["selected"] == wanted and measured["raw"]:
+                break
+            time.sleep(0.4)
+
+        if measured["selected"] != measured["id"]:
+            bad.append(
+                f"day 02: selecting {measured['id']!r} left {measured['selected']!r} selected"
+            )
+        if not measured["raw"] or measured["raw"] <= 0:
+            bad.append(f"day 02: the selected run measured {measured['raw']} m at full detail")
+        elif not (measured["coarse"] < measured["raw"] * 0.999):
+            bad.append(
+                f"day 02: simplifying to 60 m took {measured['raw']:.0f} m to "
+                f"{measured['coarse']:.0f} m — the slider is not reaching the geometry"
+            )
+
+    # Both panes of the status bar have to be where a reader can see them: below the map area,
+    # and with nothing on top. The status line was inside the scrolling overlay column once,
+    # where four cards pushed it out of view while it still held the right text.
+    if state["statusTop"] is None or state["areaBottom"] is None:
+        bad.append("day 02: no status line or no map area to place it against")
+    else:
+        if state["statusTop"] < state["areaBottom"] - 1:
+            bad.append(
+                f"day 02: the status line starts at y={state['statusTop']} but the map area "
+                f"runs to y={state['areaBottom']} — it is over the canvas and can be covered"
+            )
+        if "map-status" not in state["onStatus"]:
+            bad.append(
+                f"day 02: {state['onStatus']!r} sits on top of the status line — a failure "
+                "reported there would be reported to nobody"
+            )
+    if state["creditTop"] is not None and state["areaBottom"] is not None:
+        if state["creditTop"] < state["areaBottom"] - 1:
+            bad.append("day 02: the credit is over the canvas")
+    if not re.search(r"\d", state["status"] or ""):
+        bad.append(f"day 02: the status line says {state['status']!r}, with no figure in it")
+
+    # Closed before handing the desktop back. This window is 1040x680 and lands on top of
+    # almost everything, and `focus order` reads z-indexes and clicks taskbar buttons — it
+    # failed on the window this check left behind. Closing it also exercises `win.onClose`,
+    # which is where the WebGL context is released; a leak shows up as a later map failing to
+    # create at all.
+    closed = page.evaluate(
+        "(() => { const w = window.webxp.windows.find((x) => x.programId === 'day-02-lines');"
+        " if (!w) return 'already gone'; w.close(); return ''; })()"
+    )
+    time.sleep(0.4)
+    still_open = page.evaluate(
+        "window.webxp.windows.some((x) => x.programId === 'day-02-lines')"
+    )
+    if still_open:
+        bad.append(f"day 02: the window did not close ({closed or 'close() returned'})")
+    return bad
+
+
 def check_manifest_current(page) -> list[str]:
     """The generated manifest agrees with the folders on disk.
 
@@ -1959,6 +2121,7 @@ CHECKS = (
     ("iframe app", check_iframe_app),
     ("basemap app", check_basemap_app),
     ("30DaysOfMaps folder", check_map_challenge_folder),
+    ("day 02 lines", check_day_02),
     ("active styling", check_active_styling),
     ("loading frame", check_loading_frame),
     ("drag", check_drag),
