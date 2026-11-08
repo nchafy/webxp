@@ -112,9 +112,16 @@ of itself.
   resamples the path, displaces every point by noise, and feeds it back as a recording.
   Matching recovers the length Valhalla itself reported to within 0.5% on street grid,
   park path and waterfront.
-- **Against the fixture's truth.** `test_pipeline.py` holds the whole CLI against
-  `fixture/truth.json`: matching recovered the route length to within 0.51% on all six
-  activities, and the GPX round trip is lossless to 0.08%.
+- **Against the fixture's truth.** `tools/test_pipeline.py` holds the committed output
+  against `fixture/truth.json`: matching recovers the route length to within 0.52% on all
+  six activities — worst −0.52%, best −0.07% — and the GPX round trip is lossless to 0.08%.
+  Re-run it to reproduce those numbers; it prints one line per check.
+
+  It reads the committed JSON rather than re-running `prepare.py`, so it holds the *artifact*
+  to the truth and would not catch a `gpsnoise.py` regression on its own. It also executed
+  nothing at all for a while: its `fixture/` and `data/` paths were anchored on `tools/`
+  rather than on the app folder, so it printed "run make_fixture.py first" and returned 1
+  before reaching a single check, while this bullet cited its output as evidence.
 - **Negative controls.** `test_gpsnoise.py --negative-control` sabotages the projection,
   the noise variance and the polyline precision in turn and requires each to produce a
   failure. The pixel check in `scripts/check.py` has its threshold set from the measured
@@ -315,8 +322,13 @@ and an early version read a kilometres column as miles.
 An activity trace records where someone lives and when they are not home.
 
 - Real exports are gitignored (`strava-export/`, `strava_export*/`).
-- `prepare.py` writes to `apps/day-02-lines/private/`, which is gitignored, and prints where
-  it is writing on every run.
+- `tools/prepare.py` writes to `apps/day-02-lines/private/`, which is gitignored, and prints
+  where it is writing on every run.
+- It also **asks git** before writing, rather than trusting that path to match a pattern. A
+  destination inside a repository and not ignored is refused outright; an ignored one, or one
+  outside any repository, proceeds. This exists because the path and the pattern disagreed
+  once: the default resolved to `tools/private/`, which `apps/day-*/private/` does not match,
+  and the help text claimed it was ignored while `git check-ignore` said otherwise.
 - `apps/day-02-lines/fixture/` and the `data/` built from it are synthetic and are committed,
   so the page renders for someone with no export.
 
