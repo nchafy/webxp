@@ -7,6 +7,7 @@
  */
 export const APPS = [
   'about',
+  'basemap',
   'display',
   'notepad',
   'readme',

@@ -178,6 +178,10 @@ export class Desktop {
     // restored or closed — has to be said out loud for a reader who cannot see it.
     const live = document.createElement('p');
     live.className = 'visually-hidden';
+    // Named, because an app may have a live region of its own — the Base map app does, for
+    // its basemap and tile status — and "the first element with aria-live" then stops
+    // meaning the shell's. Anything looking for the shell's announcements wants this one.
+    live.id = 'webxp-live';
     live.setAttribute('role', 'status');
     live.setAttribute('aria-live', 'polite');
 
@@ -332,6 +336,29 @@ export class Desktop {
 
     win.setContent(content);
     win.takeFocus();
+
+    // `ready` runs once the content is in the document and laid out.
+    //
+    // It exists because `mount` cannot do this: what `mount` returns is what gets inserted,
+    // so during `mount` the nodes have no box. Anything that measures its container — a map,
+    // a chart, a canvas — reads zero there and draws nothing, which is invisible to an
+    // assertion that the window filled. Two frames, so a layout has happened in between.
+    if (typeof program.ready === 'function') {
+      await new Promise((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(resolve));
+      });
+      if (win.closed) return win;
+      try {
+        await program.ready({ win, desktop: this });
+      } catch (error) {
+        // Same treatment as a failed mount: the window says what broke rather than looking
+        // finished and being empty.
+        win.setContent(mountFailure(program, error));
+        win.setStatus(`${program.id} failed to start`);
+        this.announce(`${program.name} failed to start`);
+        console.error(`webxp: ready failed for program ${program.id}`, error);
+      }
+    }
     return win;
   }
 

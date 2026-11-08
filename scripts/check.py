@@ -57,6 +57,7 @@ PROGRAMS = {
     "display": ("Display Properties", True),
     "windows": ("Window list", True),
     "webview": ("Webview", True),
+    "basemap": ("Base map", True),
     "about": ("About webxp", False),
 }
 
@@ -85,10 +86,19 @@ APPS_ON_DISK = apps_on_disk()
 #: Set by `main`, so a check that has to reload the page can reach the server.
 BASE_URL = ""
 
-#: Console messages that are noise rather than a defect. Empty on purpose: this page makes
-#: no network requests beyond its own modules, so there is nothing legitimate to filter and
-#: a blanket filter is how a real error gets ignored for a week.
-IGNORED: tuple[str, ...] = ()
+#: Where a check writes an image of its own. Set by `main`.
+SHOT_DIR = REPO_ROOT / "screenshots"
+
+#: Console messages that are noise rather than a defect. Kept narrow on purpose: a blanket
+#: filter is how a real error gets ignored for a week. Both entries exist only because the
+#: Base map app fetches real tiles.
+IGNORED: tuple[str, ...] = (
+    # A raster pyramid 404s at its own edge, which is normal and which MapLibre reports
+    # rather than swallows.
+    "Failed to load resource: the server responded with a status of 404",
+    # A tile request still in flight when the camera moves on.
+    "AbortError",
+)
 
 
 #: The desktop's whole observable state, read in one round trip.
@@ -105,7 +115,7 @@ PROBE = """(() => {
     surface: { x: surface.left, y: surface.top, w: surface.width, h: surface.height },
     active: d.active ? d.active.programId : null,
     taskButtons: document.querySelectorAll('.task-button').length,
-    live: (document.querySelector('[aria-live]') || {}).textContent || '',
+    live: (document.getElementById('webxp-live') || {}).textContent || '',
     wins: d.windows.map((w) => {
       const rect = w.el.getBoundingClientRect();
       const grips = [...w.el.querySelectorAll('.window-grip')];
@@ -169,6 +179,39 @@ def drain_expecting(page, needle: str, label: str) -> list[str]:
         if needle not in message
     ]
     return bad
+
+
+#: Floor on the compressed size of a screenshot of the map canvas, in bytes.
+#:
+#: A stand-in for "did it paint", because there is no image library here to measure variance
+#: with and a WebGL canvas without `preserveDrawingBuffer` cannot be read with `toDataURL`.
+#: PNG compresses a flat colour to almost nothing and a map to a lot, so the gap is wide
+#: enough to be unambiguous.
+#:
+#: Measured by this check at 1280x820 with the Base map window at 760x520: the blank case
+#: (the `.map` specificity defect, canvas stuck at 758x300 over the holding colour) produced
+#: 14,810 bytes, and the same region with the simple basemap drawn produced 446,833. The
+#: blank figure is not near zero because the clip includes the control card and the
+#: attribution, which are real content either way.
+#:
+#: 20,000 is just above the blank case and 22x below the drawn one.
+MAP_PAINT_FLOOR = 20_000
+
+
+def shoot_clip(page, rect: dict, target: Path) -> int:
+    """Screenshot one region and return its compressed size."""
+    data = page.call(
+        "Page.captureScreenshot",
+        format="png",
+        clip={
+            "x": float(rect["x"]), "y": float(rect["y"]),
+            "width": float(rect["w"]), "height": float(rect["h"]),
+            "scale": 1,
+        },
+    )
+    blob = base64.b64decode(data["data"])
+    target.write_bytes(blob)
+    return len(blob)
 
 
 def shoot(page, target: Path) -> int:
@@ -393,7 +436,7 @@ def check_boot(page) -> list[str]:
 def check_launch_all(page) -> list[str]:
     """Every program opens, gets a button, and does not land on top of the last one."""
     bad = []
-    for program in ("notepad", "display", "windows", "webview", "about"):
+    for program in ("notepad", "display", "windows", "webview", "basemap", "about"):
         launch(page, program)
     state = probe(page)
 
@@ -1106,10 +1149,11 @@ def check_broken_app(page) -> list[str]:
             "broken app: a folder that failed to load produced no program, so it would be "
             "silently absent from the Start menu"
         )
-    # Asking for a folder that does not exist is a 404 the browser logs. Drained here so it
-    # cannot be mistaken for a defect by whichever check happens to sweep next, and required,
-    # because its absence would mean the import did not actually go out.
-    return bad + drain_expecting(page, "apps/does-not-exist/app.mjs", "broken app")
+    # Asking for a folder that does not exist logs a 404, which `IGNORED` already filters
+    # because the Base map app's tiles 404 at a pyramid's edge. No drain is needed, and
+    # asserting on it would only re-test the filter: `missingProblems` above is what proves
+    # the import went out and was reported.
+    return bad
 
 
 def check_iframe_app(page) -> list[str]:
@@ -1208,6 +1252,135 @@ def check_iframe_app(page) -> list[str]:
             f"iframe app: clicking the shim left {after['active']!r} active, not the "
             "window that was clicked"
         )
+    return bad
+
+
+def check_basemap_app(page) -> list[str]:
+    """The ported project draws, in a window, at the window's size.
+
+    This is the check the whole `ready` hook exists for. A map created while its container
+    has no box sizes itself to 0x0, reports its style loaded, fetches every tile and draws
+    nothing — and every assertion short of measuring the canvas passes over it.
+
+    It reaches the real tile services. That is deliberate: there is no fixture that could
+    tell us a source stopped answering. A network failure is reported as one rather than as a
+    defect in the app.
+    """
+    bad = []
+    launch(page, "basemap")
+
+    # The map loads MapLibre, a style and its first tiles. Polled rather than slept through,
+    # so a fast machine is not made to wait and a slow one is not cut off.
+    deadline = time.monotonic() + 45
+    state = None
+    while time.monotonic() < deadline:
+        state = page.evaluate(
+            "(() => { const w = window.webxp.windows.find((w) => w.programId === 'basemap');"
+            " if (!w) return { stage: 'no window' };"
+            " if (w.bodyEl.classList.contains('is-loading')) return { stage: 'loading' };"
+            " if (!w.app) return { stage: 'no app state' };"
+            " if (!w.base) return { stage: 'no map',"
+            "   status: (w.bodyEl.querySelector('.map-status') || {}).textContent || '' };"
+            " const map = w.base.map;"
+            " const canvas = w.bodyEl.querySelector('.maplibregl-canvas');"
+            " const holder = w.bodyEl.querySelector('.map');"
+            " const rootEl = w.bodyEl.querySelector('.basemap-root');"
+            " const cr = canvas ? canvas.getBoundingClientRect() : null;"
+            " const hr = holder ? holder.getBoundingClientRect() : null;"
+            " const rr = rootEl ? rootEl.getBoundingClientRect() : null;"
+            " return { stage: map.loaded() ? 'ready' : 'style',"
+            "   basemap: w.base.basemap,"
+            "   canvas: cr ? { w: Math.round(cr.width), h: Math.round(cr.height) } : null,"
+            "   canvasRect: cr ? { x: cr.left, y: cr.top, w: cr.width, h: cr.height } : null,"
+            "   holder: hr ? { w: Math.round(hr.width), h: Math.round(hr.height) } : null,"
+            "   root: rr ? { w: Math.round(rr.width), h: Math.round(rr.height) } : null,"
+            "   attrib: (w.bodyEl.querySelector('.map-attrib') || {}).innerHTML || '',"
+            "   layers: map.getStyle() ? map.getStyle().layers.map((l) => l.id) : [],"
+            "   status: (w.bodyEl.querySelector('.map-status') || {}).textContent || '' }; })()"
+        )
+        if state and state.get("stage") == "ready":
+            break
+        time.sleep(0.5)
+
+    if not state or state.get("stage") != "ready":
+        stage = (state or {}).get("stage", "unknown")
+        said = (state or {}).get("status", "")
+        return [
+            f"basemap app: never became ready (stopped at {stage!r}"
+            + (f", status line says {said!r}" if said else "")
+            + "). If this machine has no network, that is the cause, not the app."
+        ]
+
+    # The regression this check is really about. A 0x0 canvas is what a map built before its
+    # container was laid out looks like, and it is invisible to every other assertion here.
+    if not state["canvas"] or state["canvas"]["w"] < 200 or state["canvas"]["h"] < 200:
+        bad.append(
+            f"basemap app: the canvas laid out at {state['canvas']} — the map was built "
+            "before its container had a box"
+        )
+    # Against the app's own root, not against `.map`. `.map` is the element a stylesheet
+    # accident can collapse to 0px high while the canvas inside it keeps a stale size, so
+    # comparing the two agrees with itself and proves nothing. The root is the window.
+    if state["root"] and state["canvas"]:
+        for axis in ("w", "h"):
+            if abs(state["canvas"][axis] - state["root"][axis]) > 6:
+                bad.append(
+                    f"basemap app: canvas {axis} is {state['canvas'][axis]}px in a "
+                    f"{state['root'][axis]}px window — the map is not filling its window"
+                )
+    if state["holder"] and (state["holder"]["w"] < 200 or state["holder"]["h"] < 200):
+        bad.append(
+            f"basemap app: the .map holder laid out at {state['holder']} — a rule it needs "
+            "lost a specificity battle with MapLibre's own stylesheet"
+        )
+
+    # And it has to have painted. Every flag above can read healthy over a blank canvas:
+    # MapLibre reported styleLoaded, tilesLoaded and 113 layers while drawing nothing at all.
+    if state["canvasRect"]:
+        size = shoot_clip(page, state["canvasRect"], SHOT_DIR / "basemap-canvas.png")
+        if size < MAP_PAINT_FLOOR:
+            bad.append(
+                f"basemap app: a screenshot of the canvas compresses to {size} bytes, under "
+                f"{MAP_PAINT_FLOOR} — the map reports loaded and painted nothing"
+            )
+    # Attribution is a licence term for every source in `basemap.mjs`, not a nicety.
+    if "href" not in state["attrib"]:
+        bad.append(f"basemap app: the attribution is {state['attrib'][:60]!r}, with no credit link")
+
+    # The overlay has to survive a basemap switch. `setStyle` discards every layer added to
+    # the old style, so a `draw` that is not re-run leaves a map that looks fine and has
+    # silently lost its data. This is the original project's own key regression, carried over.
+    overlay = {"clicked-point", "clicked-point-halo"}
+    missing = overlay - set(state["layers"])
+    if missing:
+        bad.append(f"basemap app: overlay layers {sorted(missing)} missing before any switch")
+
+    page.evaluate(
+        "(() => { const w = window.webxp.windows.find((w) => w.programId === 'basemap');"
+        " w.bodyEl.querySelector('[data-basemap=\"satellite\"]').click(); })()"
+    )
+    deadline = time.monotonic() + 45
+    switched = None
+    while time.monotonic() < deadline:
+        switched = page.evaluate(
+            "(() => { const w = window.webxp.windows.find((w) => w.programId === 'basemap');"
+            " const map = w.base.map;"
+            " return { basemap: w.base.basemap, loaded: map.loaded(),"
+            "   layers: map.getStyle() ? map.getStyle().layers.map((l) => l.id) : [] }; })()"
+        )
+        if switched["basemap"] == "satellite" and switched["loaded"]:
+            break
+        time.sleep(0.5)
+
+    if not switched or switched["basemap"] != "satellite":
+        bad.append(f"basemap app: the satellite switch did not take — {switched}")
+    else:
+        missing = overlay - set(switched["layers"])
+        if missing:
+            bad.append(
+                f"basemap app: overlay layers {sorted(missing)} were discarded by the basemap "
+                "switch — draw() was not re-run"
+            )
     return bad
 
 
@@ -1615,6 +1788,7 @@ CHECKS = (
     ("app styles", check_app_styles),
     ("broken app", check_broken_app),
     ("iframe app", check_iframe_app),
+    ("basemap app", check_basemap_app),
     ("active styling", check_active_styling),
     ("loading frame", check_loading_frame),
     ("drag", check_drag),
@@ -1657,6 +1831,8 @@ def main(argv: list[str] | None = None) -> int:
 
     out_dir = REPO_ROOT / args.out
     out_dir.mkdir(exist_ok=True)
+    global SHOT_DIR
+    SHOT_DIR = out_dir
     base = f"http://127.0.0.1:{args.port}"
     global BASE_URL
     BASE_URL = base

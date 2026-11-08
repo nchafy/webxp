@@ -45,6 +45,7 @@ the check is the original app vanishing from the registry, replaced by its copy.
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `icon` | string | `window` | One of the names in `src/icons.mjs`. An unknown name is an error, not a fallback. |
+| `ready` | function | — | Runs after your nodes are in the document and laid out. |
 | `styles` | string[] | none | Paths relative to the folder, linked once before first mount. |
 | `width`, `height` | number | 480 × 320 | |
 | `x`, `y` | number | cascade | Omit to let the desktop place it. |
@@ -90,6 +91,27 @@ win.onClose = () => clearInterval(timer);
 
 A `mount` that throws does not hang. The window shows the error message, the program id and a
 pointer to the console, and the rest of the desktop is unaffected.
+
+### `ready` — when you need your nodes measured
+
+```js
+mount({ win })  { const root = build(); win.app = { root }; return root; },
+async ready({ win }) { const { root } = win.app; /* root has a box now */ },
+```
+
+`mount` cannot measure anything. What it returns is what gets inserted, so during `mount`
+your nodes are not in the document and every rect is zero. Anything that sizes itself to its
+container — a map, a chart, a canvas, a virtualised list — reads zero there.
+
+The failure is nasty because it does not look like one. The Base map app built this way
+reported `styleLoaded`, `tilesLoaded` and 113 layers, fetched every tile with a 200, and drew
+a blank rectangle. Use `ready` for that work.
+
+Stash what `mount` built on the window (`win.app = …`), not in a module variable: a module
+variable is shared by every window of your app, so the second window would drive the first
+one's content.
+
+A throwing `ready` is reported exactly like a throwing `mount`.
 
 ## Styles
 
@@ -199,6 +221,20 @@ From porting the 30 Day Map Challenge base map into `apps/basemap/`:
 3. **Page-level CSS becomes window-level CSS.** Rules written against `body` and `100vh`
    became rules against the app's own class and `100%`.
 4. **Vendored dependencies move into the folder.** They are the app's, so they live with it.
+5. **Scoping flattens specificity, and that changes who wins.** This one cost the most. The
+   original relied on `.window-body > .map` outranking MapLibre's own `.maplibregl-map` to
+   keep `position: absolute` on the map container. Scoping both rules under `.app-basemap`
+   made them *equal*, so source order decided it — and the vendored block sits last.
+   MapLibre's `position: relative` won, the container collapsed to 0 px high, and the window
+   drew nothing while every flag read healthy.
+
+   When you scope a stylesheet that already fought a specificity battle, re-check who wins.
+   `apps/basemap/app.css` now uses a three-class selector and says why.
+6. **Anything measuring its container goes in `ready`.** See above.
+
+The lesson behind 5 and 6: **look at the window**. `tilesLoaded: true` and a blank rectangle
+are the same assertion away from each other. The check for this app screenshots the canvas
+and compares it against the window's own size, because nothing cheaper could tell them apart.
 
 ## Checks
 
@@ -211,6 +247,7 @@ From porting the 30 Day Map Challenge base map into `apps/basemap/`:
 | `app styles` | One link per app, it applies, and it is scoped to that app's windows. |
 | `broken app` | Each way a spec can be wrong is rejected — and a valid one is accepted. |
 | `iframe app` | A `frame` app hosts its page, and the shim raises its window. |
+| `basemap app` | The ported project fills its window **and painted** — canvas measured against the window, plus a screenshot. |
 | `scaffold a new app` | `--new`, reload, it is in the menu and it opens. |
 | `mount failure` | A throwing `mount` reports instead of hanging. |
 

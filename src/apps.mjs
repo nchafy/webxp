@@ -18,7 +18,7 @@ export const DEFAULT_BASE = '/apps';
 //: Spec keys passed straight through to `Desktop.register`. Listed rather than spread, so a
 //: typo in an app's spec is caught by `validate` instead of being silently ignored.
 const PASS_THROUGH = [
-  'name', 'icon', 'width', 'height', 'x', 'y',
+  'name', 'icon', 'ready', 'width', 'height', 'x', 'y',
   'resizable', 'minimizable', 'maximizable', 'maximized',
   'status', 'singleton', 'onDesktop', 'autostart', 'minLoadMs',
 ];
@@ -26,6 +26,10 @@ const PASS_THROUGH = [
 //: Every key an app spec may carry. Anything else is a mistake worth reporting: a
 //: misspelled `singelton` is indistinguishable from a missing feature at runtime.
 const KNOWN_KEYS = new Set([...PASS_THROUGH, 'id', 'mount', 'styles', 'frame']);
+
+//: `ready` is passed through to the desktop but is not required, and an app may have it
+//: without a `mount` only in the `frame` case — which has no use for it, since a hosted
+//: document initialises itself.
 
 /** Stylesheets already in the document, so N windows of one app link its CSS once. */
 const linked = new Map();
@@ -44,7 +48,19 @@ function addStylesheet(href) {
     link.rel = 'stylesheet';
     link.href = href;
     link.addEventListener('load', () => resolve());
-    link.addEventListener('error', () => reject(new Error(`stylesheet failed to load: ${href}`)));
+    link.addEventListener('error', () => {
+      // The failure is not cached, and the dead link is removed.
+      //
+      // A rejected promise left in the map poisons the app for the rest of the session: a
+      // single dropped request — one blip while another app saturates the connection pool —
+      // and every later launch replays that same rejection and shows the same error window,
+      // with the stylesheet sitting there answering 200 the whole time. Observed exactly
+      // once, as five identical mount failures from one real failure. Reopening the app now
+      // retries.
+      linked.delete(href);
+      link.remove();
+      reject(new Error(`stylesheet failed to load: ${href}`));
+    });
     document.head.append(link);
   });
   linked.set(href, ready);
@@ -84,6 +100,9 @@ export function validate(spec, id) {
   }
   if (spec.styles !== undefined && !Array.isArray(spec.styles)) {
     problems.push('styles must be an array of paths relative to the app folder');
+  }
+  if (spec.ready !== undefined && typeof spec.ready !== 'function') {
+    problems.push('ready must be a function');
   }
   for (const key of Object.keys(spec)) {
     if (!KNOWN_KEYS.has(key)) problems.push(`unknown key ${JSON.stringify(key)}`);

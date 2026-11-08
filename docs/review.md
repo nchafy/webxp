@@ -1,10 +1,12 @@
 # Review findings
 
-Findings raised against this extraction, their addresses, and what was done. Twelve defects
-in the code or the harness; all twelve are fixed, and nine became checks.
+Findings raised against this work, their addresses, and what was done. Fifteen defects in the
+code or the harness; all fifteen are fixed, and eleven became checks.
 
 Findings 1–5 are from a self-review. Findings 6–12 are from a second agent that reviewed the
-change without the author's conclusions, driving the live page rather than reading the diff.
+window manager without the author's conclusions, driving the live page rather than reading the
+diff. Findings 13–15 came out of porting a real project onto the app contract — 13 from
+looking at a screenshot after the suite had already reported the app green.
 It found more, and worse, than the self-review did — including a case where the fix for
 finding 1 had re-introduced the same defect one call later. That is the argument for the
 second reader, and it is recorded here rather than left implied.
@@ -205,6 +207,77 @@ survives the refusal, that the script did not run, **and** that https, mailto an
 hrefs still work — without that last part the check would pass on a renderer that refuses
 every link.
 
+## 13. A map that reported healthy and drew nothing — fixed
+
+**Where** `apps/basemap/app.css`.
+
+**Scenario** Found by looking at a screenshot, after the check suite reported the app green.
+
+The original project relied on `.window-body > .map` outranking MapLibre's own
+`.maplibregl-map` to keep `position: absolute; inset: 0` on the map container. Scoping both
+rules under `.app-basemap` made them **equal** at two classes, so source order decided it —
+and the vendored MapLibre block sits at the foot of the file. `position: relative` won,
+`inset: 0` stopped applying, and the container collapsed to 0 px high while the canvas inside
+kept a stale 758 × 300.
+
+The window drew nothing but its holding colour. Meanwhile MapLibre reported
+`isStyleLoaded: true`, `areTilesLoaded: true`, 113 layers, all three sources loaded, a
+758 × 300 drawing buffer, and not one console error.
+
+The comment above the rule in the file I wrote describes this exact hazard. The code fell
+into it anyway.
+
+**Confirmed by controlled comparison.** The original page, served and screenshotted in the
+same headless Chrome, renders a complete map. So this was the port, not the environment —
+which is what I would otherwise have assumed, and would have been wrong.
+
+**Fix** `.app-basemap .basemap-root > .map`, three classes, which outranks the vendored rule
+regardless of order.
+
+**Check** `basemap app`, which had passed over this and now cannot:
+- the canvas is measured against the **window**, not against `.map` — comparing the canvas to
+  the element a stylesheet accident collapsed is an assertion that agrees with itself;
+- `.map` itself must have a box, and the failure message names the specificity battle;
+- the canvas region is screenshotted and its compressed size asserted. Blank measured 14,810
+  bytes, drawn 446,833.
+
+All three fire on the defect. The third is the one that would catch a *different* cause of a
+blank map.
+
+## 14. `ready` — the hook that was missing
+
+**Where** `src/desktop.mjs`, `src/apps.mjs`.
+
+**Scenario** Not a defect so much as a gap the port exposed. `mount` cannot measure anything:
+what it returns is what gets inserted, so during `mount` the nodes have no box. MapLibre
+measures its container on creation, so building the map in `mount` sized it to nothing.
+
+The first attempt was for the app to call `win.setContent` itself mid-`mount` — which worked
+and was wrong: it set the content twice and tore up the loading-marquee timing for every app.
+
+**Fix** An optional `ready({ win, desktop })`, called after the content is in the document and
+two frames have passed. A throwing `ready` is reported like a throwing `mount`.
+
+## 15. A cached rejection poisoned an app for the session — fixed
+
+**Where** `src/apps.mjs`, `addStylesheet`.
+
+**Scenario** Surfaced by the suite as five identical mount failures for Notepad —
+`stylesheet failed to load: /apps/notepad/app.css` — for a file that answers 200 on request.
+
+One request was dropped, almost certainly while the Base map app saturated the connection
+pool with a 1.1 MB module and a burst of tiles. The rejected promise stayed in the `linked`
+map, so every later launch of that app replayed the same rejection and showed the same error
+window, forever, with the stylesheet sitting there perfectly available.
+
+**Fix** On error the entry is deleted and the dead `<link>` removed, so reopening the app
+retries. A declared stylesheet that genuinely does not exist still fails loudly — that is
+worth keeping — but a blip is no longer permanent.
+
+**Residual uncertainty:** the underlying dropped request was observed once and not
+reproduced. The fix addresses the amplification, which is the part that turned one blip into a
+dead app, not the blip itself.
+
 ## Two harness bugs found by running it
 
 Neither was a product defect, and both are worth recording because they are the shape of
@@ -226,3 +299,10 @@ mistake that makes a suite report clean over broken behaviour.
   dispatches mouse events only. The handling is reasoned, not observed.
 - **No check covers `prefers-reduced-motion`.** The zoom is skipped rather than shortened,
   and the marquee has a CSS fallback, but neither path is exercised.
+- **App CSS scoping is a convention, not an enforcement.** `docs/apps.md` requires every rule
+  to sit under `.app-<id>` and `app styles` checks that one app's class does not land on
+  another's window, but nothing stops an app shipping a bare `p { ... }`. `@scope` or a build
+  step would enforce it; neither is worth it before there are more apps.
+- **`basemap app` needs the network.** It reaches the real tile services, because no fixture
+  could tell us a source stopped answering. It reports a network failure as one rather than as
+  a defect, but it is the one check that cannot run offline.
