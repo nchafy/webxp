@@ -79,6 +79,15 @@ export function tokenize(line) {
       continue;
     }
 
+    // Refused rather than taken as a filename. `mkdir d && echo x` is a line people type
+    // from habit, and with `&&` read as a word it made four directories — `d`, `&&`, `echo`
+    // and `x` — and reported success. An operator this shell does not have has to be an
+    // error, not an argument.
+    if (char === '&' || char === ';') {
+      const run = line[i + 1] === char ? char + char : char;
+      throw new UsageError(`${run} is not supported — one command per line`);
+    }
+
     if (char === '|' || char === '<' || char === '>') {
       push();
       const double = char === '>' && line[i + 1] === '>';

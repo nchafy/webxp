@@ -17,7 +17,9 @@
  * re-derived, so `cd ../x` and `find ../x` cannot disagree about what that means.
  */
 
-import { DIR, FILE, LINK, PERM, basename, joinPath, normalize } from '../../shared/fs/vfs.mjs';
+import {
+  DIR, FILE, LINK, PERM, basename, dirname, joinPath, normalize,
+} from '../../shared/fs/vfs.mjs';
 import { componentRegex } from './glob.mjs';
 import { HOME } from '../../shared/fs/seed.mjs';
 
@@ -208,15 +210,20 @@ function abs(ctx, path) {
 }
 
 /**
- * `lstat`, with the one exception `ls` and `find` both need: an operand that is a symlink to
- * a directory is treated as that directory.
+ * `lstat`, with the one exception `ls` needs: an operand that is a symlink **to a
+ * directory** is treated as that directory, so `ls links/relative-dir` lists what is in it.
+ *
+ * A symlink to a file stays the symlink. Following that one as well made `ls -l
+ * links/absolute` print a plain file where the whole point of `links/` is to show that it is
+ * not one — the listing denied the thing the directory exists to demonstrate.
  */
 function operandStat(ctx, path) {
   const cwd = ctx.shell.cwd;
   const link = ctx.fs.lstat(path, { cwd });
   if (link.type !== LINK) return link;
   try {
-    return ctx.fs.stat(path, { cwd });
+    const target = ctx.fs.stat(path, { cwd });
+    return target.type === DIR ? target : link;
   } catch {
     // A broken link is still a name worth printing, which is why this is not an error.
     return link;
@@ -311,9 +318,14 @@ export const COMMANDS = {
           }
           if (!flags.has('a')) entries = entries.filter((entry) => !entry.name.startsWith('.'));
           else {
+            // Resolved physically, because these two name the directory being listed and
+            // its real parent. Lexically, `.` inside a symlinked directory reported the
+            // symlink — a listing of a directory in which the directory itself appeared as
+            // a link to somewhere else.
+            const here = ctx.fs.realpath(current, { cwd: ctx.shell.cwd });
             entries.unshift(
-              { name: '..', stat: ctx.fs.lstat(abs(ctx, `${current}/..`)) },
-              { name: '.', stat: ctx.fs.lstat(abs(ctx, current)) },
+              { name: '..', stat: ctx.fs.lstat(ctx.fs.realpath(`${here}/..`)) },
+              { name: '.', stat: ctx.fs.lstat(here) },
             );
           }
           if (header) ctx.write(`${first ? '' : '\n'}${current}:\n`);
@@ -923,6 +935,17 @@ export const COMMANDS = {
           return;
         }
         if (!flags.has('r')) throw new UsageError(`${from}: Is a directory`);
+        // A directory copied into its own subtree never terminates: the copy creates a new
+        // child, the walk reaches it, and it copies that too. Resolved on both sides first,
+        // because `cp -r a /tmp/link-to-a/b` is the same mistake spelled differently.
+        const source = ctx.fs.realpath(from, { cwd });
+        const destination = joinPath(
+          ctx.fs.realpath(dirname(abs(ctx, to)), { cwd }),
+          basename(abs(ctx, to)),
+        );
+        if (destination === source || destination.startsWith(`${source}/`)) {
+          throw new UsageError(`cannot copy '${from}' into itself, '${to}'`);
+        }
         if (!ctx.fs.exists(to, { cwd })) ctx.fs.mkdir(to, { cwd, mode: stat.mode });
         for (const name of ctx.fs.readdir(from, { cwd })) {
           copy(`${from}/${name}`, `${to}/${name}`);

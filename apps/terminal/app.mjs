@@ -20,6 +20,12 @@
 //: lays its columns out to fit and a wrong width is a listing that wraps.
 const PROBE_TEXT = '0123456789';
 
+//: Scrollback ceiling, in blocks — one block is one `write` from one command. A session that
+//: runs `find /` in a loop would otherwise grow the DOM until the tab slows down, which looks
+//: like the shell getting slower rather than like a window that is keeping everything.
+const MAX_BLOCKS = 4000;
+const TRIM_BLOCKS = 1000;
+
 export default {
   id: 'terminal',
   name: 'Terminal',
@@ -100,6 +106,13 @@ export default {
       // `innerHTML` here would make every file in the filesystem a script.
       block.textContent = text;
       log.append(block);
+      // Trimmed in batches rather than one block per write, so appending stays O(1) in the
+      // common case instead of removing a node on every line of a long listing.
+      if (log.childElementCount > MAX_BLOCKS) {
+        for (let i = 0; i < TRIM_BLOCKS && log.firstElementChild; i += 1) {
+          log.firstElementChild.remove();
+        }
+      }
       log.scrollTop = log.scrollHeight;
     };
 
@@ -223,8 +236,12 @@ export default {
     // report ENOENT for a directory the reader never left.
     const unwatch = fs.watch(() => {
       if (!fs.exists(shell.cwd)) {
-        append(`terminal: ${shell.cwd} is gone; moved to ${HOME}\n`, 'term-error');
-        shell.cwd = fs.exists(HOME) ? HOME : '/';
+        const next = fs.exists(HOME) ? HOME : '/';
+        // The destination is read from the decision, not restated as `HOME`: when home is
+        // gone too this moves to `/`, and a message that said otherwise would be a report of
+        // something that did not happen.
+        append(`terminal: ${shell.cwd} is gone; moved to ${next}\n`, 'term-error');
+        shell.cwd = next;
         refreshPrompt();
       }
       refreshStatus();

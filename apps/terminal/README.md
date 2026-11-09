@@ -71,10 +71,11 @@ so rather than failing the next command with `ENOENT` for a directory the reader
 | Not here | Why |
 | --- | --- |
 | Variables, `$VAR`, `export` | Expansion is where a toy shell turns into a language. The floor is globs and `~`. |
-| `&&`, `;`, `&` | Exit statuses exist and are returned; sequencing is the next thing to add rather than something half-present. |
+| `&&`, `;`, `&` | Exit statuses exist and are returned; sequencing is the next thing to add rather than something half-present. Typing one is an error, not a filename — read as a word, `mkdir d && echo x` made four directories and reported success. |
 | ANSI escapes | The pane is one text renderer, not a terminal emulator. `ls` has no colour and `less` has no screen to take over. |
 | Symbolic `chmod u+x` | Octal only. A parser that took `u+x` and ignored `g-w` would be worse than one that takes neither. |
 | Binary files, `dd`, `xxd` | The filesystem holds text. See `shared/fs/README.md`. |
+| `/dev/null` | There are no device files — a node is a directory, a file or a symlink. `> /dev/null` says "no such file" rather than pretending to discard. |
 
 ## What to add next, in order
 

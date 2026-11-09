@@ -47,6 +47,11 @@ export default {
       area.value = SCRATCH;
     }
 
+    //: When this window last agreed with the file. The filesystem is shared, so the terminal
+    //: can write the same path while the buffer sits here; saving over that silently would
+    //: lose a write this window never saw.
+    let readAt = path ? fs.lstat(path).mtime : 0;
+    let overwrite = false;
     let dirty = false;
     const report = () => {
       if (!path) {
@@ -58,7 +63,19 @@ export default {
 
     const save = () => {
       try {
+        // XP's Notepad would have overwritten it without a word. This asks once: the first
+        // Ctrl+S after someone else's write refuses and says so, and the next one goes
+        // through, because the reader may well mean to replace it.
+        // A file that has been removed is not a conflict: the write puts it back. Only a
+        // file that is still there and newer than this buffer is one.
+        if (!overwrite && fs.exists(path) && fs.lstat(path).mtime > readAt) {
+          overwrite = true;
+          win.setStatus(`${path} · changed on disk since it was opened — Ctrl+S again to overwrite`);
+          return;
+        }
         fs.writeFile(path, area.value);
+        readAt = fs.lstat(path).mtime;
+        overwrite = false;
         dirty = false;
         win.setTitle(`${path.split('/').pop()} - Notepad`);
         report();

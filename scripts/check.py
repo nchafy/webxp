@@ -2469,6 +2469,10 @@ FS_ASSERTIONS = """(async () => {
   // The ceiling exists so a write cannot be accepted and then fail at save time.
   refuses('past the file ceiling', 'ENOSPC',
           () => fs.writeFile('/t/big', 'x'.repeat(MAX_FILE_SIZE + 1)));
+  // And it leaves nothing behind. The first version created the inode and the name before
+  // measuring, so a refused write left an empty file — one that was also missing from
+  // storage, because the throw skipped the event the save listens to.
+  refuses('a refused write creates nothing', 'ENOENT', () => fs.stat('/t/big'));
 
   // Walking reports symlinks and does not follow them: a link to an ancestor would make
   // the walk infinite.
@@ -2508,6 +2512,51 @@ FS_ASSERTIONS = """(async () => {
   });
   refuses('a version from the future', 'EINVAL',
           () => VFS.parse({ ...image, version: image.version + 1 }));
+  // An entry list that is not a list of pairs. `new Map([1, 2])` throws a TypeError, which
+  // is not an FsError, which made the mount rethrow instead of reseeding: one malformed
+  // byte in localStorage and both apps failed to start on every launch, with no way back
+  // from inside the desktop.
+  refuses('entries that are not pairs', 'EINVAL', () => {
+    const corrupt = JSON.parse(JSON.stringify(image));
+    corrupt.inodes.find((row) => row.ino === 1).entries = [1, 2];
+    VFS.parse(corrupt);
+  });
+  refuses('an entry whose name is not a string', 'EINVAL', () => {
+    const corrupt = JSON.parse(JSON.stringify(image));
+    corrupt.inodes.find((row) => row.ino === 1).entries.push([7, 1]);
+    VFS.parse(corrupt);
+  });
+  // Refused rather than defaulted. A directory with no usable entry list came back as an
+  // empty directory, which restores a tree with every file silently missing.
+  refuses('a directory with no entry list', 'EINVAL', () => {
+    const corrupt = JSON.parse(JSON.stringify(image));
+    corrupt.inodes.find((row) => row.ino === 1).entries = 'nope';
+    VFS.parse(corrupt);
+  });
+  refuses('a symlink with no target', 'EINVAL', () => {
+    const corrupt = JSON.parse(JSON.stringify(image));
+    delete corrupt.inodes.find((row) => row.type === 'link').target;
+    VFS.parse(corrupt);
+  });
+  refuses('a file with no contents', 'EINVAL', () => {
+    const corrupt = JSON.parse(JSON.stringify(image));
+    delete corrupt.inodes.find((row) => row.type === 'file').data;
+    VFS.parse(corrupt);
+  });
+
+  // A batch notifies once, at the end, with the tree whole. Un-batched, the first mutation
+  // of a reseed told every watcher the filesystem was empty.
+  const during = [];
+  setup('a batched rebuild', () => {
+    const unwatch = fs.watch(() => during.push(fs.exists(HOME)));
+    fs.batch('reset', () => {
+      fs.reset();
+      buildSeed(fs);
+    });
+    unwatch();
+  });
+  want('one event for a batch', () => during.length, 1);
+  want('and the tree was whole when it arrived', () => during[0], true);
 
   return bad;
 })()"""
@@ -2542,44 +2591,103 @@ def check_filesystem(page) -> list[str]:
     return [f"filesystem: {message}" for message in found]
 
 
-#: A terminal window's pane and prompt, by index into the open terminals.
+#: A terminal window's pane and prompt. Addressed by window id, never by position in the
+#: list: windows open and close around these checks, and an index silently retargets.
 TERM_PARTS = """(() => {
   const wins = window.webxp.windows.filter((w) => w.programId === 'terminal');
-  const win = wins[INDEX];
+  const win = ID ? wins.find((w) => w.id === ID) : wins[wins.length - 1];
   if (!win) return null;
   const input = win.el.querySelector('.term-input');
   const log = win.el.querySelector('.term-log');
   if (!input || !log) return null;
   const r = input.getBoundingClientRect();
-  return { text: log.textContent, value: input.value, prompt: win.el.querySelector('.term-prompt').textContent,
+  return { id: win.id, text: log.textContent, value: input.value,
+           prompt: win.el.querySelector('.term-prompt').textContent,
            x: r.left + r.width / 2, y: r.top + r.height / 2, count: wins.length };
 })()"""
 
 
-def term_parts(page, index: int = -1) -> dict:
-    parts = page.evaluate(TERM_PARTS.replace("INDEX", str(index) if index >= 0 else "wins.length - 1"))
+def term_parts(page, win_id: str | None = None) -> dict:
+    parts = page.evaluate(TERM_PARTS.replace("ID", json.dumps(win_id) if win_id else "null"))
     if parts is None:
-        raise CDPError("no terminal window open")
+        raise CDPError(f"no terminal window {win_id or '(last)'}")
     return parts
 
 
-def term_run(page, line: str, index: int = -1, settle: float = 0.35) -> str:
-    """Type a line into a terminal and return only what it printed.
+def raise_window(page, win_id: str) -> None:
+    """Bring a window to the front before anything is clicked inside it.
 
-    Real input: a click to focus, `Input.insertText`, a real Enter. A `dispatchEvent` in
-    page script would prove the listener runs and nothing about whether it is reachable.
+    Through the desktop's own `focus`, not by clicking the title bar, because a click is
+    exactly what cannot be aimed yet: the window may be underneath another one at that
+    coordinate. Omitting this was a real harness fault — `term_run` clicked where the input
+    had been measured, a later check opened a window over it, and the keystrokes went to
+    whichever window was on top while the assertions read the one underneath.
     """
-    before = term_parts(page, index)
+    found = page.evaluate(
+        "(() => { const d = window.webxp;"
+        " const win = d.windows.find((w) => w.id === %s);"
+        " if (!win) return false; d.focus(win, { moveFocus: true }); return true; })()"
+        % json.dumps(win_id)
+    )
+    if not found:
+        raise CDPError(f"no window {win_id}")
+    time.sleep(0.12)
+
+
+def term_run(page, line: str, win_id: str | None = None, settle: float = 0.35) -> str:
+    """Type a line into one terminal and return only what it printed.
+
+    Real input: the window is raised, the input is clicked, `Input.insertText`, a real Enter.
+    A `dispatchEvent` in page script would prove the listener runs and nothing about whether
+    it is reachable.
+    """
+    target = win_id or term_parts(page)["id"]
+    raise_window(page, target)
+    before = term_parts(page, target)
     mouse(page, "mousePressed", before["x"], before["y"], buttons=1)
     mouse(page, "mouseReleased", before["x"], before["y"], buttons=0)
     page.type_text(line)
     page.press("Enter")
     time.sleep(settle)
-    after = term_parts(page, index)
+    after = term_parts(page, target)
     if not after["text"].startswith(before["text"]):
         # `clear` empties the pane, so there is no prefix to strip.
         return after["text"]
     return after["text"][len(before["text"]):]
+
+
+def notepad_parts(page, win_id: str | None = None) -> dict | None:
+    """One Notepad window's title, buffer, status and where its text area is."""
+    return page.evaluate(
+        "(() => { const pads = window.webxp.windows.filter((w) => w.programId === 'notepad');"
+        " const w = %s ? pads.find((p) => p.id === %s) : pads[pads.length - 1];"
+        " if (!w) return null;"
+        " const area = w.el.querySelector('.notepad-area');"
+        " const r = area ? area.getBoundingClientRect() : null;"
+        " return { id: w.id, title: w.titleText, value: area ? area.value : null,"
+        "          status: w.statusEl ? w.statusEl.textContent : '',"
+        "          x: r ? r.left + 20 : 0, y: r ? r.top + 10 : 0 }; })()"
+        % (json.dumps(win_id) if win_id else "null", json.dumps(win_id) if win_id else "null")
+    )
+
+
+def notepad_caret(page, win_id: str) -> None:
+    """Raise a Notepad window, click into its text, and put the caret at the end.
+
+    The click is real input and is what focuses the field. The caret is then moved by script,
+    because `Input.insertText` lands wherever the caret is and a click lands it wherever the
+    pointer was — which is a position, not a value, so nothing about the edit is synthesised.
+    """
+    raise_window(page, win_id)
+    pad = notepad_parts(page, win_id)
+    mouse(page, "mousePressed", pad["x"], pad["y"], buttons=1)
+    mouse(page, "mouseReleased", pad["x"], pad["y"], buttons=0)
+    page.evaluate(
+        "(() => { const w = window.webxp.windows.find((w) => w.id === %s);"
+        " const area = w.el.querySelector('.notepad-area');"
+        " area.setSelectionRange(area.value.length, area.value.length); })()"
+        % json.dumps(win_id)
+    )
 
 
 #: One row is one line typed, the strings its output must contain, and the strings it must
@@ -2590,10 +2698,21 @@ TERM_LINES = (
     ("ls", ["readme.txt", "notes", "links"], []),
     ("cat notes/todo.txt", ["read the window model"], []),
     ("ls -l links", ["lrwxrwxrwx", "relative -> ../readme.txt", "ideas-too"], []),
+    # A symlink named directly stays the symlink. Following it printed a plain file, in the
+    # one directory that exists to show that a symlink is not one.
+    ("ls -l links/absolute", ["lrwxrwxrwx", "-> /etc/motd"], ["-rw-r--r--"]),
+    ("ls -F links/absolute", ["links/absolute@"], []),
+    # A symlink to a directory is still followed, because that is what makes `ls` on one
+    # list its contents.
+    ("ls links/relative-dir", ["todo.txt"], ["relative-dir"]),
     ("cat links/relative", ["webxp filesystem"], []),
     ("cd links/relative-dir", [], ["No such file"]),
     ("pwd", ["/home/user/links/relative-dir"], []),
     ("pwd -P", ["/home/user/notes"], ["links"]),
+    # `.` and `..` name the directory being listed and its real parent. Synthesised
+    # lexically, `.` inside a symlinked directory reported the symlink instead — a listing
+    # in which the directory appeared as a link to somewhere else.
+    ("ls -la", ["drwxr-xr-x"], [". -> ", ".. -> "]),
     ("cd ..", [], []),
     ("pwd", ["/home/user/links"], ["relative-dir"]),
     ("cd ~", [], []),
@@ -2605,6 +2724,14 @@ TERM_LINES = (
     ("ls --colour", ["unrecognised option"], []),
     ("nosuchcommand", ["command not found"], []),
     ("cat 'unterminated", ["unterminated single quote"], []),
+    # An operator this shell does not have is an error, not a filename. Read as a word,
+    # `&&` made a directory called `&&`.
+    ("mkdir /tmp/d && echo ran-anyway", ["&& is not supported"], ["ran-anyway"]),
+    ("ls /tmp", [], ["&&", "/tmp/d"]),
+    ("echo 'a;b'", ["a;b"], ["not supported"]),
+    # A bracket body that is not a usable character class degrades to a literal. It reached
+    # `new RegExp` from `find -name` outside any try, as a stack trace and status 70.
+    (r"find . -name '[\]'", [], ["internal error", "Unterminated"]),
     # Globs, pipes, redirection.
     ("find / -name '*.log'", ["/var/log/boot.log"], []),
     ("grep -n error /var/log/boot.log", ["10:", "no sound card"], ["kernel booting"]),
@@ -2619,6 +2746,13 @@ TERM_LINES = (
     ("find /tmp -type d", ["/tmp/a/b/c"], []),
     ("rm -r /tmp/a", [], []),
     ("find /tmp -type d", [], ["/tmp/a"]),
+    # A directory copied into its own subtree never terminated: the copy created a child,
+    # the walk reached it, and it copied that too. Both edges, because a guard that refuses
+    # everything is also a guard.
+    ("mkdir -p /tmp/src/inner", [], []),
+    ("cp -r /tmp/src /tmp/src/copy", ["into itself"], []),
+    ("cp -r /tmp/src /tmp/elsewhere", [], ["into itself"]),
+    ("ls /tmp/elsewhere", ["inner"], []),
     ("ln -s /etc/hosts /tmp/h", [], []),
     ("readlink /tmp/h", ["/etc/hosts"], []),
     ("realpath /tmp/h", ["/etc/hosts"], []),
@@ -2634,7 +2768,10 @@ def check_terminal(page, *, invert: bool = False) -> list[str]:
     """The shell, driven by real keystrokes: output, failures, pipes, globs, redirection."""
     bad = []
     launch(page, "terminal")
-    banner = term_parts(page)
+    # Named once and used throughout. Every later check opens more terminals, and a helper
+    # that means "the last one" would quietly move this session out from under the rows.
+    shell = term_parts(page)["id"]
+    banner = term_parts(page, shell)
     if "Type 'help'" not in banner["text"]:
         bad.append(f"terminal: no banner in the pane — {banner['text'][:60]!r}")
     if "user@webxp:~$" not in banner["prompt"]:
@@ -2647,7 +2784,7 @@ def check_terminal(page, *, invert: bool = False) -> list[str]:
         lines = (("cat /etc/motd", ["No such file or directory"], []),) + lines
 
     for line, musts, must_nots in lines:
-        output = term_run(page, line)
+        output = term_run(page, line, shell)
         # The echoed command line is dropped before anything is asserted. It contains the
         # prompt, which contains the working directory, which contains most of the strings
         # these rows are about — `pwd -P` must not print `links`, and the prompt it was typed
@@ -2662,18 +2799,19 @@ def check_terminal(page, *, invert: bool = False) -> list[str]:
 
     # A command that prints nothing has to print nothing. Without this, every assertion
     # above could be satisfied by a pane that accumulates text from somewhere else.
-    quiet = term_run(page, "touch /tmp/quiet")
+    quiet = term_run(page, "touch /tmp/quiet", shell)
     if quiet.strip() != "user@webxp:~$ touch /tmp/quiet":
         bad.append(f"terminal: touch printed {quiet.strip()!r}, want only the echoed line")
 
     # Tab completion, and history on the arrow keys.
-    parts = term_parts(page)
+    raise_window(page, shell)
+    parts = term_parts(page, shell)
     mouse(page, "mousePressed", parts["x"], parts["y"], buttons=1)
     mouse(page, "mouseReleased", parts["x"], parts["y"], buttons=0)
     page.type_text("cat note")
     page.press("Tab")
     time.sleep(0.15)
-    completed = term_parts(page)["value"]
+    completed = term_parts(page, shell)["value"]
     if completed != "cat notes/":
         bad.append(f"terminal: Tab completed to {completed!r}, want 'cat notes/'")
     page.type_text("todo.txt")
@@ -2681,23 +2819,23 @@ def check_terminal(page, *, invert: bool = False) -> list[str]:
     time.sleep(0.3)
     page.press("ArrowUp")
     time.sleep(0.1)
-    recalled = term_parts(page)["value"]
+    recalled = term_parts(page, shell)["value"]
     if recalled != "cat notes/todo.txt":
         bad.append(f"terminal: ArrowUp recalled {recalled!r}, want the last line")
     page.press("ArrowDown")
     time.sleep(0.1)
-    if term_parts(page)["value"] != "":
+    if term_parts(page, shell)["value"] != "":
         bad.append("terminal: ArrowDown past the end of the history did not clear the line")
 
     # `ls` lays out columns for the pane it is in, so the same listing has to reflow. Both
     # extremes, because a layout checked at one width is a layout checked nowhere.
     def ls_rows(width: int) -> int:
         page.evaluate(
-            "window.webxp.windows.filter((w) => w.programId === 'terminal').at(-1)"
-            f".sizeTo({width}, 420)"
+            "window.webxp.windows.find((w) => w.id === %s).sizeTo(%d, 420)"
+            % (json.dumps(shell), width)
         )
         time.sleep(0.2)
-        output = term_run(page, "ls /etc")
+        output = term_run(page, "ls /etc", shell)
         return len([row for row in output.strip().split("\n")[1:] if row.strip()])
 
     wide = ls_rows(640)
@@ -2710,12 +2848,12 @@ def check_terminal(page, *, invert: bool = False) -> list[str]:
             "not reflow with the window"
         )
     page.evaluate(
-        "window.webxp.windows.filter((w) => w.programId === 'terminal').at(-1).sizeTo(620, 400)"
+        "window.webxp.windows.find((w) => w.id === %s).sizeTo(620, 400)" % json.dumps(shell)
     )
 
     # `clear` empties the pane, which is the one command whose effect is not text.
-    term_run(page, "clear")
-    if term_parts(page)["text"].strip() != "":
+    term_run(page, "clear", shell)
+    if term_parts(page, shell)["text"].strip() != "":
         bad.append("terminal: clear left text in the pane")
     return bad
 
@@ -2728,20 +2866,13 @@ def check_open_across_apps(page) -> list[str]:
     reads. Anything less is two apps that each work.
     """
     bad = []
-    term_run(page, "echo bridge-one > /tmp/bridge.txt")
-    opened = term_run(page, "open /tmp/bridge.txt", settle=1.2)
+    shell = term_parts(page)["id"]
+    term_run(page, "echo bridge-one > /tmp/bridge.txt", shell)
+    opened = term_run(page, "open /tmp/bridge.txt", shell, settle=1.2)
     if "opened /tmp/bridge.txt in Notepad" not in opened:
         bad.append(f"open: the terminal said {opened.strip()[:120]!r}")
 
-    pad = page.evaluate(
-        "(() => { const w = window.webxp.windows.filter((w) => w.programId === 'notepad').at(-1);"
-        " if (!w) return null;"
-        " const area = w.el.querySelector('.notepad-area');"
-        " const r = area ? area.getBoundingClientRect() : null;"
-        " return { title: w.titleText, value: area ? area.value : null,"
-        "          status: w.statusEl ? w.statusEl.textContent : '',"
-        "          x: r ? r.left + 20 : 0, y: r ? r.top + 10 : 0 }; })()"
-    )
+    pad = notepad_parts(page)
     if pad is None:
         return bad + ["open: no Notepad window opened"]
     if pad["title"] != "bridge.txt - Notepad":
@@ -2752,36 +2883,51 @@ def check_open_across_apps(page) -> list[str]:
     # Typed into, then saved with Ctrl+S. The caret is moved by script and the text is
     # inserted as real input: `insertText` lands wherever the caret is, and a click lands it
     # wherever the pointer was.
-    mouse(page, "mousePressed", pad["x"], pad["y"], buttons=1)
-    mouse(page, "mouseReleased", pad["x"], pad["y"], buttons=0)
-    page.evaluate(
-        "(() => { const w = window.webxp.windows.filter((w) => w.programId === 'notepad').at(-1);"
-        " const area = w.el.querySelector('.notepad-area');"
-        " area.setSelectionRange(area.value.length, area.value.length); })()"
-    )
+    notepad_caret(page, pad["id"])
     page.type_text("edited-in-notepad\n")
     time.sleep(0.1)
-    for event_type in ("rawKeyDown", "keyUp"):
-        page.call(
-            "Input.dispatchKeyEvent",
-            type=event_type,
-            key="s",
-            code="KeyS",
-            windowsVirtualKeyCode=83,
-            nativeVirtualKeyCode=83,
-            # 2 is Ctrl. Notepad's handler asks for `ctrlKey`, and a keypress without it is
-            # the browser's own Save dialog rather than the editor's.
-            modifiers=2,
-        )
-    time.sleep(0.3)
-    saved = page.evaluate(
-        "(() => { const w = window.webxp.windows.filter((w) => w.programId === 'notepad').at(-1);"
-        " return w.statusEl ? w.statusEl.textContent : ''; })()"
-    )
+
+    def ctrl_s() -> None:
+        for event_type in ("rawKeyDown", "keyUp"):
+            page.call(
+                "Input.dispatchKeyEvent",
+                type=event_type,
+                key="s",
+                code="KeyS",
+                windowsVirtualKeyCode=83,
+                nativeVirtualKeyCode=83,
+                # 2 is Ctrl. Notepad's handler asks for `ctrlKey`, and a keypress without it
+                # is the browser's own Save dialog rather than the editor's.
+                modifiers=2,
+            )
+        time.sleep(0.3)
+
+    ctrl_s()
+    saved = notepad_parts(page, pad["id"])["status"]
     if "saved" not in saved:
         bad.append(f"open: Notepad's status after Ctrl+S is {saved!r}")
 
-    back = term_run(page, "cat /tmp/bridge.txt")
+    # A write from the other window, behind this buffer's back. The first Ctrl+S after it has
+    # to refuse: Notepad read the file once at mount, and saving over a change it never saw
+    # would lose the shell's write while reporting success.
+    term_run(page, "echo written-behind-notepad > /tmp/bridge.txt", shell)
+    notepad_caret(page, pad["id"])
+    page.type_text("one-more-edit\n")
+    ctrl_s()
+    conflict = notepad_parts(page, pad["id"])["status"]
+    if "changed on disk" not in conflict:
+        bad.append(f"open: Notepad overwrote an external change silently — status {conflict!r}")
+    held = term_run(page, "cat /tmp/bridge.txt", shell)
+    if "written-behind-notepad" not in held:
+        bad.append(f"open: the refused save wrote anyway — the file reads {held.strip()[:120]!r}")
+    # And the second one goes through, because replacing it may well be what was meant.
+    raise_window(page, pad["id"])
+    ctrl_s()
+    forced = term_run(page, "cat /tmp/bridge.txt", shell)
+    if "one-more-edit" not in forced:
+        bad.append(f"open: a second Ctrl+S did not overwrite — the file reads {forced.strip()[:120]!r}")
+
+    back = term_run(page, "cat /tmp/bridge.txt", shell)
     if "edited-in-notepad" not in back:
         bad.append(
             f"open: the terminal reads {back.strip()[:120]!r} — Notepad saved into a "
@@ -2789,13 +2935,15 @@ def check_open_across_apps(page) -> list[str]:
         )
 
     # A directory opens a second terminal, already in it. Two sessions, one filesystem.
-    term_run(page, "open /tmp", settle=1.2)
+    term_run(page, "open /tmp", shell, settle=1.2)
     second = term_parts(page)
     if second["count"] < 2:
         bad.append("open: a directory did not open a second terminal")
+    elif second["id"] == shell:
+        bad.append("open: a directory did not open a second terminal")
     elif "/tmp$" not in second["prompt"]:
         bad.append(f"open: the second terminal's prompt is {second['prompt']!r}, want /tmp")
-    elif "bridge.txt" not in term_run(page, "ls"):
+    elif "bridge.txt" not in term_run(page, "ls", second["id"]):
         bad.append("open: the second terminal cannot see the file the first one wrote")
     return bad
 
@@ -2811,10 +2959,12 @@ def check_launch_arguments(page) -> list[str]:
     )
     page.evaluate("window.webxp.launch('terminal', { cwd: '/etc' })")
     time.sleep(1.0)
-    prompt = term_parts(page)["prompt"]
-    if "/etc$" not in prompt:
-        bad.append(f"launch arguments: the new terminal's prompt is {prompt!r}, want /etc")
-    if "motd" not in term_run(page, "ls"):
+    started = term_parts(page)
+    if "/etc$" not in started["prompt"]:
+        bad.append(
+            f"launch arguments: the new terminal's prompt is {started['prompt']!r}, want /etc"
+        )
+    if "motd" not in term_run(page, "ls", started["id"]):
         bad.append("launch arguments: the terminal did not start in the directory it was given")
 
     # `about` is a singleton: the first launch mounts, the second has no mount to hand
@@ -2839,13 +2989,20 @@ def check_fs_persistence(page) -> list[str]:
     `localStorage` that a same-page assertion cannot distinguish from an in-memory tree.
     """
     bad = []
-    written = term_run(page, "echo survives-a-reload > /home/user/persist.txt")
-    if written.strip() != "user@webxp:~$ echo survives-a-reload > /home/user/persist.txt" \
-            and "No such file" in written:
-        bad.append(f"persistence: the write failed — {written.strip()[:120]!r}")
+    # Its own session, at home. The terminal left open by the previous check is in /etc, and
+    # the assertions below are about what a prompt at home prints.
+    page.evaluate("window.webxp.launch('terminal')")
+    time.sleep(1.0)
+    shell = term_parts(page)["id"]
+    written = term_run(page, "echo survives-a-reload > /home/user/persist.txt", shell)
+    # The echoed line and nothing else. Written first as `!= echo and "No such file" in it`,
+    # which is a condition the `and` makes dead for every failure that is not ENOENT: a write
+    # refused for permissions or for space passed it silently.
+    if written.strip() != "user@webxp:~$ echo survives-a-reload > /home/user/persist.txt":
+        bad.append(f"persistence: the write printed {written.strip()[:160]!r}, want nothing")
     # Past the 300 ms debounce in `shared/fs/fs.mjs`.
     time.sleep(0.8)
-    state = term_run(page, "df")
+    state = term_run(page, "df", shell)
     if "persistence: webxp.fs.v1" not in state:
         bad.append(f"persistence: df reports {state.strip()[:160]!r}")
 
@@ -2854,23 +3011,43 @@ def check_fs_persistence(page) -> list[str]:
     console_errors(page)
     launch(page, "terminal")
     restored = term_parts(page)
+    shell = restored["id"]
     if "Filesystem restored" not in restored["text"]:
         bad.append(f"persistence: after a reload the banner says {restored['text'][:80]!r}")
-    read = term_run(page, "cat persist.txt")
+    read = term_run(page, "cat persist.txt", shell)
     if "survives-a-reload" not in read:
         bad.append(
             f"persistence: after a reload the file reads {read.strip()[:120]!r} — the tree "
             "did not come back out of localStorage"
         )
 
+    # A second session, sitting in a directory the seed tree also has. `format` must not
+    # move it: the rebuild is one batch, and un-batched its first step told every watcher the
+    # filesystem was empty — which moved this window to `/` and left it there.
+    page.evaluate("window.webxp.launch('terminal', { cwd: '/home/user/notes' })")
+    time.sleep(1.0)
+    bystander = term_parts(page)["id"]
+    opened_at = term_parts(page, bystander)["prompt"]
+    if "/notes$" not in opened_at:
+        bad.append(f"persistence: the second terminal opened at {opened_at!r}")
+
     # `format` puts the seed tree back, which is also how this check hands the desktop on
     # without the files it wrote.
-    reset = term_run(page, "format --yes", settle=0.8)
+    reset = term_run(page, "format --yes", shell, settle=0.8)
     if "filesystem reset" not in reset:
         bad.append(f"persistence: format said {reset.strip()[:120]!r}")
-    after = term_run(page, "cat persist.txt")
+    after = term_run(page, "cat persist.txt", shell)
     if "No such file" not in after:
         bad.append(f"persistence: format left persist.txt behind — {after.strip()[:120]!r}")
+
+    survivor = term_parts(page, bystander)
+    if "/notes$" not in survivor["prompt"]:
+        bad.append(
+            f"persistence: after format the other terminal is at {survivor['prompt']!r} — it "
+            "was moved out of a directory the seed tree still has"
+        )
+    elif "ideas.txt" not in term_run(page, "ls", bystander):
+        bad.append("persistence: after format the other terminal cannot list its directory")
     fs_reset(page)
     return bad
 

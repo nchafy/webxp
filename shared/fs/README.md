@@ -28,6 +28,11 @@ many windows ask for it.
 That is the whole mechanism behind `open readme.txt` in the terminal: no message passing, no
 refresh, no event. Both windows already hold the same filesystem.
 
+Sharing has a cost, and it is Notepad's: a buffer read at mount can be stale by the time it
+is saved, because the shell can write the same path in between. Notepad records the `mtime`
+it read and refuses the first Ctrl+S after someone else's write, saying so in its status bar;
+a second Ctrl+S overwrites. Losing a write silently is the thing worth a keystroke.
+
 **Import it inside `mount`, never at module scope.** Every `app.mjs` is imported at startup
 to build the Start menu, and a module-scope import would make every reader pay for the
 engine, the seed tree and a `localStorage` read whether or not they open a file.
@@ -106,8 +111,13 @@ accepted and then fail at save time, by which point the data is already in the e
 ## What persists, and how it fails
 
 `fs.mjs` watches the filesystem's own change events and writes the serialised tree to
-`localStorage` under `webxp.fs.v1`, 300 ms after the last write. One keystroke in Notepad is
-one write, so saving per write would serialise the whole filesystem per character.
+`localStorage`, 300 ms after the last write. One keystroke in Notepad is one write, so saving
+per write would serialise the whole filesystem per character.
+
+The key is `webxp.fs.v${FORMAT_VERSION}`, derived rather than written out: the version in the
+key and `FORMAT_VERSION` in `vfs.mjs` are one fact, and hand-synced the version could be
+bumped while old payloads kept answering under the same key — the single thing the key's
+version exists to prevent.
 
 Three failures, each handled where it happens rather than swallowed:
 
@@ -115,20 +125,28 @@ Three failures, each handled where it happens rather than swallowed:
   replaced by a fresh seed. `VFS.parse` validates rather than trusts — the input is
   reachable from the devtools console and survives a version of the code that wrote a
   different shape, and an inode number pointing at nothing would otherwise surface much later
-  as a directory that cannot be listed.
+  as a directory that cannot be listed. The mount treats **any** failure to parse as a bad
+  image, not only the ones `parse` names: a rethrow leaves every launch of the terminal and
+  Notepad failing, with no way back from inside the desktop, because `format` needs a mount.
 - **Quota, or storage denied mid-session**, stops saving and records why. `df` prints it. A
   filesystem that silently stopped persisting is worse than one that never did.
 - **A version mismatch** is a reset, not a migration. The contents are a demo tree, and a
   loader that guesses at an older shape is more code than the data is worth.
 
 `format --yes` in the terminal restores the seed tree. It empties the live instance in place
-rather than making a new one, because other windows hold the old one.
+rather than making a new one, because other windows hold the old one — and it does both
+inside `fs.batch()`, so watchers are notified once, at the end, with the tree whole. Without
+the batch the first step of the rebuild told every watcher the filesystem was empty, and a
+terminal sitting in `/home/user` moved itself to `/` two calls before that stopped being
+true.
 
 ## Watching it
 
 ```js
 const unwatch = fs.watch(({ op, path }) => { /* 'write', 'unlink', 'reset', … */ });
 win.onClose = unwatch;   // if you start it, stop it
+
+fs.batch('reset', () => { /* many mutations */ });   // one event, at the end
 ```
 
 The terminal uses this for two things: its status bar, and noticing that its own working

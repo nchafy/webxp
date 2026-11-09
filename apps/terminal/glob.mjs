@@ -38,7 +38,15 @@ export function componentRegex(pattern, { ignoreCase = false } = {}) {
       i = close;
     } else out += char.replace(/[.+^${}()|\\\]]/g, '\\$&');
   }
-  return new RegExp(`${out}$`, ignoreCase ? 'i' : '');
+  try {
+    return new RegExp(`${out}$`, ignoreCase ? 'i' : '');
+  } catch {
+    // A bracket body can still be unparseable as a character class — `[\]` is the short
+    // one — and the pattern reaches here straight from `find -name`, outside any try. The
+    // whole pattern degrades to a literal rather than becoming a stack trace, which is the
+    // same answer the unclosed-bracket case above already gives.
+    return new RegExp(`^${pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, ignoreCase ? 'i' : '');
+  }
 }
 
 function joinPrefix(prefix, part) {

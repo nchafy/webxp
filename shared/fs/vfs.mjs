@@ -172,6 +172,8 @@ export class VFS {
     this.inodes = new Map();
     this.nextIno = ROOT_INO;
     this.watchers = new Set();
+    //: Depth of nested `batch` calls. Above zero, watchers are not notified.
+    this.batching = 0;
     const root = this.#create(DIR, { mode: 0o755, uid, gid });
     root.parent = root.ino;
     this.rootIno = root.ino;
@@ -548,27 +550,33 @@ export class VFS {
     this.#changed('unlink', path);
   }
 
-  writeFile(path, text, { cwd = '/', mode = 0o644, append = false, exclusive = false } = {}) {
+  writeFile(path, text, { cwd = '/', mode = 0o644, append = false } = {}) {
     const body = String(text);
     const hit = this.#resolve(path, { cwd });
-    let inode;
-    if (hit.ino === null) {
-      const dir = this.#inode(hit.dirIno);
+    let inode = hit.ino === null ? null : this.#inode(hit.ino);
+    let dir = null;
+    if (inode === null) {
+      dir = this.#inode(hit.dirIno);
       if (dir.type !== DIR) throw new FsError('ENOTDIR', path);
       this.#need(dir, W, path);
-      inode = this.#create(FILE, { mode });
-      dir.entries.set(hit.name, inode.ino);
-      this.#stamp(dir);
     } else {
-      inode = this.#inode(hit.ino);
-      if (exclusive) throw new FsError('EEXIST', path);
       if (inode.type === DIR) throw new FsError('EISDIR', path);
       this.#need(inode, W, path);
     }
-    const next = append ? inode.data + body : body;
+
+    // Measured before anything is created. A refusal that had already made the inode and
+    // the name left an empty file behind — and left it unsaved, because the throw skipped
+    // the change event the debounced save listens to.
+    const next = append && inode ? inode.data + body : body;
     if (next.length > MAX_FILE_SIZE) throw new FsError('ENOSPC', path);
-    const delta = next.length - inode.data.length;
+    const delta = next.length - (inode ? inode.data.length : 0);
     if (this.usedBytes() + delta > MAX_TOTAL_SIZE) throw new FsError('ENOSPC', path);
+
+    if (inode === null) {
+      inode = this.#create(FILE, { mode });
+      dir.entries.set(hit.name, inode.ino);
+      this.#stamp(dir);
+    }
     inode.data = next;
     this.#stamp(inode);
     this.#changed('write', path);
@@ -580,13 +588,12 @@ export class VFS {
   }
 
   /** Create an empty file, or move an existing one's timestamps forward. */
-  touch(path, { cwd = '/', mode = 0o644, createOnly = false } = {}) {
+  touch(path, { cwd = '/', mode = 0o644 } = {}) {
     const hit = this.#resolve(path, { cwd });
     if (hit.ino === null) {
       this.writeFile(path, '', { cwd, mode });
       return;
     }
-    if (createOnly) return;
     this.#stamp(this.#inode(hit.ino));
     this.#changed('touch', path);
   }
@@ -721,7 +728,32 @@ export class VFS {
     return () => this.watchers.delete(listener);
   }
 
+  /**
+   * Run a sequence of mutations as one, notifying watchers once at the end.
+   *
+   * Rebuilding the tree is the case this exists for. Every step of a reseed is a mutation,
+   * and the first of them fires while the tree is a bare root — so a watcher that asks "does
+   * my working directory still exist" is asked halfway through, gets "no", and acts on an
+   * answer that stops being true two calls later. A terminal was left stranded at `/` by
+   * exactly that.
+   *
+   * @param {string} op   What the batch is, for the one event watchers do get.
+   * @param {() => void} work
+   */
+  batch(op, work) {
+    this.batching += 1;
+    try {
+      work();
+    } finally {
+      this.batching -= 1;
+    }
+    this.#changed(op, '/');
+  }
+
   #changed(op, path) {
+    // Inside a batch the tree is mid-rebuild, and a watcher reading it would read a tree
+    // that never existed.
+    if (this.batching > 0) return;
     for (const listener of this.watchers) {
       try {
         listener({ op, path });
@@ -829,12 +861,41 @@ export class VFS {
         atime: row.atime || Date.now(),
       };
       if (row.type === DIR) {
-        inode.entries = new Map(Array.isArray(row.entries) ? row.entries : []);
+        // Every entry is checked to be a `[name, ino]` pair before the Map is built. `new
+        // Map([1, 2])` throws a TypeError, which is not an `FsError`, which means the mount
+        // in `fs.mjs` rethrows instead of reseeding — one malformed byte in `localStorage`
+        // and both apps fail to start on every launch, with no way back from inside the
+        // desktop. Refusing it as a bad image is the recoverable answer.
+        if (!Array.isArray(row.entries)) {
+          // Not defaulted to empty. A directory whose entry list is the wrong shape would
+          // come back as an empty directory, which restores a tree with every file silently
+          // missing — the one outcome worse than reseeding and saying so.
+          throw new FsError('EINVAL', `filesystem image: inode ${row.ino} has no entry list`);
+        }
+        inode.entries = new Map();
+        for (const entry of row.entries) {
+          if (!Array.isArray(entry) || entry.length !== 2
+              || typeof entry[0] !== 'string' || !Number.isInteger(entry[1])) {
+            throw new FsError(
+              'EINVAL',
+              `filesystem image: inode ${row.ino} has an entry that is not [name, ino]`,
+            );
+          }
+          inode.entries.set(entry[0], entry[1]);
+        }
         inode.parent = Number.isInteger(row.parent) ? row.parent : ROOT_INO;
       } else if (row.type === LINK) {
-        inode.target = typeof row.target === 'string' ? row.target : '';
+        // Strict for the same reason: an empty target is a link to nothing, and a file
+        // defaulted to '' is a file whose contents were quietly dropped.
+        if (typeof row.target !== 'string' || row.target === '') {
+          throw new FsError('EINVAL', `filesystem image: inode ${row.ino} has no target`);
+        }
+        inode.target = row.target;
       } else {
-        inode.data = typeof row.data === 'string' ? row.data : '';
+        if (typeof row.data !== 'string') {
+          throw new FsError('EINVAL', `filesystem image: inode ${row.ino} has no contents`);
+        }
+        inode.data = row.data;
       }
       fs.inodes.set(inode.ino, inode);
     }
@@ -850,9 +911,12 @@ export class VFS {
         }
       }
     }
-    fs.nextIno = Number.isInteger(data.nextIno)
-      ? Math.max(data.nextIno, Math.max(...fs.inodes.keys()) + 1)
-      : Math.max(...fs.inodes.keys()) + 1;
+    // Walked rather than spread into `Math.max`: an image with more inodes than the
+    // argument limit would throw a RangeError here, which is a stack message instead of a
+    // filesystem.
+    let highest = ROOT_INO;
+    for (const ino of fs.inodes.keys()) if (ino > highest) highest = ino;
+    fs.nextIno = Math.max(Number.isInteger(data.nextIno) ? data.nextIno : 0, highest + 1);
     return fs;
   }
 }

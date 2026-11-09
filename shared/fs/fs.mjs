@@ -11,9 +11,16 @@
  * between apps".
  */
 
-//: Where the tree is kept between reloads. The version is in the key rather than only in the
-//: payload, so a future format change cannot be handed a tree it would have to guess at.
-export const STORAGE_KEY = 'webxp.fs.v1';
+//: Where the tree is kept between reloads, as a function of the format version: a bumped
+//: version is a new key, so the new code is never handed a payload written by the old one.
+//:
+//: Derived rather than written out, because `webxp.fs.v1` and `FORMAT_VERSION = 1` are one
+//: fact. Hand-synced, the version could be bumped in `vfs.mjs` while old payloads kept
+//: answering under the same key — which is the single thing the key's version exists to
+//: prevent. The live value is `persistence.key`.
+function storageKey(version) {
+  return `webxp.fs.v${version}`;
+}
 
 //: How long after the last write the tree is saved. One keystroke in Notepad is one write,
 //: so saving per write would serialize the whole filesystem per character.
@@ -22,7 +29,8 @@ const SAVE_DELAY_MS = 300;
 //: Live state for the one mount, which is what `df` prints. A module-level object because
 //: there is a module-level mount; it has no meaning before `openFileSystem` resolves.
 export const persistence = {
-  key: STORAGE_KEY,
+  /** Set when the mount resolves the format version. Null before that. */
+  key: null,
   /** 'seed' when the tree was built fresh, 'restored' when it came out of storage. */
   source: 'unmounted',
   /** Number of completed saves this session. */
@@ -53,16 +61,12 @@ export function openFileSystem() {
   return pending;
 }
 
-/** Whether a mount has already happened, for a caller that must not cause one. */
-export function isMounted() {
-  return pending !== null;
-}
-
 async function mount() {
-  const [{ VFS, FsError }, { buildSeed }] = await Promise.all([
+  const [{ VFS, FORMAT_VERSION }, { buildSeed }] = await Promise.all([
     import('./vfs.mjs'),
     import('./seed.mjs'),
   ]);
+  persistence.key = storageKey(FORMAT_VERSION);
 
   let fs = null;
   const saved = readStorage();
@@ -71,16 +75,21 @@ async function mount() {
       fs = VFS.parse(saved);
       persistence.source = 'restored';
     } catch (error) {
-      // A stored tree that will not parse is reported and replaced, never silently merged
-      // into a fresh one. The console line is the only record of why yesterday's files are
-      // gone, so it carries the reason rather than the fact.
+      // Any failure, not only the ones `VFS.parse` names.
+      //
+      // The input is whatever is in `localStorage`: a payload from an older build, something
+      // a devtools console wrote, a half-finished write. There is no shape of it that should
+      // leave the desktop unusable, and a rethrow does exactly that — the mount rejects,
+      // every launch of the terminal and Notepad fails, and `format` cannot run because it
+      // needs a mount. So an unparseable image is a bad image, reported with its reason and
+      // replaced. A defect in `parse` itself shows up as this line in the console rather
+      // than as a dead desktop.
       console.error(`webxp: stored filesystem unusable, seeding a fresh one — ${error.message}`);
-      if (!(error instanceof FsError) && !(error instanceof SyntaxError)) throw error;
     }
   }
   if (!fs) {
     fs = new VFS();
-    buildSeed(fs);
+    fs.batch('seed', () => buildSeed(fs));
     persistence.source = 'seed';
   }
 
@@ -91,7 +100,7 @@ async function mount() {
 function readStorage() {
   let raw;
   try {
-    raw = window.localStorage.getItem(STORAGE_KEY);
+    raw = window.localStorage.getItem(persistence.key);
   } catch (error) {
     // A browser with storage denied is a browser with no persistence, not a broken desktop.
     persistence.error = `storage unreadable: ${error.name}`;
@@ -123,7 +132,7 @@ function attachSaving(fs) {
 /** Write the tree out now. Returns the failure reason, or null. */
 export function save(fs) {
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(fs.serialize()));
+    window.localStorage.setItem(persistence.key, JSON.stringify(fs.serialize()));
     persistence.saves += 1;
     persistence.lastSaved = Date.now();
     return null;
@@ -143,12 +152,19 @@ export function save(fs) {
  * The instance is kept and emptied rather than replaced, because other windows hold it.
  * Their working directories may no longer exist afterwards, which the terminal notices
  * through the change event it is already watching.
+ *
+ * Emptying and reseeding are one batch, so that event arrives once, with the tree whole. Un-
+ * batched, the first mutation of the rebuild notified every watcher while the filesystem was
+ * a bare root, and a terminal sitting in `/home/user` was moved to `/` on the grounds that
+ * its directory did not exist — two calls before it did again.
  */
 export async function resetFileSystem() {
   const fs = await openFileSystem();
   const { buildSeed } = await import('./seed.mjs');
-  fs.reset();
-  buildSeed(fs);
+  fs.batch('reset', () => {
+    fs.reset();
+    buildSeed(fs);
+  });
   persistence.source = 'seed';
   persistence.error = null;
   save(fs);
