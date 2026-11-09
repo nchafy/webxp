@@ -26,6 +26,11 @@ export const PROGRAM_KEYS = Object.freeze([
   'singleton', 'onDesktop', 'autostart', 'minLoadMs',
 ]);
 
+//: What the live region says for each state a window can land in — all three of them, so no
+//: transition passes unsaid. Every transition goes through `stateChanged`, which is what
+//: lets the whole policy be one table instead of a call at each site that changes a state.
+const SAID = Object.freeze({ min: 'minimized', normal: 'restored', max: 'maximized' });
+
 //: How long the frame shows its marquee before the content replaces it, when the content
 //: was ready sooner.
 //:
@@ -446,9 +451,15 @@ export class Desktop {
     if (options.moveFocus) win.takeFocus();
   }
 
+  /**
+   * No active window: nothing drawn active, no taskbar button pressed.
+   *
+   * The one implementation, called by `focusTopmost` and by a click on bare desktop. A
+   * second copy that drops the `setActive(false)` leaves the old window's chrome lit with
+   * nothing active, and the two states disagree until something else takes focus.
+   */
   blurAll() {
-    if (!this.active) return;
-    this.active.setActive(false);
+    if (this.active) this.active.setActive(false);
     this.active = null;
     this.syncTaskButtons();
   }
@@ -457,8 +468,7 @@ export class Desktop {
   focusTopmost() {
     const candidates = this.windows.filter((w) => !w.closed && w.state !== 'min');
     if (!candidates.length) {
-      this.active = null;
-      this.syncTaskButtons();
+      this.blurAll();
       return;
     }
     const top = candidates.reduce((best, w) => {
@@ -649,16 +659,22 @@ export class Desktop {
     this.live.textContent = message;
   }
 
-  /** A window was minimised, restored, maximised or un-maximised. */
+  /**
+   * A window was minimised, restored, maximised or un-maximised.
+   *
+   * Every transition arrives here, synchronously and before any animation, which is why the
+   * announcement is made here and nowhere else. Said after an awaited zoom it can describe a
+   * state the window has already left: minimise, then click the taskbar button inside the
+   * zoom, and the reader is told the window was minimised while it is back on screen.
+   */
   stateChanged(win) {
+    this.announce(`${win.titleText} ${SAID[win.state]}`);
+
     if (win.state === 'min') {
-      if (this.active === win) {
-        this.active.setActive(false);
-        this.active = null;
-        this.focusTopmost();
-        return;
-      }
-      this.syncTaskButtons();
+      // No explicit deactivation: `focusTopmost` either focuses another window, which
+      // deactivates this one, or finds none and clears the active window itself.
+      if (this.active === win) this.focusTopmost();
+      else this.syncTaskButtons();
       return;
     }
     // A window coming back out of the taskbar comes back on top. Everything else —
@@ -676,8 +692,9 @@ export class Desktop {
   removed(win) {
     this.windows = this.windows.filter((w) => w !== win);
     if (win.taskItem) win.taskItem.remove();
-    if (this.active === win) this.active = null;
     this.announce(`${win.titleText} closed`);
+    // It is out of `windows`, so `focusTopmost` cannot pick it and is the only thing that
+    // needs to decide what is active now.
     this.focusTopmost();
   }
 }

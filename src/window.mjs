@@ -538,8 +538,9 @@ export class XPWindow {
     await zoom(this.el, this.host.anchorRect(this), 'out');
     // Marked `hidden` only once the zoom has finished, so the window is never seen
     // vanishing mid-slide, and it leaves the tab order for as long as it is minimised.
+    // Nothing else may be said here: the window can already have been restored, and
+    // `stateChanged` has announced the transition from the one place that sees them all.
     if (this.state === 'min') this.el.hidden = true;
-    this.host.announce(`${this.titleText} minimized`);
   }
 
   async restore() {
