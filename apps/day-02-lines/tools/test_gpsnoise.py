@@ -8,7 +8,7 @@ seems right". So the measurement is checked against a closed form instead: build
 whose true length is known exactly, displace every point by noise of known sigma, and
 require the measured inflation to match the Rice mean to within sampling error.
 
-    .venv/bin/python days/02-lines/test_gpsnoise.py
+    .venv/bin/python apps/day-02-lines/tools/test_gpsnoise.py
 
 Prints one line per check and exits non-zero on the first failure. `--negative-control`
 corrupts the metric and the noise model in turn and requires the suite to notice; a check
@@ -537,6 +537,48 @@ def test_trim_ends() -> None:
     check(
         "trim: zero returns the track unchanged",
         gn.trim_ends(track, 0) is track,
+    )
+
+    # The case path distance alone does not catch: a watch left running at the door.
+    #
+    # 600 points of jitter inside a 3 m circle, then a straight kilometre away. Cropping by
+    # recorded path removes the jitter and almost no displacement, so without the
+    # straight-line floor the kept trace still starts at the door.
+    rng = np.random.default_rng(7)
+    jitter_n = 600
+    jl = 40.0 + rng.normal(0, 1.5e-5, jitter_n)
+    jo = -74.0 + rng.normal(0, 1.5e-5, jitter_n)
+    away_n = 1000
+    al = np.full(away_n, 40.0)
+    ao = -74.0 + np.arange(away_n) * step_deg
+    stuck = gn.Track(
+        name="stood at the door", source=pathlib.Path("none"),
+        lat=np.concatenate([jl, al]), lon=np.concatenate([jo, ao]),
+        t=np.arange(jitter_n + away_n, dtype=float),
+        ele=np.full(jitter_n + away_n, np.nan), sport="Hike",
+    )
+    origin = np.array([stuck.lat[0]]), np.array([stuck.lon[0]])
+
+    loose = gn.trim_ends(stuck, 100.0, min_offset_m=0)
+    tight = gn.trim_ends(stuck, 100.0, min_offset_m=200.0)
+
+    def offset(cut):
+        if cut is None:
+            return None
+        return gn.track_length_m(
+            np.array([stuck.lat[0], cut.lat[0]]), np.array([stuck.lon[0], cut.lon[0]])
+        )
+
+    loose_m, tight_m = offset(loose), offset(tight)
+    check(
+        "trim: path distance alone leaves a stationary start in place",
+        loose_m is not None and loose_m < 50,
+        f"moved {loose_m:.1f} m with no straight-line floor",
+    )
+    check(
+        "trim: the straight-line floor moves it anyway",
+        tight_m is not None and tight_m >= 200,
+        f"moved {tight_m:.1f} m with a 200 m floor",
     )
 
 

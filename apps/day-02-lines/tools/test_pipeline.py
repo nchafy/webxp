@@ -1,8 +1,15 @@
 """Hold `prepare.py`'s output against the fixture's known truth.
 
-    .venv/bin/python days/02-lines/make_fixture.py --out days/02-lines/fixture
-    .venv/bin/python days/02-lines/prepare.py days/02-lines/fixture --out days/02-lines/data
-    .venv/bin/python days/02-lines/test_pipeline.py
+    .venv/bin/python apps/day-02-lines/tools/make_fixture.py --out apps/day-02-lines/fixture
+    .venv/bin/python apps/day-02-lines/tools/prepare.py apps/day-02-lines/fixture \
+        --out apps/day-02-lines/data --trim-m 0
+    .venv/bin/python apps/day-02-lines/tools/test_pipeline.py
+
+`--trim-m 0` is required, not optional. `prepare.py` crops a quarter mile off each end by
+default, and these assertions compare against whole-route lengths — a cropped fixture fails
+every one of them for a reason that has nothing to do with what they test. The fixture's
+routes are 1.1 to 4.8 km, so the crop would take most of the short ones. `main` checks for
+this and says so rather than reporting six mysterious failures.
 
 `fixture/truth.json` records, per activity, the length Valhalla reported for the route
 the trace was built from. That number came out of a different request than the one
@@ -28,8 +35,9 @@ APP = HERE.parent
 FAILURES: list[str] = []
 
 # How far the matched length may sit from the route it was generated from. Measured at
-# 0.1% to 0.5% across the fixture; 2% leaves headroom for a tileset update changing a
-# path slightly without turning this into a tripwire.
+# -0.07% to -0.52% across the fixture's six activities, every one of them short; 2% leaves
+# headroom for a tileset update changing a path slightly without turning this into a
+# tripwire. Re-run this file to reproduce the six figures -- it prints each one.
 MATCH_TOLERANCE = 0.02
 
 
@@ -54,6 +62,29 @@ def main() -> int:
     truth = json.loads(truth_path.read_text())
     index = json.loads(index_path.read_text())
     by_name = {a["name"]: a for a in index["activities"]}
+
+    # Refuse a cropped fixture outright, rather than failing six assertions obscurely.
+    #
+    # `prepare.py` crops a quarter mile off each end by default, and every assertion below
+    # compares against a whole-route length. A cropped `data/` is not a regression in the
+    # measurement; it is the wrong input, and saying which is the difference between a
+    # five-minute fix and an afternoon. Detected by the recorded lengths coming in far under
+    # what the fixture recorded, which no measurement error could produce.
+    short = []
+    for fname, t in truth.items():
+        got = by_name.get(t["name"])
+        if got and got.get("recorded_m") and t.get("recorded_m"):
+            if got["recorded_m"] < t["recorded_m"] * 0.9:
+                short.append((t["name"], t["recorded_m"], got["recorded_m"]))
+    if len(short) >= max(2, len(truth) // 2):
+        print(
+            f"{len(short)} of {len(truth)} activities are much shorter than the fixture "
+            "recorded, so `data/` was built with the end crop on."
+        )
+        for name, want, got in short[:3]:
+            print(f"    {name}: {want:.0f} m recorded, {got:.0f} m in the output")
+        print("  Rebuild it with --trim-m 0; these checks compare whole-route lengths.")
+        return 1
 
     check("pipeline reported no failures", not index["failures"], str(index["failures"]))
     check(

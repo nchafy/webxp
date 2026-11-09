@@ -23,8 +23,9 @@ the few km of one run the planar error is of order (L/R)^2, which is 3.1 mm over
 Doing this on a sphere of mean radius instead skews the two axes in opposite directions.
 Measured by sabotaging the projection -- `test_gpsnoise.py --negative-control`, "single
 mean radius for both axes" -- a degree of latitude comes out +0.15% long and a degree of
-longitude -0.25% short. That is a quarter of the +0.9% median inflation a real run shows
-(`report.py`, "by sport", Run), so it would move every figure on the page.
+longitude -0.25% short. A real run's own inflation is under a percent (`report.py`, "by
+sport"), so an error of that size is a fraction of the effect being measured rather than a
+rounding detail, and it would move every figure on the page.
 """
 
 from __future__ import annotations
@@ -104,7 +105,7 @@ def frame_origin(values: np.ndarray) -> float:
     edge rather than the centre costs 0.0087% of scale. The ten-degree figure is 0.175%,
     and it is the one worth not confusing this with.
 
-    0.0087% is a hundredth of the +0.9% median inflation a real run shows, so this half is
+    0.0087% is two orders of magnitude below a real run's own inflation, so this half is
     tidiness. The rounding below is the half that is load-bearing.
 
     **Rounded, and by an explicitly written rule.** `geo.mjs` recomputes all of this in
@@ -153,10 +154,11 @@ def project(lat: np.ndarray, lon: np.ndarray) -> tuple[np.ndarray, np.ndarray, d
     # One libm call is still trusted, and it does not hold. `math.cos` and `Math.cos`
     # disagree by one ulp at some latitudes -- at 40.664366 N, 0x3fe845f5271c98a0 against
     # ...a1 -- which carries into `kx` and flips the occasional near-threshold
-    # Douglas-Peucker decision. Measured over a 401-activity export: 1 rung of 4,812, worth
-    # 8.5 mm on a 14.8 km trace, with every surviving-point *count* still equal. There is no
-    # fix on this side; a check comparing the two implementations has to budget for it.
-    # `shared/map/README.md` § Not checked carries the table.
+    # Douglas-Peucker decision. Rare: on a 401-activity export one rung of several thousand
+    # kept a neighbouring point instead, which moved that rung's length by millimetres while
+    # every surviving-point *count* still matched exactly. There is no fix on this side, so a
+    # check comparing the two implementations has to budget for it rather than assume bitwise
+    # agreement. `shared/map/README.md` § Not checked carries what was measured.
     ky = (math.pi / 180.0) * m_rad
     kx = (math.pi / 180.0) * n_rad * math.cos(phi)
     y = (lat - lat0) * ky
@@ -197,8 +199,26 @@ def track_length_m(lat: np.ndarray, lon: np.ndarray) -> float:
 #: A quarter mile in metres: the default crop taken off each end of a recorded trace.
 QUARTER_MILE_M = 0.25 * 1609.344
 
+#: How far the kept end must be from the original end, straight-line, regardless of how much
+#: path was cropped to get there.
+#:
+#: Cropping by path distance alone does not do what the crop is for. A watch left running at
+#: the door accumulates distance without going anywhere: measured on one export, two runs had
+#: 402 m of path removed and their finish moved 3 m, and ten moved under 50 m. Both were
+#: hikes, which sample sub-1.5 m and spend time milling about at a trailhead.
+#:
+#: 200 m, not 402: this is a straight line where `QUARTER_MILE_M` is along a winding path, and
+#: on this export only 1 run in 401 ever reaches 402 m straight-line from its start. 200 m
+#: covers a block or two in a city grid, and crops a further 39 finishes and 9 starts that
+#: path distance alone left close to home.
+MIN_END_OFFSET_M = 200.0
 
-def trim_ends(track: Track, metres: float = QUARTER_MILE_M) -> Track | None:
+
+def trim_ends(
+    track: Track,
+    metres: float = QUARTER_MILE_M,
+    min_offset_m: float = MIN_END_OFFSET_M,
+) -> Track | None:
     """Drop the first and last `metres` of recorded path from a track.
 
     A trace starts and ends at a front door. Cropping both ends leaves the middle intact and
@@ -236,6 +256,22 @@ def trim_ends(track: Track, metres: float = QUARTER_MILE_M) -> Track | None:
     end = int(np.searchsorted(run, total - metres, side="right")) - 1
     if end - start < 1:
         return None
+
+    # Then keep walking inward until the kept end is genuinely away from the original end.
+    #
+    # Path distance is not displacement. A watch left running at a front door piles up metres
+    # without moving, so the crop above can remove 402 m of recording and leave the endpoint
+    # three metres from where it started — which protects nothing. This is the condition the
+    # crop is actually for, so it is enforced directly rather than hoped for.
+    if min_offset_m > 0:
+        x0, y0 = float(x[0]), float(y[0])
+        xn, yn = float(x[-1]), float(y[-1])
+        while start < end and math.hypot(float(x[start]) - x0, float(y[start]) - y0) < min_offset_m:
+            start += 1
+        while end > start and math.hypot(float(x[end]) - xn, float(y[end]) - yn) < min_offset_m:
+            end -= 1
+        if end - start < 1:
+            return None
 
     kept = slice(start, end + 1)
     return Track(
@@ -365,10 +401,10 @@ def expected_inflation(step_m: float, sigma_m: float) -> float:
 SPEED_BAND_MS = (2.0, 5.0)
 
 #: Median sample spacing an *activity* must fall in to be measured, in metres. Spacing is
-#: the single number that most predicts inflation -- in the export this was built against,
-#: activities under 1.5 m median spacing were inflated 61% and those from 3.5 to 4.0 m by
-#: 0.2% (`report.py`, "inflation by sample spacing"). Admitting both would mean comparing
-#: how fast you were moving and calling it a property of a place.
+#: the single number that most predicts inflation: run `report.py` and read "inflation by
+#: sample spacing", where the sub-1.5 m band comes out tens of percent inflated against a
+#: fraction of a percent inside this band. Admitting both would mean comparing how fast you
+#: were moving and calling it a property of a place.
 SPACING_BAND_M = (3.0, 4.0)
 
 
@@ -382,15 +418,16 @@ def speed_residuals(
 
     Why this exists at all: standing still is indistinguishable from bad reception, so a
     noise measurement binned by place will light up every junction in a city unless speed
-    is controlled. A speed *band* narrows that and does not remove it -- inside
-    `SPEED_BAND_MS`, speed still explained 12.6% of the variance in one real export, and
-    0.4% after this ran (`data/noise-summary.json`, `speed_control`).
+    is controlled. A speed *band* narrows that and does not remove it: inside
+    `SPEED_BAND_MS` speed still explains a tenth or so of the variance, and a fraction of a
+    percent once this has run. Both figures are `grid.speed_control` in
+    `data/noise-summary.json`, and both callers print them.
 
-    Non-parametric on purpose. Equal-count bins and a median, rather than a fitted line:
-    the relationship is visibly curved -- +4.6% at 2.0-2.5 m/s falling to +1.6% at
-    4.0-4.5 (`data/noise-summary.json`, `speed_control.median_inflation_by_speed`) -- and a
-    straight line through that leaves structure in the residual at both ends, which is
-    exactly where the slow, built-up measurements are.
+    Non-parametric on purpose. Equal-count bins and a median, rather than a fitted line: the
+    relationship is visibly curved, falling by about three points of inflation across the
+    band (`grid.speed_control.median_inflation_by_speed`), and a straight line through that
+    leaves structure in the residual at both ends -- which is exactly where the slow,
+    built-up measurements are.
 
     Shared by the grid and the street-segment pipelines, because two copies of a control
     this load-bearing is how they come to disagree about what they corrected for.

@@ -348,8 +348,8 @@ def main() -> int:
     # what is in the output and it is not visible in the result.
     if args.trim_m > 0:
         print(
-            f"cropping {args.trim_m:.0f} m ({args.trim_m / 1609.344:.2f} mi) off each end of "
-            "every run"
+            f"cropping {args.trim_m:.0f} m ({args.trim_m / 1609.344:.2f} mi) of path off each "
+            f"end of every run, and at least {gn.MIN_END_OFFSET_M:.0f} m straight-line"
         )
     else:
         print("NOT cropping the ends -- every start and finish will be in the output")
@@ -453,6 +453,21 @@ def main() -> int:
     all_dist_cols: set[str] = set()
     for p, _m in measured:
         all_dist_cols.update((csv_rows.get(p.name, {}).get("distances") or {}).keys())
+
+    if args.trim_m > 0 and all_dist_cols:
+        # Strava's own distance covers the whole run. These lengths cover the cropped middle.
+        # Different quantities, so they must not be written side by side.
+        #
+        # Left alone the resolver refuses anyway — the ratio lands at 1.1 and no unit fits the
+        # tolerance — but it refuses for the wrong reason, reporting an ambiguous unit when
+        # the truth is that the reference changed meaning. Resolving it would be worse: the
+        # figure would reach a reader as an 8% disagreement between Strava and the map, which
+        # is only the two ends this tool removed.
+        print(f"\nNot reading the CSV distance columns ({', '.join(sorted(all_dist_cols))}).")
+        print("  Strava's figure is for the whole run; these lengths are for the cropped")
+        print("  middle, so the two cannot be compared. Use --trim-m 0 to resolve them.")
+        all_dist_cols = set()
+
     # Prefer the matched length as the reference: it is within about 0.5% of truth,
     # where the recorded length is inflated by the very noise this page is measuring.
     # Only fall back to recorded when nothing matched, and say so, because a unit
