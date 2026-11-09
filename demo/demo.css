@@ -78,8 +78,10 @@
 
 @media (prefers-reduced-motion: no-preference) {
   /* He arrives rather than appearing. One pass, no idle loop: the point is that he stops
-     moving once he has said his line. */
-  .clippy { animation: clippy-in 240ms cubic-bezier(.2, .7, .4, 1) both; }
+     moving once he has said his line. Luna's curve, because he is part of the same shell;
+     240ms rather than `--zoom-ms` because he is not a window opening and a shell-speed
+     entrance reads as a glitch. */
+  .clippy { animation: clippy-in 240ms var(--zoom-ease) both; }
   @keyframes clippy-in {
     from { opacity: 0; transform: translate(10px, 14px) scale(.92); }
     to { opacity: 1; transform: none; }

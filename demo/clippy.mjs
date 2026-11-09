@@ -1,8 +1,7 @@
 /* Clippy. One message, once, and then he goes away.
  *
- * He exists because the Read me used to open on every load, which is the wrong way to offer
- * help: it takes the desktop before you have asked for anything. An assistant who offers and
- * accepts no is the period-correct version of the same thought.
+ * He is how this desktop offers help: an assistant who offers and accepts no, in place of a
+ * window that opens itself and takes the desktop before anything has been asked for.
  *
  * Deliberately not an app. He is not a window — no title bar, no taskbar button, nothing to
  * minimise — so making him one would mean a window pretending not to be a window. He is host
@@ -12,23 +11,16 @@
  * do afterwards. The real Clippy's failing was not his voice, it was that he kept going.
  */
 
-const SVG = 'http://www.w3.org/2000/svg';
+import { svgNode } from '../src/icons.mjs';
 
 //: His one line, in his own register: the observation, then the offer. Every other string in
 //: this project is terse on purpose; this one is in character on purpose, which is the only
 //: reason it is a question and not a label.
 const GREETING = "It looks like you're looking at a desktop. Would you like help with that?";
 
-//: Where his dismissal is remembered. Without it the header's claim that he appears once is
-//: false: he came back on every load and had to be declined again, which is the behaviour
-//: taking the read-me off autostart was meant to remove.
+//: Where his dismissal is remembered. Without it he returns on every load and has to be
+//: declined again, which is the one thing an offer must not do.
 const SEEN_KEY = 'webxp.clippy.seen';
-
-function svg(tag, attrs) {
-  const node = document.createElementNS(SVG, tag);
-  for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, String(value));
-  return node;
-}
 
 /**
  * The paperclip.
@@ -38,7 +30,7 @@ function svg(tag, attrs) {
  * like a staple.
  */
 function clip() {
-  const face = svg('svg', {
+  const face = svgNode('svg', {
     viewBox: '0 0 56 84',
     width: 56,
     height: 84,
@@ -50,14 +42,14 @@ function clip() {
   // The wire, drawn twice: a dark pass for the shadowed underside, a lighter pass on top of
   // it, which is the whole of the metal shading.
   const wire = 'M20 34 V62 a10 10 0 0 0 20 0 V20 a9 9 0 0 0 -18 0 V56';
-  face.append(svg('path', {
+  face.append(svgNode('path', {
     d: wire,
     fill: 'none',
     stroke: '#6f7b86',
     'stroke-width': 7,
     'stroke-linecap': 'round',
   }));
-  face.append(svg('path', {
+  face.append(svgNode('path', {
     d: wire,
     fill: 'none',
     stroke: '#cdd7e0',
@@ -67,11 +59,11 @@ function clip() {
 
   // Eyes, in the upper bend where the real one had them.
   for (const cx of [25, 36]) {
-    face.append(svg('ellipse', { cx, cy: 30, rx: 5.2, ry: 6, fill: '#fff', stroke: '#2b3a4f' }));
-    face.append(svg('circle', { cx: cx + 1, cy: 31, r: 2.4, fill: '#16202e' }));
+    face.append(svgNode('ellipse', { cx, cy: 30, rx: 5.2, ry: 6, fill: '#fff', stroke: '#2b3a4f' }));
+    face.append(svgNode('circle', { cx: cx + 1, cy: 31, r: 2.4, fill: '#16202e' }));
   }
   // Eyebrows. They are the entire performance.
-  face.append(svg('path', {
+  face.append(svgNode('path', {
     d: 'M20.5 21.5c2-2.4 5-3 7.5-1.6M33 19.6c2.6-1.2 5.6-.4 7.4 2',
     fill: 'none',
     stroke: '#2b3a4f',
@@ -109,22 +101,23 @@ export function mountClippy({ root, onAccept }) {
 
   const says = document.createElement('p');
   says.className = 'clippy-says';
+  says.id = 'clippy-says';
   says.textContent = GREETING;
 
   const buttons = document.createElement('div');
   buttons.className = 'clippy-buttons';
 
-  says.id = 'clippy-says';
+  // Both buttons point at the question through `says.id`, never at a copy of it. Without the
+  // description a reader tabbing in hears "Office Assistant, Yes please, button" and never
+  // the question being answered.
   const yes = document.createElement('button');
   yes.type = 'button';
   yes.textContent = 'Yes, please';
-  // Without this a reader tabbing in hears "Office Assistant, Yes please, button" and never
-  // the question being answered.
   yes.setAttribute('aria-describedby', says.id);
 
   const no = document.createElement('button');
   no.type = 'button';
-  no.setAttribute('aria-describedby', 'clippy-says');
+  no.setAttribute('aria-describedby', says.id);
   // Period-correct, and the only honest label for the button that makes him leave.
   no.textContent = 'No, just let me work';
 

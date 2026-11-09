@@ -153,6 +153,26 @@ export function iconFor(spec) {
 }
 
 /**
+ * One SVG element, built with DOM calls and given its attributes.
+ *
+ * The primitive the icon set and `demo/clippy.mjs` both go through: a stroked shape with no
+ * explicit fill paints black, which is never what an outline wants, so the default is
+ * applied here rather than remembered at each call. `shared/map/chrome.mjs` still has a
+ * builder of its own, without the default.
+ *
+ * @param {string} tag
+ * @param {Record<string, string|number>} attrs
+ * @returns {SVGElement}
+ */
+export function svgNode(tag, attrs) {
+  const node = document.createElementNS(NS, tag);
+  for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, String(value));
+  if (attrs.stroke && !('fill' in attrs)) node.setAttribute('fill', 'none');
+  if (attrs.stroke && !('stroke-width' in attrs)) node.setAttribute('stroke-width', '1');
+  return node;
+}
+
+/**
  * Build one icon.
  *
  * @param {string} name   A key of `SHAPES`. An unknown name falls back to `window` rather
@@ -162,23 +182,16 @@ export function iconFor(spec) {
  * @returns {SVGSVGElement}
  */
 export function icon(name, size = 16) {
-  const svg = document.createElementNS(NS, 'svg');
-  svg.setAttribute('viewBox', '0 0 16 16');
-  svg.setAttribute('width', String(size));
-  svg.setAttribute('height', String(size));
-  // Decoration: the thing the icon sits next to always carries the name.
-  svg.setAttribute('aria-hidden', 'true');
-  svg.setAttribute('focusable', 'false');
+  const svg = svgNode('svg', {
+    viewBox: '0 0 16 16',
+    width: size,
+    height: size,
+    // Decoration: the thing the icon sits next to always carries the name.
+    'aria-hidden': 'true',
+    focusable: 'false',
+  });
   svg.classList.add('xp-icon');
 
-  for (const [tag, attrs] of SHAPES[name] || SHAPES.window) {
-    const node = document.createElementNS(NS, tag);
-    for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, String(value));
-    // A stroked shape with no explicit fill paints black by default, which is never what
-    // these outlines want.
-    if (attrs.stroke && !('fill' in attrs)) node.setAttribute('fill', 'none');
-    if (attrs.stroke && !('stroke-width' in attrs)) node.setAttribute('stroke-width', '1');
-    svg.append(node);
-  }
+  for (const [tag, attrs] of SHAPES[name] || SHAPES.window) svg.append(svgNode(tag, attrs));
   return svg;
 }
