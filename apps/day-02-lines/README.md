@@ -14,9 +14,11 @@ question. A polyline's length depends on the resolution it is measured at, which
 coastline paradox ([Mandelbrot
 1967](https://doi.org/10.1126/science.156.3775.636)) happening on a 5 km run.
 
-So the day measures the whole curve rather than its two ends. The slider simplifies the
-recorded trace at a tolerance the reader picks, and the total falls as the wobble comes
-out. There is no setting at which the number is right.
+So the day shows two measurements of one run and the gap between them, rather than
+asserting a figure. A tolerance slider used to make that draggable — simplifying the trace
+live while the total fell — but it was disabled until a run was selected, which is most of
+the time, and an inert control reads as a broken one. The ladder of lengths is still computed
+and still cross-checked against the Python; it is no longer something to drag.
 
 ## Where this code lives now
 
@@ -40,6 +42,36 @@ and writes one JSON per activity plus an `index.json` into `apps/day-02-lines/pr
 is gitignored. The page looks there first and falls back to the committed
 `apps/day-02-lines/data/`, which holds the synthetic fixture.
 
+### The ends are cropped
+
+A quarter mile comes off each end of every run before anything measures it — `--trim-m`,
+default 402 m, printed on every run. A trace starts and ends at a front door, and the middle
+is the part that answers the question.
+
+Cropped once, at ingestion, so there is a single place the untrimmed ends can reach. Every
+output is computed from the cropped track: the per-run documents, the overview, the index
+totals, the street segments and the grid. Cropping on the way out instead would leave the
+lengths describing geometry that is not in the file, and the noise statistics still measured
+over somebody's doorstep.
+
+What it costs and what it buys, on one 401-activity export:
+
+- 322.7 km of 4,282.8 km removed, 7.5% of the distance;
+- the start point moves a median of 408 m, 326 m at the 10th percentile;
+- 3 runs of 401 still end up within 100 m of their old start, and 0 were too short to
+  survive the crop.
+
+Those 3 are the limit of the method, and it is worth being plain about: the crop is by
+distance **along the path**, not by radius. An out-and-back or a loop that passes its own
+start mid-run still has that pass in the data. This removes the obvious tell, not every tell.
+
+Runs shorter than twice the crop are dropped and counted, not written as stubs — a run that
+short is entirely near home.
+
+`--trim-m 0` disables it, which is right only for the synthetic fixture: `test_pipeline.py`
+holds the output against known route lengths, and cropping would invalidate that comparison
+without testing anything the unit checks do not already cover.
+
 Writing into `data/` takes an explicit `--out` and is only for regenerating the fixture.
 The split is deliberate: `data/` is tracked, so a default that wrote there would mean the
 command above overwrites committed files with real traces, and the next `git add -A`
@@ -49,8 +81,8 @@ publishes them.
 | --- | --- |
 | `gpsnoise.py` | The measurement library: projection, length, Douglas-Peucker, file readers, map matching. |
 | `prepare.py` | The CLI. Walks an export, measures, writes the page's data. |
-| `geo.mjs` | The same length and simplification arithmetic, in the browser, so the slider can be continuous. |
-| `lines.mjs` | The two line layers, the slider, the segment overlay, the detail panel. |
+| `geo.mjs` | The same length and simplification arithmetic, in the browser, and the half of the pair `scripts/check.py` holds against the Python. |
+| `lines.mjs` | The two line layers, the segment overlay, the detail panel. |
 | `app.mjs` | The spec, and the `mount`/`ready` split the map needs. |
 | `make_fixture.py` | Builds a synthetic export whose true answer is known. |
 | `test_gpsnoise.py` | Unit checks, plus `--negative-control`. |
@@ -79,9 +111,10 @@ against a threshold, so two origins differing in the last bits can keep differen
 ## Two implementations of one calculation
 
 `geo.mjs` duplicates what `gpsnoise.py` does, which is the thing this repo's
-[code-design rules](../README.md) exist to prevent. The reason is the slider: a continuous
-control has to re-simplify in the browser, and shipping a geometry per rung would make it
-stepped and the payload several times larger.
+[code-design rules](../README.md) exist to prevent. It earned its place when a continuous
+control had to re-simplify in the browser; the control is gone, and the duplication stays
+because the agreement between the two implementations is itself the check — a divergence in
+either one is caught by holding them against each other.
 
 The guard is that `prepare.py` writes its own ladder into every activity document and
 `scripts/check.py` drives the browser's implementation over the same geometry and requires
@@ -253,8 +286,8 @@ Three levels, and a run is the *destination* rather than the entry point:
 
 1. **The grid** — which places disagree with themselves.
 2. **A segment** — how much, across how many runs, and the best and worst crossings of it.
-3. **A crossing** — that stretch pulled solid out of the bundle, on its own run, with the
-   slider live on the full-resolution trace.
+3. **A crossing** — that stretch pulled solid out of the bundle, on its own run, at full
+   resolution.
 
 ### Choices worth not undoing
 

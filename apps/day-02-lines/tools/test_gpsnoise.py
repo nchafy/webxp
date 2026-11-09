@@ -461,6 +461,85 @@ def _sabotage_precision():
     return lambda: setattr(gn, "decode_polyline", original)
 
 
+def test_trim_ends() -> None:
+    """Cropping both ends removes the stated distance and keeps the middle intact.
+
+    This is a privacy control, so the assertion that matters is not "it got shorter" but
+    "the removed part is gone": the kept trace must start at least the trim distance away
+    from where the original did, measured along the path.
+    """
+    # A straight 2 km line at 1 m spacing, so path distance and index are interchangeable
+    # and any off-by-one is visible as a metre.
+    n = 2001
+    lat = np.full(n, 40.0)
+    step_deg = 1.0 / (math.pi / 180 * 6378137.0 * math.cos(math.radians(40.0)))
+    lon = -74.0 + np.arange(n) * step_deg
+    track = gn.Track(
+        name="straight", source=pathlib.Path("none"), lat=lat, lon=lon,
+        t=np.arange(n, dtype=float), ele=np.full(n, np.nan), sport="Run",
+    )
+    full = gn.track_length_m(lat, lon)
+    # About 2 km, not exactly: `step_deg` above divides by a spherical radius while `project`
+    # uses the WGS84 prime-vertical with eccentricity, so the fixture measures 2,002.8 m. That
+    # 0.14% gap is the very error `project` exists to avoid, and it is why every assertion
+    # below is written against `full` rather than against the round number.
+    check("trim: the fixture is about 2 km", abs(full - 2000) < 20, f"{full:.1f} m")
+
+    cut = gn.trim_ends(track, 402.336)
+    check("trim: a track comes back", cut is not None)
+    if cut is None:
+        return
+
+    kept = gn.track_length_m(cut.lat, cut.lon)
+    want = full - 2 * 402.336
+    check(
+        "trim: the kept length is the original minus both crops",
+        abs(kept - want) < 2.0,
+        f"{kept:.1f} m, want {want:.1f} m",
+    )
+
+    # The point of the exercise: the new start is genuinely away from the old one.
+    moved = gn.track_length_m(
+        np.array([lat[0], cut.lat[0]]), np.array([lon[0], cut.lon[0]])
+    )
+    check(
+        "trim: the new start is at least the crop away from the old",
+        moved >= 402.0,
+        f"moved {moved:.1f} m",
+    )
+    end_moved = gn.track_length_m(
+        np.array([lat[-1], cut.lat[-1]]), np.array([lon[-1], cut.lon[-1]])
+    )
+    check(
+        "trim: the new finish is at least the crop away from the old",
+        end_moved >= 402.0,
+        f"moved {end_moved:.1f} m",
+    )
+
+    # Timestamps travel with the coordinates, or speed is computed from the wrong points.
+    check(
+        "trim: timestamps are sliced with the coordinates",
+        cut.t.size == cut.lat.size and cut.t[0] == track.t[cut.t[0].astype(int)],
+        f"{cut.t.size} stamps for {cut.lat.size} points, first {cut.t[0]}",
+    )
+
+    # Too short to survive: refused, not returned as a stub.
+    short = gn.Track(
+        name="short", source=pathlib.Path("none"), lat=lat[:300], lon=lon[:300],
+        t=np.arange(300, dtype=float), ele=np.full(300, np.nan), sport="Run",
+    )
+    check(
+        "trim: a run shorter than twice the crop is refused",
+        gn.trim_ends(short, 402.336) is None,
+        f"300 m track against a 402 m crop",
+    )
+    # And 0 is a pass-through, so the fixture pipeline can opt out explicitly.
+    check(
+        "trim: zero returns the track unchanged",
+        gn.trim_ends(track, 0) is track,
+    )
+
+
 def test_traversal_indices_are_trace_indices() -> None:
     """A traversal past the first match chunk measures its own stretch of the trace.
 
@@ -541,6 +620,7 @@ TESTS = [
     test_simplification_recovers_truth,
     test_distance_unit_resolution,
     test_activity_id_collisions,
+    test_trim_ends,
     test_traversal_indices_are_trace_indices,
     test_file_parsers,
 ]

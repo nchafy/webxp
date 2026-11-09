@@ -1,21 +1,22 @@
 """Turn a Strava export into the data the day 2 page reads.
 
-    .venv/bin/python days/02-lines/prepare.py ~/Downloads/strava_export
-    .venv/bin/python days/02-lines/prepare.py ~/claude/strava-sample/run.gpx --no-match
+    .venv/bin/python apps/day-02-lines/tools/prepare.py ~/Downloads/strava_export
+    .venv/bin/python apps/day-02-lines/tools/prepare.py ~/claude/strava-sample/run.gpx --no-match
 
 Point it at a bulk export directory, at the `activities/` folder inside one, or at
 individual files. It writes one JSON per activity plus an `index.json` into
-`days/02-lines/data/`, and prints a table of what it measured.
+`apps/day-02-lines/private/`, and prints a table of what it measured.
 
 Coordinates are written at six decimal places, which is about 0.11 m -- an order of
 magnitude finer than the receiver, so the rounding is free, and it roughly halves the
 file compared with the full float.
 
-The page does its own simplification so its tolerance slider can be continuous, so the
-recorded geometry is shipped at full resolution rather than pre-simplified. The `ladder`
-written here is therefore not what the page draws; it is what `scripts/check.py` holds
-the page's own arithmetic against, so that the two implementations of Douglas-Peucker
-cannot drift apart unnoticed.
+The page measures a selected run itself, so the recorded geometry is shipped at full
+resolution rather than pre-simplified. The `ladder` written here is therefore not what the
+page draws; it is the Python side of a pair whose JavaScript side is `geo.mjs`, kept so the
+two implementations of Douglas-Peucker *can* be held against each other. **Nothing holds
+them.** `shared/map/README.md` § Not checked carries the gap and the agreement measured by
+hand.
 """
 
 from __future__ import annotations
@@ -99,21 +100,26 @@ def destination_would_be_published(path: pathlib.Path) -> bool:
     return result.returncode == 1
 
 #: Decimal places the coordinates are written at, and quantised to *before* anything is
-#: measured. About 0.11 m at this latitude -- an order of magnitude finer than the
-#: receiver, so nothing real is lost, and it roughly halves the file.
+#: measured. A millionth of a degree is 0.111 m of latitude and 0.085 m of longitude at
+#: 40 N -- an order of magnitude finer than the receiver, so nothing real is lost, and it
+#: roughly halves the file.
 #:
 #: Quantising first is the part that matters. The page recomputes lengths from the
-#: coordinates in the file, so a ladder computed here at full precision describes a
-#: geometry the page does not have. That gap was 3e-5 relative, found by the ladder
-#: cross-check in `scripts/check.py` rather than by reading the code.
+#: coordinates in the file, so a ladder computed here at full precision would describe a
+#: geometry the page does not have, and the two implementations would be held against each
+#: other over different inputs. The committed fixture cannot exercise this -- `make_fixture.py`
+#: writes GPX at six decimals, so reading it back is already quantised -- which means a
+#: regression here would only show against a real export.
 COORD_DP = 6
 
-#: Decimal places for a written length, in metres. Millimetres is far past anything the
-#: page displays, and that is the point: `scripts/check.py` compares the browser's own
-#: arithmetic against the ladder written here, so the file has to carry more precision
-#: than the comparison needs. At one decimal place the rounding alone was 3e-5 of a
-#: 1.6 km activity, which is larger than any real disagreement would be and made the
-#: cross-check impossible to state tightly.
+#: Decimal places for a written length, in metres. Millimetres is far past anything the page
+#: displays, and that is the point: this ladder is the reference `geo.mjs` is meant to be
+#: compared against, so the file has to carry more precision than the comparison needs.
+#:
+#: At one decimal place the rounding alone is 0.05 m, which is 3.1e-5 of a 1.6 km activity
+#: and larger than any real disagreement -- the measured worst case across a 401-activity
+#: export is 8.7 mm, and that on one rung of 4,812. Three decimals puts the floor at 0.5 mm,
+#: which is what any tolerance has to be stated above.
 LENGTH_DP = 3
 
 
@@ -309,6 +315,15 @@ def main() -> int:
     ap.add_argument("--no-match", action="store_true", help="skip map matching (no network)")
     ap.add_argument("--limit", type=int, default=0, help="stop after N activities")
     ap.add_argument("--costing", default="", help="force a Valhalla costing model")
+    ap.add_argument(
+        "--trim-m",
+        type=float,
+        default=gn.QUARTER_MILE_M,
+        metavar="METRES",
+        help="crop this much recorded path off each end of every run, to keep the start and "
+        f"finish out of the output (default {gn.QUARTER_MILE_M:.0f}, a quarter mile; 0 "
+        "disables, which is right only for synthetic fixtures)",
+    )
     args = ap.parse_args()
 
     files = find_activities(args.targets)
@@ -329,6 +344,16 @@ def main() -> int:
     # Say where the output is going, every run. The difference between the ignored path
     # and the committed one is the difference between a private file and a published one,
     # so it is not something to leave implicit.
+    # The crop, stated every run alongside the destination, for the same reason: it changes
+    # what is in the output and it is not visible in the result.
+    if args.trim_m > 0:
+        print(
+            f"cropping {args.trim_m:.0f} m ({args.trim_m / 1609.344:.2f} mi) off each end of "
+            "every run"
+        )
+    else:
+        print("NOT cropping the ends -- every start and finish will be in the output")
+
     out = args.out.resolve()
     if out == FIXTURE_OUT.resolve():
         print(f"writing to {out} -- this directory is COMMITTED. Only the fixture belongs here.")
@@ -353,6 +378,9 @@ def main() -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     measured: list[tuple[pathlib.Path, gn.Measured]] = []
     failures: list[tuple[pathlib.Path, str]] = []
+    #: Runs too short to survive the crop. Reported, not silently absent: a missing activity
+    #: looks like a read failure, and these are a deliberate exclusion.
+    dropped_short: list[tuple[pathlib.Path, int]] = []
 
     for i, path in enumerate(files, 1):
         print(f"[{i}/{len(files)}] {path.name}", flush=True)
@@ -368,6 +396,24 @@ def main() -> int:
         # Quantise before measuring, not on the way out: see COORD_DP.
         track.lat = np.round(track.lat, COORD_DP)
         track.lon = np.round(track.lon, COORD_DP)
+
+        # Crop both ends before anything measures or matches the trace.
+        #
+        # Here, and only here, so there is one place the untrimmed ends can reach: every
+        # output — the per-run documents, the overview, the index totals, the street
+        # segments, the grid — is computed from the Track this loop hands on. Cropping at
+        # write time instead would leave the lengths describing geometry that is not in the
+        # file, and the noise statistics still measured over somebody's doorstep.
+        if args.trim_m > 0:
+            trimmed = gn.trim_ends(track, args.trim_m)
+            if trimmed is None:
+                dropped_short.append((path, len(track)))
+                print(
+                    f"    skipped: shorter than twice the {args.trim_m:.0f} m crop",
+                    file=sys.stderr,
+                )
+                continue
+            track = trimmed
 
         meta = csv_rows.get(path.name, {})
         if meta.get("sport"):
@@ -515,6 +561,13 @@ def main() -> int:
     print(f"\n{len(index)} activities, {matched_n} matched.")
     print(f"recorded {tot_rec / 1000:.1f} km across all; matched {tot_mat / 1000:.1f} km "
           f"across the {matched_n} that snapped.")
+    if dropped_short:
+        print(
+            f"{len(dropped_short)} run(s) dropped: shorter than twice the "
+            f"{args.trim_m:.0f} m crop, so nothing of them is far enough from home to keep."
+        )
+        for path, points in dropped_short[:5]:
+            print(f"    {path.name} ({points} points)")
     if failures:
         print(f"{len(failures)} file(s) failed; see data/index.json")
     print(f"wrote {args.out}")

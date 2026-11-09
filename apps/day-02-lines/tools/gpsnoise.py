@@ -14,12 +14,17 @@ tolerances and recording the length at each -- the Richardson method for a coast
 (Richardson 1961, via Mandelbrot, https://doi.org/10.1126/science.156.3775.636).
 
 Everything here works in a local tangent plane, not on lat/lon. `project` builds it once
-per trace from the WGS84 radii of curvature at the trace's mean latitude, after which
-length, perpendicular distance and simplification are all plane geometry and agree with
-each other by construction. Over the few km of one run the planar error is of order
-(L/R)^2, about 3 mm over 5 km -- four orders of magnitude below the effect being
-measured. Doing this on a sphere of mean radius instead would introduce a systematic
-0.3% scale error, which is the same size as the noise on a clean trace.
+per trace from the WGS84 radii of curvature at the trace's origin latitude -- the
+bounding-box midpoint, see `frame_origin` -- after which length, perpendicular distance
+and simplification are all plane geometry and agree with each other by construction. Over
+the few km of one run the planar error is of order (L/R)^2, which is 3.1 mm over 5 km:
+(5000 / 6.37e6)^2 * 5000 m, four orders of magnitude below the effect being measured.
+
+Doing this on a sphere of mean radius instead skews the two axes in opposite directions.
+Measured by sabotaging the projection -- `test_gpsnoise.py --negative-control`, "single
+mean radius for both axes" -- a degree of latitude comes out +0.15% long and a degree of
+longitude -0.25% short. That is a quarter of the +0.9% median inflation a real run shows
+(`report.py`, "by sport", Run), so it would move every figure on the page.
 """
 
 from __future__ import annotations
@@ -92,11 +97,15 @@ def frame_origin(values: np.ndarray) -> float:
 
     Both halves of this are load-bearing, and neither is obvious.
 
-    **The midpoint, not the mean.** The scale factors are evaluated once at the origin,
-    so the origin wants to be in the middle of the data: over a ride spanning a degree of
-    latitude the meridional radius varies by about 0.17%, and taking the origin at an
-    edge instead of the centre would leave a systematic error of order 0.08% -- the same
-    size as the effect being measured on a clean trace.
+    **The midpoint, not the mean.** The scale factors are evaluated once at the origin, so
+    the origin wants to be in the middle of the data rather than at an edge. The size of
+    that is small: over a ride spanning a degree of latitude the meridional radius varies
+    by 0.017% (0.0174% from 40 to 41 N, 0.0176% at its worst anywhere), so an origin at the
+    edge rather than the centre costs 0.0087% of scale. The ten-degree figure is 0.175%,
+    and it is the one worth not confusing this with.
+
+    0.0087% is a hundredth of the +0.9% median inflation a real run shows, so this half is
+    tidiness. The rounding below is the half that is load-bearing.
 
     **Rounded, and by an explicitly written rule.** `geo.mjs` recomputes all of this in
     the browser, and the two have to agree exactly, not nearly. A mean would not: numpy
@@ -120,8 +129,8 @@ def project(lat: np.ndarray, lon: np.ndarray) -> tuple[np.ndarray, np.ndarray, d
     The scale factors are the WGS84 radii of curvature at the origin latitude: M, the
     meridional radius, for north, and N, the prime-vertical radius, times cos(lat) for
     east. Both are standard (Torge & Mueller, *Geodesy*, eq. 4.18-4.19); using a single
-    mean radius for both axes is the error this function exists to avoid, since at 40
-    degrees north they differ by about 0.7%.
+    mean radius for both axes is the error this function exists to avoid. At 40 degrees
+    north M is 6,361,816 m and N is 6,386,976 m, so they differ by 0.395%.
     """
     lat0 = frame_origin(lat)
     lon0 = frame_origin(lon)
@@ -132,14 +141,22 @@ def project(lat: np.ndarray, lon: np.ndarray) -> tuple[np.ndarray, np.ndarray, d
 
     # The scale factors are collapsed into one multiplier per axis *before* touching the
     # coordinates, and `geo.mjs` does the identical two multiplies in the identical order.
-    # This is not pedantry: `(d * k) * M` and `d * (k * M)` differ in the last bits, which
-    # was measured at 2.3e-13 m on a 1362-point trace. That is harmless for a length, and
-    # not harmless for Douglas-Peucker, which compares each point's distance against a
-    # threshold -- the same reason `frame_origin` exists. Writing it one way here and the
-    # other way there would have voided that.
+    # This is not pedantry: `(d * k) * M` and `d * (k * M)` differ in the last bits -- 6.4e-12 m
+    # over the 1,362-point `Battery to Tribeca` trace in `data/202610200002.json`. That is
+    # harmless for a length and not harmless for Douglas-Peucker, which compares each
+    # point's distance against a threshold, the same reason `frame_origin` exists.
+    #
     # Spelled `math.pi / 180.0` rather than `math.radians(1.0)` so that it is visibly the
     # same expression as the JavaScript's `Math.PI / 180`, with no trust placed in the two
     # standard libraries agreeing on the constant.
+    #
+    # One libm call is still trusted, and it does not hold. `math.cos` and `Math.cos`
+    # disagree by one ulp at some latitudes -- at 40.664366 N, 0x3fe845f5271c98a0 against
+    # ...a1 -- which carries into `kx` and flips the occasional near-threshold
+    # Douglas-Peucker decision. Measured over a 401-activity export: 1 rung of 4,812, worth
+    # 8.5 mm on a 14.8 km trace, with every surviving-point *count* still equal. There is no
+    # fix on this side; a check comparing the two implementations has to budget for it.
+    # `shared/map/README.md` § Not checked carries the table.
     ky = (math.pi / 180.0) * m_rad
     kx = (math.pi / 180.0) * n_rad * math.cos(phi)
     y = (lat - lat0) * ky
@@ -175,6 +192,61 @@ def track_length_m(lat: np.ndarray, lon: np.ndarray) -> float:
     """Recorded length of a lat/lon trace, in metres."""
     x, y, _ = project(lat, lon)
     return plane_length(x, y)
+
+
+#: A quarter mile in metres: the default crop taken off each end of a recorded trace.
+QUARTER_MILE_M = 0.25 * 1609.344
+
+
+def trim_ends(track: Track, metres: float = QUARTER_MILE_M) -> Track | None:
+    """Drop the first and last `metres` of recorded path from a track.
+
+    A trace starts and ends at a front door. Cropping both ends leaves the middle intact and
+    measurable: the route still shows where somebody runs without showing where they live.
+    Measured on one 401-activity export, a quarter mile at each end moves the start a median
+    of 408 m, and 3 runs of 401 still end within 100 m of their old start — out-and-backs
+    that pass close to home mid-run.
+
+    Cropped by distance *along the trace*, which is what a watch reports and therefore what
+    "the first quarter mile" means to whoever ran it. It is not a radius: a loop that comes
+    back past its own start is cropped by path distance, so the second pass near home stays.
+    That is a real limit of the method, and `apps/day-02-lines/README.md` states it rather
+    than implying more protection than it gives.
+
+    Returns `None` when the trace cannot survive the crop. A run shorter than twice the trim
+    is entirely "near home" and has no publishable middle; the caller reports it rather than
+    writing a stub.
+
+    Timestamps and elevations are sliced with the coordinates, so speed and spacing are still
+    computed from the points they belong to.
+    """
+    if metres <= 0:
+        return track
+    if len(track) < 3:
+        return None
+
+    x, y, _ = project(track.lat, track.lon)
+    run = np.concatenate([[0.0], np.cumsum(segment_lengths(x, y))])
+    total = float(run[-1])
+    if total <= 2 * metres:
+        return None
+
+    # The first point at least `metres` along, and the last at least `metres` from the end.
+    start = int(np.searchsorted(run, metres, side="left"))
+    end = int(np.searchsorted(run, total - metres, side="right")) - 1
+    if end - start < 1:
+        return None
+
+    kept = slice(start, end + 1)
+    return Track(
+        name=track.name,
+        source=track.source,
+        lat=track.lat[kept],
+        lon=track.lon[kept],
+        t=track.t[kept],
+        ele=track.ele[kept],
+        sport=track.sport,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -284,6 +356,22 @@ def expected_inflation(step_m: float, sigma_m: float) -> float:
     return sd * math.sqrt(math.pi / 2.0) * lag / step_m
 
 
+#: Mean speed a window or traversal must fall in to be measured, in m/s. 2.0 is a slow
+#: jog, 5.0 a fast one. Below 2.0 is walking, waiting, or stopped -- and standing still is
+#: indistinguishable from bad reception, which is the confound `speed_residuals` exists for.
+#:
+#: Here rather than in each pipeline because the grid and the street segments must not
+#: disagree about what they filtered on. Two copies is how they come to.
+SPEED_BAND_MS = (2.0, 5.0)
+
+#: Median sample spacing an *activity* must fall in to be measured, in metres. Spacing is
+#: the single number that most predicts inflation -- in the export this was built against,
+#: activities under 1.5 m median spacing were inflated 61% and those from 3.5 to 4.0 m by
+#: 0.2% (`report.py`, "inflation by sample spacing"). Admitting both would mean comparing
+#: how fast you were moving and calling it a property of a place.
+SPACING_BAND_M = (3.0, 4.0)
+
+
 def speed_residuals(
     speed: np.ndarray, values: np.ndarray, min_per_bin: int = 400
 ) -> tuple[np.ndarray, int]:
@@ -294,13 +382,15 @@ def speed_residuals(
 
     Why this exists at all: standing still is indistinguishable from bad reception, so a
     noise measurement binned by place will light up every junction in a city unless speed
-    is controlled. A speed *band* narrows that and does not remove it -- inside a 2 to
-    5 m/s band, speed still explained 12.6% of the variance in one real export.
+    is controlled. A speed *band* narrows that and does not remove it -- inside
+    `SPEED_BAND_MS`, speed still explained 12.6% of the variance in one real export, and
+    0.4% after this ran (`data/noise-summary.json`, `speed_control`).
 
     Non-parametric on purpose. Equal-count bins and a median, rather than a fitted line:
-    the relationship is visibly curved -- about +4.5% at 2.0 m/s falling to +1.7% at
-    4.5 -- and a straight line through that leaves structure in the residual at both ends,
-    which is exactly where the slow, built-up measurements are.
+    the relationship is visibly curved -- +4.6% at 2.0-2.5 m/s falling to +1.6% at
+    4.0-4.5 (`data/noise-summary.json`, `speed_control.median_inflation_by_speed`) -- and a
+    straight line through that leaves structure in the residual at both ends, which is
+    exactly where the slow, built-up measurements are.
 
     Shared by the grid and the street-segment pipelines, because two copies of a control
     this load-bearing is how they come to disagree about what they corrected for.
