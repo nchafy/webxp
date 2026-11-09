@@ -127,6 +127,30 @@ MapLibre — and `apps/webview/` is the hosted-page case.
 The full contract, the optional keys, the `ready` hook, and what bites when porting an
 existing project are in **`docs/apps.md`**.
 
+## Publishing: push the repository, never copy the directory
+
+This distinction is load-bearing, and getting it wrong publishes somebody's home address.
+
+`apps/day-02-lines/` reads its activity data from `private/` if that directory exists and
+falls back to the committed synthetic `data/` if it does not — `private` first, deliberately,
+because that is the interesting data to develop against. `private/` is gitignored, holds real
+GPS traces, and is never in a commit.
+
+So:
+
+- **`git push` is safe.** The real data is not tracked and is not in history.
+- **Copying the working directory is not.** `rsync`, a `tar` of the checkout, dragging the
+  folder into a static host, or anything that follows symlinks will carry `private/` along,
+  and the page will *prefer* it over the synthetic data. A visitor would be served the
+  owner's real traces.
+
+If you need the data for local work, symlinking it in is fine — but check
+`git ls-files apps/day-02-lines/private` before you commit. A symlink named `private` slipped
+past an `apps/day-*/private/` ignore rule once, because the trailing slash makes a pattern
+directory-only and a symlink is a blob. `.gitignore` now carries both forms.
+
+Also avoid `git push --mirror`, which would carry `refs/stash`.
+
 ## Read next
 
 `docs/review.md` has the findings raised against this extraction, each with its failure
