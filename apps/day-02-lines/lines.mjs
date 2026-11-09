@@ -165,6 +165,15 @@ const NOISE_WIDTHS = [1.3, 2.0, 2.6, 3.2, 3.8, 4.5, 5.2];
  * p90 by about a hundredth of a point. The estimator matters more than the rounding here. */
 const NOISE_BREAKS = [1.0, 2.0, 3.0, 4.5, 7.0, 10.0];
 
+/* Metres in a degree of latitude, for turning a cell size into a caption.
+ *
+ * A round figure on purpose, and only ever used for a caption. The real value runs from
+ * 110,574 m at the equator to 111,694 m at the pole; `tools/test_gpsnoise.py` measures
+ * 111,035 m at 40°N. Nothing is computed from this -- the measurements all work in the
+ * tangent plane `geo.mjs` builds -- so a tenth of a percent in a "222 m squares" label is
+ * not worth a latitude-dependent expression. */
+const M_PER_DEG_LAT = 111_000;
+
 const PROP = 'inflation_pct';
 //: The one crossing being shown, drawn over its own run.
 const PASS = 'pass';
@@ -256,10 +265,6 @@ function noiseLegendRows() {
     return { colour, width: NOISE_WIDTHS[i], label };
   });
 }
-
-//: Mirrors `gpsnoise.TOLERANCES_M`. Only used to cross-check this module's arithmetic
-//: against the ladder `prepare.py` wrote; the slider is continuous and uses neither.
-const LADDER_TOLERANCES = [0, 0.5, 1, 2, 3, 5, 8, 12, 20, 35, 60, 100];
 
 /* Where the day opens. A stated choice, not a derived one.
  *
@@ -1362,10 +1367,16 @@ export async function startDay({ win, chrome }) {
         selectedId: () => (focus ? focus.id : null),
         select: (id) => selectActivity(map, id, { fly: false }),
         clear: () => clearSelection(map),
-        //: The ladder for the selected run, computed here, against the one `prepare.py`
-        //: wrote into that run's document. The guard on two implementations of one
-        //: calculation.
-        ladder: () => (focus ? ladder(focus.doc.recorded, LADDER_TOLERANCES) : null),
+        /* The ladder for the selected run, computed here, beside the one `prepare.py`
+         * wrote into that run's document. The pair a check would hold against each other;
+         * no check does yet, which `shared/map/README.md` § Not checked records.
+         *
+         * The rungs come out of the written ladder rather than from a copy of
+         * `gpsnoise.TOLERANCES_M` kept here. A hand-synced list is a second definition of
+         * the rungs, and a cross-check whose two sides disagree about which tolerances
+         * they measured is not a cross-check. */
+        ladder: () =>
+          focus ? ladder(focus.doc.recorded, (focus.doc.ladder || []).map((r) => r[0])) : null,
         writtenLadder: () => (focus ? focus.doc.ladder : null),
         //: The length this run would measure at `t` metres of simplification. No control
         //: drives it any more; it is how a check holds the browser's geometry against the
@@ -1440,13 +1451,18 @@ export async function startDay({ win, chrome }) {
             );
           }
           if (noiseNote) {
-            // The caption is the one thing that cares which file arrived. Degrees of
-            // latitude to metres, not kilometres: the square version read "0.222 m across"
-            // until a screenshot was looked at.
+            // The caption is the one thing that cares which file arrived.
+            //
+            // `cell_deg` comes out of the grid file, never from a copy of
+            // `noise_by_area.CELL_DEG` kept here: a default would be a second definition of
+            // the cell size, and the one that is wrong is the one nobody looks at. A file
+            // without it gets no figure rather than a guessed one.
             const unit =
               noise.unit === 'osm_way'
                 ? 'streets'
-                : `${Math.round((noise.cell_deg || 0.002) * 111_000)} m squares`;
+                : noise.cell_deg
+                  ? `${Math.round(noise.cell_deg * M_PER_DEG_LAT)} m squares`
+                  : 'squares';
             // The median across streets, not a mean: the per-street figure is itself a
             // median, and averaging medians would claim a precision the pipeline does not
             // have. Computed here because the file carries no summary.
