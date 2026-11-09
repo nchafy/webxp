@@ -5099,6 +5099,12 @@ def notepad_caret(page, win_id: str) -> None:
     )
 
 
+#: Stands in for "this row asserts nothing" — a step that builds the state a later row
+#: checks. Named rather than left as a bare `[]`, because eight of these rows are setup and a
+#: reader cannot otherwise tell them from an assertion that happens to be weak. Every one of
+#: them is followed by a row asserting its effect.
+SETUP: list[str] = []
+
 #: One row is one line typed, the strings its output must contain, and the strings it must
 #: not. `must_not` is what catches a check that passes because everything contains nothing.
 #: Both are tested against the output only, never against the echoed command line.
@@ -5122,9 +5128,9 @@ TERM_LINES = (
     # lexically, `.` inside a symlinked directory reported the symlink instead — a listing
     # in which the directory appeared as a link to somewhere else.
     ("ls -la", ["drwxr-xr-x"], [". -> ", ".. -> "]),
-    ("cd ..", [], []),
+    ("cd ..", SETUP, []),
     ("pwd", ["/home/user/links"], ["relative-dir"]),
-    ("cd ~", [], []),
+    ("cd ~", SETUP, []),
     # The failures. A shell that cannot report is worse than one that cannot run.
     ("cat /nope", ["No such file or directory"], []),
     ("cat /etc/secret.conf", ["Permission denied"], ["permission bits are not being checked"]),
@@ -5148,24 +5154,24 @@ TERM_LINES = (
     ("ls nope*", ["No such file or directory"], []),
     ("echo written-by-the-shell > /tmp/probe.txt", [], ["No such file"]),
     ("cat /tmp/probe.txt", ["written-by-the-shell"], []),
-    ("echo appended >> /tmp/probe.txt", [], []),
+    ("echo appended >> /tmp/probe.txt", SETUP, []),
     ("wc -l < /tmp/probe.txt", ["2"], []),
     ("ls /etc | wc -l", ["4"], []),
-    ("mkdir -p /tmp/a/b/c", [], []),
+    ("mkdir -p /tmp/a/b/c", SETUP, []),
     ("find /tmp -type d", ["/tmp/a/b/c"], []),
-    ("rm -r /tmp/a", [], []),
+    ("rm -r /tmp/a", SETUP, []),
     ("find /tmp -type d", [], ["/tmp/a"]),
     # A directory copied into its own subtree never terminated: the copy created a child,
     # the walk reached it, and it copied that too. Both edges, because a guard that refuses
     # everything is also a guard.
-    ("mkdir -p /tmp/src/inner", [], []),
+    ("mkdir -p /tmp/src/inner", SETUP, []),
     ("cp -r /tmp/src /tmp/src/copy", ["into itself"], []),
     ("cp -r /tmp/src /tmp/elsewhere", [], ["into itself"]),
     ("ls /tmp/elsewhere", ["inner"], []),
-    ("ln -s /etc/hosts /tmp/h", [], []),
+    ("ln -s /etc/hosts /tmp/h", SETUP, []),
     ("readlink /tmp/h", ["/etc/hosts"], []),
     ("realpath /tmp/h", ["/etc/hosts"], []),
-    ("rm /tmp/h", [], []),
+    ("rm /tmp/h", SETUP, []),
     ("cat /etc/hosts", ["localhost"], []),
     # `basename('.')` answered '/', and `joinPath(dest, '/')` is the root: `cp -r . dest`
     # copied into `/` and exited 0. The basename of the *resolved* source is the fix.
