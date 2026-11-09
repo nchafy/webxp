@@ -56,12 +56,11 @@ function addStylesheet(href) {
     link.addEventListener('error', () => {
       // The failure is not cached, and the dead link is removed.
       //
-      // A rejected promise left in the map poisons the app for the rest of the session: a
-      // single dropped request — one blip while another app saturates the connection pool —
-      // and every later launch replays that same rejection and shows the same error window,
-      // with the stylesheet sitting there answering 200 the whole time. Observed exactly
-      // once, as five identical mount failures from one real failure. Reopening the app now
-      // retries.
+      // A rejected promise left in the map poisons the app for the rest of the session: one
+      // dropped request — a blip while another app saturates the connection pool — and every
+      // later launch replays that same rejection and shows the same error window, with the
+      // stylesheet answering 200 the whole time. Deleting the entry is what makes reopening
+      // the app a retry.
       linked.delete(href);
       link.remove();
       reject(new Error(`stylesheet failed to load: ${href}`));
@@ -70,6 +69,17 @@ function addStylesheet(href) {
   });
   linked.set(href, ready);
   return ready;
+}
+
+/**
+ * Whether a spec asks for a hosted document rather than a mount.
+ *
+ * The one definition. `validate` and `loadApp` both ask, and two answers is how a spec that
+ * validates loses its `mount`: anything truthy under `frame` reaches `frameMount`, which
+ * reads `frame.src` and nothing else.
+ */
+function hostsFrame(spec) {
+  return Boolean(spec.frame) && typeof spec.frame.src === 'string';
 }
 
 /**
@@ -92,12 +102,17 @@ export function validate(spec, id) {
   }
 
   const hasMount = typeof spec.mount === 'function';
-  const hasFrame = spec.frame && typeof spec.frame.src === 'string';
-  if (!hasMount && !hasFrame) {
+  if (!hasMount && !hostsFrame(spec)) {
     problems.push('needs either a mount() function or a frame: { src }');
   }
-  if (hasMount && hasFrame) {
+  if (hasMount && hostsFrame(spec)) {
     problems.push('has both mount() and frame — a window can only be filled once');
+  }
+  // A declared `frame` that is not usable is an error, not a fall-through to `mount`. The
+  // two differ: `frame: { url: 'page.html' }` is a usable spec by every other test, and
+  // without this the loader hosts `apps/<id>/undefined` and never calls the mount.
+  if (spec.frame !== undefined && !hostsFrame(spec)) {
+    problems.push('frame must be { src } with src a path string');
   }
 
   if (spec.icon !== undefined && !ICON_NAMES.includes(spec.icon)) {
@@ -159,15 +174,15 @@ function frameMount(spec, appBase) {
 }
 
 /**
- * Wrap an app's mount with the work the loader owes it: its body class and its stylesheets.
+ * Wrap an app's mount with the work the loader owes it: its stylesheets, resolved against
+ * its own folder and linked before the content, so the content is never laid out against
+ * missing rules.
  *
- * The class is how two apps' stylesheets stay out of each other's way — app CSS is written
- * under `.app-<id>`, which `docs/apps.md` requires and the scaffold's `app.css` demonstrates.
+ * The body class those rules are written under is set on the program, in `loadApp`.
  */
-function wrapMount(spec, id, appBase, inner) {
+function wrapMount(spec, appBase, inner) {
   const styles = (spec.styles || []).map((path) => new URL(path, appBase).href);
   return async (ctx) => {
-    // Before the content, so the content is never laid out against missing rules.
     await Promise.all(styles.map(addStylesheet));
     return inner(ctx);
   };
@@ -193,13 +208,18 @@ export async function loadApp(id, base = DEFAULT_BASE) {
     return { id, program: brokenProgram(id, problems, spec), problems };
   }
 
+  // `app-<id>` is how two apps' stylesheets stay out of each other's way: app CSS is
+  // written under it, which `docs/apps.md` requires and the scaffold's `app.css` shows.
   const program = { id, bodyClass: `app-${id}`, icon: iconFor(spec) };
+  // Carried onto the program as well as resolved into an icon, because the filetype is what
+  // groups programs: `app filetypes` in `scripts/check.py` reads it back off the registry to
+  // assert that every app of one filetype resolved to one icon.
   if (spec.filetype) program.filetype = spec.filetype;
   for (const key of PASS_THROUGH) {
     if (spec[key] !== undefined) program[key] = spec[key];
   }
-  const inner = spec.frame ? frameMount(spec, appBase) : spec.mount;
-  program.mount = wrapMount(spec, id, appBase, inner);
+  const inner = hostsFrame(spec) ? frameMount(spec, appBase) : spec.mount;
+  program.mount = wrapMount(spec, appBase, inner);
   return { id, program, problems: [] };
 }
 
