@@ -2055,6 +2055,28 @@ def day_02_panel_sweep(page) -> list[str]:
         return [f"day 02 panel: skipped — {opened}. Not a layout result either way."]
     time.sleep(1.0)
 
+    # The stress, created rather than assumed.
+    #
+    # These window sizes were picked because a long footer pushed panel content past the
+    # sheet's cap and over the status bar. The footers are empty now — the copy pass removed
+    # them and `.detail-foot:empty { display: none }` drops the element — so the sizes no
+    # longer stress anything and the check passed without exercising the overflow. Writing a
+    # footer here makes the condition a property of the check instead of a property of this
+    # week's copy.
+    stressed = page.evaluate(
+        "(() => { const w = window.webxp.windows.find((x) => x.programId === 'day-02-lines');"
+        " const foot = w.bodyEl.querySelector('.detail-foot');"
+        " if (!foot) return false;"
+        " foot.textContent = 'Overflow probe. '.repeat(24);"
+        " return foot.getBoundingClientRect().height > 0; })()"
+    )
+    if not stressed:
+        bad.append(
+            "day 02 panel: no .detail-foot to stress — the sweep's window sizes were chosen "
+            "for a long footer and would assert nothing without one"
+        )
+    time.sleep(0.2)
+
     for width, height in PANEL_SIZES:
         page.evaluate(
             "(() => { const w = window.webxp.windows.find((x) => x.programId === 'day-02-lines');"

@@ -291,9 +291,13 @@ mistake that makes a suite report clean over broken behaviour.
 
 ## The pattern worth naming: a check that cannot fail
 
-Four incidents in two days, and they are the same defect wearing different clothes. In every
-one the check was **silent and reported success**, which is strictly worse than no check: a
-missing check is a known gap, while this one answers "is that covered?" with yes.
+Six incidents now, and they are the same defect wearing different clothes. In every one the
+check was **silent and reported success**, which is strictly worse than no check: a missing
+check is a known gap, while this one answers "is that covered?" with yes.
+
+Two of the six were introduced *by the fix for an earlier one*, which is the part worth
+dwelling on. A check and the code it guards are edited by the same person holding the same
+mental model, so a change that invalidates the check's premise rarely looks like one.
 
 | What died | How | Found by |
 | --- | --- | --- |
@@ -301,6 +305,8 @@ missing check is a known gap, while this one answers "is that covered?" with yes
 | The canvas-fills-window assertion | Guarded on `if state["root"] and …`, where `.basemap-root` stopped existing when the map moved to `shared/`. The guard went false; the line printed ok. | The other session, probing a live window: `{"basemapRoot": false, "mapRoot": true}` |
 | `scaffold a new app` | Read a stale `apps/manifest.mjs` over HTTP and blamed the generator. Intermittent, so a retry "fixed" it. | A re-run that passed |
 | `--only <substring>` | A filter matching nothing ran zero checks and exited 0. | The other session, on writing it |
+| The noise-ramp probe | `scripts/inspect_noise.py` queried `[data-role=noise-legend] .key-row`. `.key-row` exists nowhere in the repo, so the script written to inspect a new ramp printed an empty legend and no error. | The adversarial review |
+| `day_02_panel_sweep` | Its window sizes were chosen because a long panel footer pushed content over the status bar. The copy pass emptied all three footers and `.detail-foot:empty` drops the element, so the sizes stressed nothing and the check passed without exercising the overflow. | The adversarial review |
 
 Three rules come out of it, and they are cheap:
 
@@ -315,6 +321,11 @@ Three rules come out of it, and they are cheap:
    would have been shrugged off; forcing the window deliberately
    (`scripts/inspect_manifest_cache.py`) turned a guess into 2 stale reads in 5 rounds with
    the cache on and 0 in 5 with it off.
+
+4. **A check must create the condition it tests, not inherit it.** `day_02_panel_sweep`
+   depended on the app's copy happening to be long. It now writes its own long footer, so the
+   stress is a property of the check rather than of this week's wording. The same reasoning
+   applies to any check whose setup is "the app happens to be in the right state".
 
 The general form: **a check whose precondition can go false without failing is not a check.**
 Every assertion added since is written so that the absence of what it measures is itself a

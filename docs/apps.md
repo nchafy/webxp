@@ -359,10 +359,19 @@ From porting the 30 Day Map Challenge base map into `apps/basemap/`:
    drew nothing while every flag read healthy.
 
    When you scope a stylesheet that already fought a specificity battle, **count the
-   classes**. The count is the invariant; the class names are not. The same rule has broken
-   twice on rescopes that looked purely mechanical, each time landing on exactly MapLibre's
-   specificity. `shared/map/map.css` carries the live selector and a note to count before
-   touching it.
+   classes**. The count is the invariant; the class names are not. This has bitten three
+   times on rescopes that looked purely mechanical:
+
+   | Rule | Became | Lost to |
+   | --- | --- | --- |
+   | `.app-basemap .basemap-root > .map` (3) | `.map-root > .map` (2) | `.map-root .maplibregl-map` (2), on source order |
+   | `.app-basemap .map` (2) | — | `.app-basemap .maplibregl-map` (2), on source order |
+   | `.map-root .map-compass` (2) | — | `.map-root .map-zoom button` (2 classes and a type) |
+
+   The third drew the compass at 28 px with a 34 px rose inside it, overflowing its own
+   button and sitting four pixels off centre. It was reported from a screenshot, because no
+   check looked inside a control; `basemap app` now measures the rose against its button.
+   `shared/map/map.css` carries the live selectors and a note to count before touching them.
 6. **Anything measuring its container goes in `ready`.** See above.
 
 The lesson behind 5 and 6: **look at the window**. `tilesLoaded: true` and a blank rectangle
@@ -391,5 +400,5 @@ and compares it against the window's own size, because nothing cheaper could tel
 `scaffold a new app` is the one that matters most: it is the only check that walks the path a
 person actually takes.
 
-These twelve are the contract's. The suite is thirty-eight; the rest belong to the window
+These twelve are the contract's. The rest of the suite belongs to the window
 manager and are described in `docs/windows.md`.
