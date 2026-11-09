@@ -136,7 +136,7 @@ export function buildSeed(fs) {
   fs.mkdir(`${HOME}/links`);
   fs.symlink('/etc/motd', `${HOME}/links/absolute`);
   fs.symlink('../readme.txt', `${HOME}/links/relative`);
-  fs.symlink('/home/user/notes', `${HOME}/links/relative-dir`);
+  fs.symlink('../notes', `${HOME}/links/relative-dir`);
   fs.symlink('nowhere.txt', `${HOME}/links/broken`);
   // A link to itself. Resolution gives up after 40 hops and says so, which is the only
   // answer a cycle has.

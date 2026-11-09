@@ -308,7 +308,7 @@ mental model, so a change that invalidates the check's premise rarely looks like
 | The noise-ramp probe | `scripts/inspect_noise.py` queried `[data-role=noise-legend] .key-row`. `.key-row` exists nowhere in the repo, so the script written to inspect a new ramp printed an empty legend and no error. | The adversarial review |
 | `day_02_panel_sweep` | Its window sizes were chosen because a long panel footer pushed content over the status bar. The copy pass emptied all three footers and `.detail-foot:empty` drops the element, so the sizes stressed nothing and the check passed without exercising the overflow. | The adversarial review |
 
-Three rules come out of it, and they are cheap:
+The rules that come out of it are cheap:
 
 1. **A guard on a selector is a guard on a spelling.** `if element:` turns a renamed class
    into a skipped assertion. A missing precondition MUST be a failure, not a branch that
@@ -330,6 +330,45 @@ Three rules come out of it, and they are cheap:
 The general form: **a check whose precondition can go false without failing is not a check.**
 Every assertion added since is written so that the absence of what it measures is itself a
 failure, and shown failing against the defect it describes before it is believed.
+
+## The mirror image: a check that is always red
+
+Review feedback named the counterpart, and it is the same defect approached from the other
+side. A check that goes red on every edit trains the reader to regenerate past it. The failure
+lands in the human rather than in the assertion: a result that never changes carries no
+information, so it stops being read, and the first true failure arrives inside noise already
+learned as something to clear. **A check nobody reads is not a check**, and which direction it
+broke in makes no difference — one never speaks, the other never stops.
+
+## The third shape: a guard that only some paths reach
+
+**A permission enforced in one function is enforced nowhere.** Two instances in this
+repository, and the second is the first one over data rather than over a class.
+
+`VFS.touch` in `shared/fs/vfs.mjs` has two branches. The create branch delegates to
+`writeFile` and inherits its `#need(inode, W, path)`. The existing-file branch stamped the
+inode directly and checked nothing. So `chmod 444 f` followed by `touch f` succeeded: it moved
+the mtime 3 ms and fired a change event, and that event is what the debounced save in
+`shared/fs/fs.mjs` acts on — so a read-only file's new timestamp was written out. Every other
+`#stamp` call site in the class demands the write bit on the correct object first, and
+`symlink` a few lines below does it correctly. The guard was in the file the whole time.
+`touch` never reached it.
+
+The cropping transform in `apps/day-02-lines/tools/` is the same miss. `prepare.py` crops
+402 m off each end of every run. `street_segments.py` and `noise_by_area.py` read the *export*
+directly rather than `prepare.py`'s output, so neither cropped. 1,220 of 11,384 crossings in
+`street-noise.json` indexed past the end of their run and 91 named a run that no longer
+existed; the dangerous ones were in range but shifted, addressing a different stretch of road
+by up to 87%. The app drew those confidently. Three tools over one dataset, two of them
+bypassing the transform the third applies.
+
+This is what makes it a family with the two above: in all three the check or guard is
+**present and looks correct at the place you read it**. What is wrong is the set of paths that
+reach it, which is not visible from there. So reading the guard does not tell you whether it
+holds — the routes have to be enumerated. The guard belongs at each entry point, where the
+path and the intent are, not in a shared setter that has neither. What that costs differs:
+`#need` at each public mutation is a line per method, while three tools over one dataset get
+it only by each applying the transform itself, which is a convention and not an enforcement.
 
 ## Not addressed
 

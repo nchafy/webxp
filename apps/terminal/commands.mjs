@@ -365,7 +365,7 @@ export const COMMANDS = {
           if (entry.type === DIR) {
             dirs += 1;
             walk(
-              path === '/' ? `/${entry.name}` : `${path}/${entry.name}`,
+              joinPath(path, entry.name),
               `${prefix}${last ? '    ' : '│   '}`,
               depth + 1,
             );
@@ -891,7 +891,7 @@ export const COMMANDS = {
         }
         if (!flags.has('r')) throw new UsageError(`${path}: Is a directory`);
         for (const name of ctx.fs.readdir(path, { cwd: ctx.shell.cwd })) {
-          remove(path === '/' ? `/${name}` : `${path}/${name}`);
+          remove(joinPath(path, name));
         }
         ctx.fs.rmdir(path, { cwd: ctx.shell.cwd });
       };
@@ -972,7 +972,10 @@ export const COMMANDS = {
       let status = 0;
       for (const source of operands) {
         try {
-          ctx.fs.rename(source, destIsDir ? joinPath(dest, basename(source)) : dest, { cwd });
+          // The basename of the resolved source: `basename('.')` is not a name, and
+          // `joinPath(dest, '/')` is the root, so `mv . dest` aimed at `/`.
+          const target = destIsDir ? joinPath(dest, basename(abs(ctx, source))) : dest;
+          ctx.fs.rename(source, target, { cwd });
         } catch (error) {
           ctx.warn(`mv: ${error.message}`);
           status = 1;

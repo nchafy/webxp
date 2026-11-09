@@ -31,8 +31,10 @@ export const LINK = 'link';
 const ROOT_INO = 1;
 
 //: Linux's own ceiling on symlink traversals for one resolution (`MAXSYMLINKS`). A cycle is
-//: indistinguishable from a very long chain, so the only honest answer is a limit.
-const MAX_LINKS = 40;
+//: indistinguishable from a very long chain, so the only honest answer is a limit. Exported
+//: because every path that resolves one — `#lookup` and `realpath` — answers to this number,
+//: and a check that asserts the ceiling has to name it rather than copy it.
+export const MAX_LINKS = 40;
 
 //: Permission bits, as they are tested rather than as they are written. Exported because a
 //: caller that wants to ask before acting — `cd` checking it may enter a directory — has to
@@ -128,9 +130,17 @@ export function normalize(path) {
   return joined || '.';
 }
 
+/**
+ * The last component of a path.
+ *
+ * `.` for a relative path with no components, never `/`: `splitPath` drops `.`, so a
+ * basename that fell back to `/` answered `/` for `.` — and `joinPath(dest, '/')` is the
+ * root, which is where `cp -r . dest` wrote.
+ */
 export function basename(path) {
   const parts = splitPath(path);
-  return parts.length ? parts[parts.length - 1] : '/';
+  if (parts.length) return parts[parts.length - 1];
+  return isAbsolute(path) ? '/' : '.';
 }
 
 export function dirname(path) {
@@ -430,7 +440,7 @@ export class VFS {
     const out = [];
     let hops = 0;
     while (pending.length) {
-      if (hops > MAX_LINKS * 8) throw new FsError('ELOOP', path);
+      if (hops > MAX_LINKS) throw new FsError('ELOOP', path);
       const part = pending.shift();
       if (part === '..') {
         out.pop();
@@ -482,9 +492,9 @@ export class VFS {
       throw error;
     }
     for (const child of children) {
-      const childPath = dirPath === '/' ? `/${child.name}` : `${dirPath}/${child.name}`;
-      yield { path: childPath, name: child.name, depth, stat: child };
-      if (child.type === DIR) yield* this.#descend(childPath, depth + 1, maxDepth);
+      const path = joinPath(dirPath, child.name);
+      yield { path, name: child.name, depth, stat: child };
+      if (child.type === DIR) yield* this.#descend(path, depth + 1, maxDepth);
     }
   }
 
@@ -587,14 +597,27 @@ export class VFS {
     return this.writeFile(path, text, { ...options, append: true });
   }
 
-  /** Create an empty file, or move an existing one's timestamps forward. */
+  /**
+   * Create an empty file, or move an existing one's timestamps forward.
+   *
+   * The write bit is checked here, on the inode being stamped, and not left to `writeFile`:
+   * only the create branch goes through it, so a permission enforced there is enforced on
+   * half of this operation. Unchecked, `chmod 444 f` followed by `touch f` moved the mtime
+   * and announced a change on a file the caller may not write — which also told the saver in
+   * `fs.mjs` to write a read-only file's new timestamp out.
+   *
+   * A directory is stamped the same way, needing write on the directory itself, because that
+   * is what `touch dir` does.
+   */
   touch(path, { cwd = '/', mode = 0o644 } = {}) {
     const hit = this.#resolve(path, { cwd });
     if (hit.ino === null) {
       this.writeFile(path, '', { cwd, mode });
       return;
     }
-    this.#stamp(this.#inode(hit.ino));
+    const inode = this.#inode(hit.ino);
+    this.#need(inode, W, path);
+    this.#stamp(inode);
     this.#changed('touch', path);
   }
 
