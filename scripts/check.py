@@ -59,8 +59,14 @@ PROGRAMS = {
     "webview": ("Webview", True),
     "basemap": ("Base map", True),
     "map-challenge": ("30DaysOfMaps", True),
+    "terminal": ("Terminal", True),
     "about": ("About webxp", False),
 }
+
+#: Where `shared/fs/fs.mjs` keeps the filesystem. Duplicated here rather than imported,
+#: because a check that reads the key out of the code cannot catch the key changing — and
+#: because the filesystem checks have to be able to clear it before they trust the tree.
+FS_KEY = "webxp.fs.v1"
 
 #: Settling time after an animated state change. `--zoom-ms` is 160; this is comfortably
 #: past it plus a frame, without being long enough to hide a hang.
@@ -437,7 +443,8 @@ def check_boot(page) -> list[str]:
 def check_launch_all(page) -> list[str]:
     """Every program opens, gets a button, and does not land on top of the last one."""
     bad = []
-    for program in ("notepad", "display", "windows", "webview", "basemap", "map-challenge", "about"):
+    for program in ("notepad", "display", "windows", "webview", "basemap", "map-challenge",
+                    "terminal", "about"):
         launch(page, program)
     state = probe(page)
 
@@ -2301,6 +2308,573 @@ def check_scaffold(page) -> list[str]:
     return bad
 
 
+# ---------------------------------------------------------------------------
+# The filesystem, the shell, and the two apps that share a mount.
+# ---------------------------------------------------------------------------
+
+#: The model's own assertions, run in the browser that will run it.
+#:
+#: Against a filesystem built from the seed rather than against the mounted one, so the
+#: result does not depend on what is in `localStorage` — and so a failure here is a failure
+#: of the model rather than of persistence, which `filesystem persists` covers separately.
+FS_ASSERTIONS = """(async () => {
+  const bad = [];
+  const { VFS, MAX_FILE_SIZE, normalize } = await import('/shared/fs/vfs.mjs');
+  const { buildSeed, HOME } = await import('/shared/fs/seed.mjs');
+  const fs = new VFS();
+  buildSeed(fs);
+
+  // Both take a thunk, so an assertion that throws is one failure with a label on it rather
+  // than an exception that abandons the table. The first version evaluated eagerly, and a
+  // negative control that broke symlink resolution reported one `undefined.slice` from
+  // somewhere in a hundred lines.
+  const want = (label, thunk, expected) => {
+    let got;
+    try {
+      got = thunk();
+    } catch (error) {
+      bad.push(label + ': threw ' + (error.code || '') + ' ' + error.message);
+      return;
+    }
+    if (got !== expected) {
+      bad.push(label + ': got ' + JSON.stringify(got) + ', want ' + JSON.stringify(expected));
+    }
+  };
+  const refuses = (label, code, thunk) => {
+    try {
+      thunk();
+      bad.push(label + ': expected ' + code + ', nothing was thrown');
+    } catch (error) {
+      if (error.code !== code) {
+        bad.push(label + ': expected ' + code + ', got ' + (error.code || error.message));
+      }
+    }
+  };
+  // A step the table depends on rather than asserts — a fixture. A throw here is reported
+  // and the table carries on, because the assertions after it are still worth running.
+  const setup = (label, thunk) => {
+    try {
+      thunk();
+    } catch (error) {
+      bad.push('while setting up ' + label + ': ' + (error.code || '') + ' ' + error.message);
+    }
+  };
+
+  // Nested directories, and a parent that knows its child.
+  setup('a nested tree', () => fs.mkdir('/t/a/b/c', { recursive: true }));
+  want('mkdir -p type', () => fs.stat('/t/a/b/c').type, 'dir');
+  want('nested parent', () => fs.realpath('/t/a/b/c/../..'), '/t/a');
+  refuses('mkdir over a file', 'EEXIST', () => fs.mkdir('/etc/motd'));
+  refuses('mkdir under a file', 'ENOTDIR', () => fs.mkdir('/etc/motd/x'));
+
+  // Symlinks: relative, absolute, through a directory, and the dangling one.
+  want('relative link', () => fs.realpath(HOME + '/links/relative'), HOME + '/readme.txt');
+  want('absolute link', () => fs.readFile(HOME + '/links/absolute').slice(0, 7), 'Windows');
+  want('link to a dir', () => fs.realpath(HOME + '/links/relative-dir'), HOME + '/notes');
+  want('read through a dir link',
+       () => fs.readFile(HOME + '/links/relative-dir/todo.txt').slice(0, 2), '- ');
+  want('lstat sees the link', () => fs.lstat(HOME + '/links/broken').type, 'link');
+  refuses('dangling link reads', 'ENOENT', () => fs.readFile(HOME + '/links/broken'));
+
+  // `..` after a symlink is the parent of the target, not of the link. This is the pair
+  // that makes pwd and pwd -P different commands.
+  setup('a link to notes', () => fs.symlink(HOME + '/notes', '/t/toNotes'));
+  want('physical ..', () => fs.realpath('/t/toNotes/..'), HOME);
+  want('lexical ..', () => normalize('/t/toNotes/..'), '/t');
+
+  // A write through a dangling link creates its target, as POSIX does.
+  setup('a write through a dangling link',
+        () => fs.writeFile(HOME + '/links/broken', 'created through the link\\n'));
+  want('write through a dangling link', () => fs.readFile(HOME + '/links/nowhere.txt'),
+       'created through the link\\n');
+
+  // A cycle is not distinguishable from a long chain, so the answer is a limit.
+  setup('two links pointing at each other', () => {
+    fs.symlink('loopB', '/t/loopA');
+    fs.symlink('loopA', '/t/loopB');
+  });
+  refuses('mutual loop', 'ELOOP', () => fs.readFile('/t/loopA'));
+  refuses('self loop', 'ELOOP', () => fs.readFile(HOME + '/links/loop'));
+
+  // Hard links: one inode, two names.
+  setup('a hard link', () => {
+    fs.writeFile('/t/one', 'first\\n');
+    fs.link('/t/one', '/t/two');
+  });
+  want('nlink after link', () => fs.lstat('/t/one').nlink, 2);
+  want('same inode', () => fs.lstat('/t/one').ino, fs.lstat('/t/two').ino);
+  setup('an append through one name', () => fs.appendFile('/t/one', 'second\\n'));
+  want('shared contents', () => fs.readFile('/t/two'), 'first\\nsecond\\n');
+  setup('removing one name', () => fs.unlink('/t/one'));
+  want('survives one unlink', () => fs.readFile('/t/two'), 'first\\nsecond\\n');
+  want('nlink after unlink', () => fs.lstat('/t/two').nlink, 1);
+  want('seeded hard link', () => fs.lstat(HOME + '/notes/ideas.txt').nlink, 2);
+  refuses('hard link to a directory', 'EPERM', () => fs.link('/t/a', '/t/aLink'));
+
+  // Renames, including the two that would corrupt the tree.
+  refuses('rename into its own subtree', 'EINVAL', () => fs.rename('/t/a', '/t/a/b/inside'));
+  setup('a directory with something in it', () => {
+    fs.mkdir('/t/full');
+    fs.writeFile('/t/full/x', 'x');
+  });
+  refuses('rename over a full directory', 'ENOTEMPTY', () => fs.rename('/t/a', '/t/full'));
+  setup('a rename', () => fs.rename('/t/two', '/t/renamed'));
+  want('rename moved it', () => fs.readFile('/t/renamed'), 'first\\nsecond\\n');
+  refuses('the old name is gone', 'ENOENT', () => fs.readFile('/t/two'));
+  setup('moving a directory', () => {
+    fs.mkdir('/t/newhome');
+    fs.rename('/t/a', '/t/newhome/a');
+  });
+  want('a moved directory keeps its subtree', () => fs.stat('/t/newhome/a/b/c').type, 'dir');
+  want('a moved directory knows its parent', () => fs.realpath('/t/newhome/a/..'), '/t/newhome');
+
+  // Kinds are not interchangeable.
+  refuses('rmdir on a full directory', 'ENOTEMPTY', () => fs.rmdir('/t/full'));
+  refuses('unlink on a directory', 'EISDIR', () => fs.unlink('/t/full'));
+  refuses('read a directory', 'EISDIR', () => fs.readFile('/t/full'));
+  refuses('list a file', 'ENOTDIR', () => fs.readdir('/etc/motd'));
+  refuses('readlink a file', 'EINVAL', () => fs.readlink('/etc/motd'));
+  setup('emptying a directory', () => {
+    fs.unlink('/t/full/x');
+    fs.rmdir('/t/full');
+  });
+  refuses('the directory is gone', 'ENOENT', () => fs.stat('/t/full'));
+
+  // The mode bits, in both directions. A permission that only ever refuses is a permission
+  // nobody has shown to be read at all.
+  refuses('mode 000 refuses a read', 'EACCES', () => fs.readFile('/etc/secret.conf'));
+  setup('a file to lock', () => {
+    fs.writeFile('/t/locked', 'open\\n');
+    fs.chmod('/t/locked', 0o000);
+  });
+  refuses('chmod 000 refuses', 'EACCES', () => fs.readFile('/t/locked'));
+  refuses('chmod 000 refuses a write', 'EACCES', () => fs.writeFile('/t/locked', 'no'));
+  setup('unlocking it', () => fs.chmod('/t/locked', 0o644));
+  want('chmod 644 allows it again', () => fs.readFile('/t/locked'), 'open\\n');
+  // Execute on a directory is the right to enter it, which is a different bit from read.
+  setup('a directory to seal', () => {
+    fs.mkdir('/t/sealed');
+    fs.writeFile('/t/sealed/inside', 'hidden\\n');
+    fs.chmod('/t/sealed', 0o644);
+  });
+  refuses('a directory without x cannot be entered', 'EACCES',
+          () => fs.readFile('/t/sealed/inside'));
+  setup('x only', () => fs.chmod('/t/sealed', 0o111));
+  want('a directory with only x can be entered', () => fs.readFile('/t/sealed/inside'),
+       'hidden\\n');
+  refuses('a directory without r cannot be listed', 'EACCES', () => fs.readdir('/t/sealed'));
+  setup('r and x', () => fs.chmod('/t/sealed', 0o755));
+  want('r and x together list it', () => fs.readdir('/t/sealed').join(), 'inside');
+
+  // The ceiling exists so a write cannot be accepted and then fail at save time.
+  refuses('past the file ceiling', 'ENOSPC',
+          () => fs.writeFile('/t/big', 'x'.repeat(MAX_FILE_SIZE + 1)));
+
+  // Walking reports symlinks and does not follow them: a link to an ancestor would make
+  // the walk infinite.
+  want('walk reports the link',
+       () => [...fs.walk(HOME + '/links')].some((entry) => entry.name === 'relative-dir'), true);
+  want('walk did not descend it',
+       () => [...fs.walk(HOME + '/links')].some((entry) => entry.name === 'todo.txt'), false);
+  want('maxdepth', () => [...fs.walk('/t/newhome', { maxDepth: 1 })].length, 2);
+
+  // Watchers see the op and the path, and stop when they are told to.
+  const seen = [];
+  setup('a watcher', () => {
+    const unwatch = fs.watch((event) => seen.push(event.op + ' ' + event.path));
+    fs.writeFile('/t/watched', 'x');
+    unwatch();
+    fs.writeFile('/t/watched', 'y');
+  });
+  want('the watcher saw the write, once', () => seen.join(), 'write /t/watched');
+
+  // Serialisation: a round trip keeps the structure, including the two names on one inode.
+  const image = JSON.parse(JSON.stringify(fs.serialize()));
+  let copy = null;
+  setup('a round trip', () => { copy = VFS.parse(image); });
+  want('round trip contents', () => copy.readFile('/t/renamed'), 'first\\nsecond\\n');
+  want('round trip symlink', () => copy.readlink(HOME + '/links/relative'), '../readme.txt');
+  want('round trip mode', () => copy.lstat('/etc/secret.conf').mode, 0);
+  want('round trip hard link', () => copy.lstat(HOME + '/links/ideas-too').ino,
+       copy.lstat(HOME + '/notes/ideas.txt').ino);
+  want('round trip stats', () => JSON.stringify(copy.stats()), JSON.stringify(fs.stats()));
+
+  // And the validator refuses an image that would not hold together, which is the whole
+  // reason it is a validator and not a cast.
+  refuses('an entry pointing at nothing', 'EINVAL', () => {
+    const corrupt = JSON.parse(JSON.stringify(image));
+    corrupt.inodes.find((row) => row.ino === 1).entries.push(['ghost', 9999]);
+    VFS.parse(corrupt);
+  });
+  refuses('a version from the future', 'EINVAL',
+          () => VFS.parse({ ...image, version: image.version + 1 }));
+
+  return bad;
+})()"""
+
+
+def fs_reset(page) -> None:
+    """Clear the stored filesystem and reload, so the tree is the seed and not last run's.
+
+    A check whose fixture is the previous run's output is not a check: `localStorage` on
+    127.0.0.1 outlives the run, and the first terminal check asserts the contents of files
+    an earlier run could have edited.
+    """
+    page.evaluate("window.localStorage.removeItem(%s)" % json.dumps(FS_KEY))
+    page.navigate(BASE_URL + "/")
+    time.sleep(1.2)
+    # The navigation itself buffers events that would otherwise be attributed to whatever
+    # check runs next.
+    console_errors(page)
+
+
+def check_filesystem(page) -> list[str]:
+    """The filesystem model: resolution, symlinks, links, modes, serialisation."""
+    fs_reset(page)
+    try:
+        found = page.evaluate(FS_ASSERTIONS, await_promise=True)
+    except CDPError as error:
+        # Reported as a failure rather than raised, so an unreachable module does not take
+        # the rest of the suite down with it — and so the message says which module.
+        return [f"filesystem: the assertion table could not run — {error}"]
+    if not isinstance(found, list):
+        return [f"filesystem: the assertion table did not run — {found!r}"]
+    return [f"filesystem: {message}" for message in found]
+
+
+#: A terminal window's pane and prompt, by index into the open terminals.
+TERM_PARTS = """(() => {
+  const wins = window.webxp.windows.filter((w) => w.programId === 'terminal');
+  const win = wins[INDEX];
+  if (!win) return null;
+  const input = win.el.querySelector('.term-input');
+  const log = win.el.querySelector('.term-log');
+  if (!input || !log) return null;
+  const r = input.getBoundingClientRect();
+  return { text: log.textContent, value: input.value, prompt: win.el.querySelector('.term-prompt').textContent,
+           x: r.left + r.width / 2, y: r.top + r.height / 2, count: wins.length };
+})()"""
+
+
+def term_parts(page, index: int = -1) -> dict:
+    parts = page.evaluate(TERM_PARTS.replace("INDEX", str(index) if index >= 0 else "wins.length - 1"))
+    if parts is None:
+        raise CDPError("no terminal window open")
+    return parts
+
+
+def term_run(page, line: str, index: int = -1, settle: float = 0.35) -> str:
+    """Type a line into a terminal and return only what it printed.
+
+    Real input: a click to focus, `Input.insertText`, a real Enter. A `dispatchEvent` in
+    page script would prove the listener runs and nothing about whether it is reachable.
+    """
+    before = term_parts(page, index)
+    mouse(page, "mousePressed", before["x"], before["y"], buttons=1)
+    mouse(page, "mouseReleased", before["x"], before["y"], buttons=0)
+    page.type_text(line)
+    page.press("Enter")
+    time.sleep(settle)
+    after = term_parts(page, index)
+    if not after["text"].startswith(before["text"]):
+        # `clear` empties the pane, so there is no prefix to strip.
+        return after["text"]
+    return after["text"][len(before["text"]):]
+
+
+#: One row is one line typed, the strings its output must contain, and the strings it must
+#: not. `must_not` is what catches a check that passes because everything contains nothing.
+#: Both are tested against the output only, never against the echoed command line.
+TERM_LINES = (
+    ("pwd", ["/home/user"], []),
+    ("ls", ["readme.txt", "notes", "links"], []),
+    ("cat notes/todo.txt", ["read the window model"], []),
+    ("ls -l links", ["lrwxrwxrwx", "relative -> ../readme.txt", "ideas-too"], []),
+    ("cat links/relative", ["webxp filesystem"], []),
+    ("cd links/relative-dir", [], ["No such file"]),
+    ("pwd", ["/home/user/links/relative-dir"], []),
+    ("pwd -P", ["/home/user/notes"], ["links"]),
+    ("cd ..", [], []),
+    ("pwd", ["/home/user/links"], ["relative-dir"]),
+    ("cd ~", [], []),
+    # The failures. A shell that cannot report is worse than one that cannot run.
+    ("cat /nope", ["No such file or directory"], []),
+    ("cat /etc/secret.conf", ["Permission denied"], ["permission bits are not being checked"]),
+    ("cd readme.txt", ["Not a directory"], []),
+    ("ls -Z", ["invalid option"], []),
+    ("ls --colour", ["unrecognised option"], []),
+    ("nosuchcommand", ["command not found"], []),
+    ("cat 'unterminated", ["unterminated single quote"], []),
+    # Globs, pipes, redirection.
+    ("find / -name '*.log'", ["/var/log/boot.log"], []),
+    ("grep -n error /var/log/boot.log", ["10:", "no sound card"], ["kernel booting"]),
+    ("ls notes/*.txt", ["notes/ideas.txt", "notes/todo.txt"], []),
+    ("ls nope*", ["No such file or directory"], []),
+    ("echo written-by-the-shell > /tmp/probe.txt", [], ["No such file"]),
+    ("cat /tmp/probe.txt", ["written-by-the-shell"], []),
+    ("echo appended >> /tmp/probe.txt", [], []),
+    ("wc -l < /tmp/probe.txt", ["2"], []),
+    ("ls /etc | wc -l", ["4"], []),
+    ("mkdir -p /tmp/a/b/c", [], []),
+    ("find /tmp -type d", ["/tmp/a/b/c"], []),
+    ("rm -r /tmp/a", [], []),
+    ("find /tmp -type d", [], ["/tmp/a"]),
+    ("ln -s /etc/hosts /tmp/h", [], []),
+    ("readlink /tmp/h", ["/etc/hosts"], []),
+    ("realpath /tmp/h", ["/etc/hosts"], []),
+    ("rm /tmp/h", [], []),
+    ("cat /etc/hosts", ["localhost"], []),
+    ("help", ["Where you are", "Reading", "Writing"], []),
+    ("whoami", ["user"], []),
+    ("df", ["webxp-vfs", "persistence:"], []),
+)
+
+
+def check_terminal(page, *, invert: bool = False) -> list[str]:
+    """The shell, driven by real keystrokes: output, failures, pipes, globs, redirection."""
+    bad = []
+    launch(page, "terminal")
+    banner = term_parts(page)
+    if "Type 'help'" not in banner["text"]:
+        bad.append(f"terminal: no banner in the pane — {banner['text'][:60]!r}")
+    if "user@webxp:~$" not in banner["prompt"]:
+        bad.append(f"terminal: prompt is {banner['prompt']!r}")
+
+    lines = TERM_LINES
+    if invert:
+        # `--prove-failure` inverts one expectation here as well as the drag's, so a clean
+        # run is reporting something about the shell too.
+        lines = (("cat /etc/motd", ["No such file or directory"], []),) + lines
+
+    for line, musts, must_nots in lines:
+        output = term_run(page, line)
+        # The echoed command line is dropped before anything is asserted. It contains the
+        # prompt, which contains the working directory, which contains most of the strings
+        # these rows are about — `pwd -P` must not print `links`, and the prompt it was typed
+        # at does. Asserting against the echo is how a check passes on its own input.
+        body = output.split("\n", 1)[1] if "\n" in output else ""
+        for must in musts:
+            if must not in body:
+                bad.append(f"terminal: {line!r} printed {body.strip()[:120]!r}, want {must!r}")
+        for must_not in must_nots:
+            if must_not in body:
+                bad.append(f"terminal: {line!r} printed {must_not!r}, which it must not")
+
+    # A command that prints nothing has to print nothing. Without this, every assertion
+    # above could be satisfied by a pane that accumulates text from somewhere else.
+    quiet = term_run(page, "touch /tmp/quiet")
+    if quiet.strip() != "user@webxp:~$ touch /tmp/quiet":
+        bad.append(f"terminal: touch printed {quiet.strip()!r}, want only the echoed line")
+
+    # Tab completion, and history on the arrow keys.
+    parts = term_parts(page)
+    mouse(page, "mousePressed", parts["x"], parts["y"], buttons=1)
+    mouse(page, "mouseReleased", parts["x"], parts["y"], buttons=0)
+    page.type_text("cat note")
+    page.press("Tab")
+    time.sleep(0.15)
+    completed = term_parts(page)["value"]
+    if completed != "cat notes/":
+        bad.append(f"terminal: Tab completed to {completed!r}, want 'cat notes/'")
+    page.type_text("todo.txt")
+    page.press("Enter")
+    time.sleep(0.3)
+    page.press("ArrowUp")
+    time.sleep(0.1)
+    recalled = term_parts(page)["value"]
+    if recalled != "cat notes/todo.txt":
+        bad.append(f"terminal: ArrowUp recalled {recalled!r}, want the last line")
+    page.press("ArrowDown")
+    time.sleep(0.1)
+    if term_parts(page)["value"] != "":
+        bad.append("terminal: ArrowDown past the end of the history did not clear the line")
+
+    # `ls` lays out columns for the pane it is in, so the same listing has to reflow. Both
+    # extremes, because a layout checked at one width is a layout checked nowhere.
+    def ls_rows(width: int) -> int:
+        page.evaluate(
+            "window.webxp.windows.filter((w) => w.programId === 'terminal').at(-1)"
+            f".sizeTo({width}, 420)"
+        )
+        time.sleep(0.2)
+        output = term_run(page, "ls /etc")
+        return len([row for row in output.strip().split("\n")[1:] if row.strip()])
+
+    wide = ls_rows(640)
+    narrow = ls_rows(260)
+    if wide != 1:
+        bad.append(f"terminal: ls in a 640px window used {wide} rows, want 1")
+    if narrow <= wide:
+        bad.append(
+            f"terminal: ls used {narrow} rows at 260px and {wide} at 640px — the columns do "
+            "not reflow with the window"
+        )
+    page.evaluate(
+        "window.webxp.windows.filter((w) => w.programId === 'terminal').at(-1).sizeTo(620, 400)"
+    )
+
+    # `clear` empties the pane, which is the one command whose effect is not text.
+    term_run(page, "clear")
+    if term_parts(page)["text"].strip() != "":
+        bad.append("terminal: clear left text in the pane")
+    return bad
+
+
+def check_open_across_apps(page) -> list[str]:
+    """`open` hands another app a path, and both apps turn out to hold one filesystem.
+
+    This is the claim the single mount in `shared/fs/fs.mjs` makes, and it cannot be checked
+    inside either app: the terminal writes, Notepad reads, Notepad writes, the terminal
+    reads. Anything less is two apps that each work.
+    """
+    bad = []
+    term_run(page, "echo bridge-one > /tmp/bridge.txt")
+    opened = term_run(page, "open /tmp/bridge.txt", settle=1.2)
+    if "opened /tmp/bridge.txt in Notepad" not in opened:
+        bad.append(f"open: the terminal said {opened.strip()[:120]!r}")
+
+    pad = page.evaluate(
+        "(() => { const w = window.webxp.windows.filter((w) => w.programId === 'notepad').at(-1);"
+        " if (!w) return null;"
+        " const area = w.el.querySelector('.notepad-area');"
+        " const r = area ? area.getBoundingClientRect() : null;"
+        " return { title: w.titleText, value: area ? area.value : null,"
+        "          status: w.statusEl ? w.statusEl.textContent : '',"
+        "          x: r ? r.left + 20 : 0, y: r ? r.top + 10 : 0 }; })()"
+    )
+    if pad is None:
+        return bad + ["open: no Notepad window opened"]
+    if pad["title"] != "bridge.txt - Notepad":
+        bad.append(f"open: Notepad is titled {pad['title']!r}, want 'bridge.txt - Notepad'")
+    if pad["value"] != "bridge-one\n":
+        bad.append(f"open: Notepad holds {pad['value']!r}, want the file the shell wrote")
+
+    # Typed into, then saved with Ctrl+S. The caret is moved by script and the text is
+    # inserted as real input: `insertText` lands wherever the caret is, and a click lands it
+    # wherever the pointer was.
+    mouse(page, "mousePressed", pad["x"], pad["y"], buttons=1)
+    mouse(page, "mouseReleased", pad["x"], pad["y"], buttons=0)
+    page.evaluate(
+        "(() => { const w = window.webxp.windows.filter((w) => w.programId === 'notepad').at(-1);"
+        " const area = w.el.querySelector('.notepad-area');"
+        " area.setSelectionRange(area.value.length, area.value.length); })()"
+    )
+    page.type_text("edited-in-notepad\n")
+    time.sleep(0.1)
+    for event_type in ("rawKeyDown", "keyUp"):
+        page.call(
+            "Input.dispatchKeyEvent",
+            type=event_type,
+            key="s",
+            code="KeyS",
+            windowsVirtualKeyCode=83,
+            nativeVirtualKeyCode=83,
+            # 2 is Ctrl. Notepad's handler asks for `ctrlKey`, and a keypress without it is
+            # the browser's own Save dialog rather than the editor's.
+            modifiers=2,
+        )
+    time.sleep(0.3)
+    saved = page.evaluate(
+        "(() => { const w = window.webxp.windows.filter((w) => w.programId === 'notepad').at(-1);"
+        " return w.statusEl ? w.statusEl.textContent : ''; })()"
+    )
+    if "saved" not in saved:
+        bad.append(f"open: Notepad's status after Ctrl+S is {saved!r}")
+
+    back = term_run(page, "cat /tmp/bridge.txt")
+    if "edited-in-notepad" not in back:
+        bad.append(
+            f"open: the terminal reads {back.strip()[:120]!r} — Notepad saved into a "
+            "different filesystem from the one the shell is holding"
+        )
+
+    # A directory opens a second terminal, already in it. Two sessions, one filesystem.
+    term_run(page, "open /tmp", settle=1.2)
+    second = term_parts(page)
+    if second["count"] < 2:
+        bad.append("open: a directory did not open a second terminal")
+    elif "/tmp$" not in second["prompt"]:
+        bad.append(f"open: the second terminal's prompt is {second['prompt']!r}, want /tmp")
+    elif "bridge.txt" not in term_run(page, "ls"):
+        bad.append("open: the second terminal cannot see the file the first one wrote")
+    return bad
+
+
+def check_launch_arguments(page) -> list[str]:
+    """`launch(id, args)` reaches `mount`, and a singleton says it cannot take them."""
+    bad = []
+    page.evaluate(
+        "(() => { window.__warned = [];"
+        " const original = console.warn;"
+        " console.warn = (...parts) => { window.__warned.push(parts.map(String).join(' '));"
+        "   original.apply(console, parts); }; })()"
+    )
+    page.evaluate("window.webxp.launch('terminal', { cwd: '/etc' })")
+    time.sleep(1.0)
+    prompt = term_parts(page)["prompt"]
+    if "/etc$" not in prompt:
+        bad.append(f"launch arguments: the new terminal's prompt is {prompt!r}, want /etc")
+    if "motd" not in term_run(page, "ls"):
+        bad.append("launch arguments: the terminal did not start in the directory it was given")
+
+    # `about` is a singleton: the first launch mounts, the second has no mount to hand
+    # arguments to and must say so rather than dropping them.
+    page.evaluate("window.webxp.launch('about')")
+    time.sleep(0.8)
+    page.evaluate("window.webxp.launch('about', { path: '/etc/motd' })")
+    time.sleep(0.5)
+    warned = page.evaluate("window.__warned.join(' | ')")
+    if "singleton" not in warned:
+        bad.append(
+            "launch arguments: a singleton was launched with arguments and nothing was "
+            f"reported — console.warn said {warned!r}"
+        )
+    return bad
+
+
+def check_fs_persistence(page) -> list[str]:
+    """A file written in the shell is still there after a reload.
+
+    The reload is the check. Everything else about persistence is a claim about
+    `localStorage` that a same-page assertion cannot distinguish from an in-memory tree.
+    """
+    bad = []
+    written = term_run(page, "echo survives-a-reload > /home/user/persist.txt")
+    if written.strip() != "user@webxp:~$ echo survives-a-reload > /home/user/persist.txt" \
+            and "No such file" in written:
+        bad.append(f"persistence: the write failed — {written.strip()[:120]!r}")
+    # Past the 300 ms debounce in `shared/fs/fs.mjs`.
+    time.sleep(0.8)
+    state = term_run(page, "df")
+    if "persistence: webxp.fs.v1" not in state:
+        bad.append(f"persistence: df reports {state.strip()[:160]!r}")
+
+    page.navigate(BASE_URL + "/")
+    time.sleep(1.2)
+    console_errors(page)
+    launch(page, "terminal")
+    restored = term_parts(page)
+    if "Filesystem restored" not in restored["text"]:
+        bad.append(f"persistence: after a reload the banner says {restored['text'][:80]!r}")
+    read = term_run(page, "cat persist.txt")
+    if "survives-a-reload" not in read:
+        bad.append(
+            f"persistence: after a reload the file reads {read.strip()[:120]!r} — the tree "
+            "did not come back out of localStorage"
+        )
+
+    # `format` puts the seed tree back, which is also how this check hands the desktop on
+    # without the files it wrote.
+    reset = term_run(page, "format --yes", settle=0.8)
+    if "filesystem reset" not in reset:
+        bad.append(f"persistence: format said {reset.strip()[:120]!r}")
+    after = term_run(page, "cat persist.txt")
+    if "No such file" not in after:
+        bad.append(f"persistence: format left persist.txt behind — {after.strip()[:120]!r}")
+    fs_reset(page)
+    return bad
+
+
 CHECKS = (
     ("manifest is current", check_manifest_current),
     ("boot", check_boot),
@@ -2336,6 +2910,14 @@ CHECKS = (
     # Last, because it registers a program and provokes a console error. Its cleanup puts
     # the desktop back, but a check that deliberately breaks something belongs at the end.
     ("mount failure", check_mount_failure),
+    # The filesystem group. After the window-manager checks because the first of these
+    # reloads the page to clear the stored tree, and a reload closes every window the
+    # earlier checks opened.
+    ("filesystem", check_filesystem),
+    ("terminal", check_terminal),
+    ("open across apps", check_open_across_apps),
+    ("launch arguments", check_launch_arguments),
+    ("filesystem persists", check_fs_persistence),
     # Last: it writes a folder and reloads the page, so it hands the desktop back fresh.
     ("scaffold a new app", check_scaffold),
 )
@@ -2348,7 +2930,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--prove-failure",
         action="store_true",
-        help="invert the drag assertion, so the run must report a failure",
+        help="invert the drag and shell assertions, so the run must report a failure",
     )
     parser.add_argument(
         "--only",
@@ -2430,7 +3012,7 @@ def main(argv: list[str] | None = None) -> int:
             time.sleep(1.0)
 
             for name, check in checks:
-                if check is check_drag and args.prove_failure:
+                if args.prove_failure and check in (check_drag, check_terminal):
                     found = check(page, invert=True)
                 else:
                     found = check(page)

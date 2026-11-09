@@ -65,7 +65,7 @@ feature at runtime, so the loader rejects what it does not recognise rather than
 ### `mount`
 
 ```js
-mount({ win, desktop }) { return node; }
+mount({ win, desktop, args }) { return node; }
 ```
 
 Return a node, an array of nodes, or a promise of either. It runs once per window, while the
@@ -73,6 +73,7 @@ frame is still showing its loading marquee.
 
 - `win` — the `XPWindow`. `setStatus`, `setTitle`, `onClose`, `box`, `state`.
 - `desktop` — the `Desktop`. `windows`, `announce`, `launch`, `surface`.
+- `args` — what `launch` was given, or `null`. See below.
 
 Two rules that matter:
 
@@ -91,6 +92,24 @@ win.onClose = () => clearInterval(timer);
 
 A `mount` that throws does not hang. The window shows the error message, the program id and a
 pointer to the console, and the rest of the desktop is unaffected.
+
+### Opening an app on something
+
+`desktop.launch(id, args)` hands `args` to that program's `mount` and `ready`. It is how one
+app opens another on a thing without either of them knowing the other exists:
+
+```js
+await desktop.launch('notepad', { path: '/home/user/readme.txt' });   // the terminal's `open`
+```
+
+Two rules:
+
+- **The sender resolves what it sends.** The other window has its own state — a different
+  working directory, a different selection — so a relative path or an index means nothing
+  there. The terminal calls `realpath` before launching.
+- **A singleton cannot take arguments.** It is mounted once, so a second launch has no
+  `mount` to hand them to. The desktop warns to the console rather than dropping them
+  silently: a launch whose arguments vanished looks like a program that ignored them.
 
 ### `ready` — when you need your nodes measured
 
@@ -195,10 +214,19 @@ webxp/
       chrome.mjs        the controls, as a subtree an app drops in
       map.css           scoped on the class chrome.mjs sets
       vendor/maplibre-gl.mjs
+    fs/
+      vfs.mjs           the filesystem
+      fs.mjs            the one mount, and its persistence
   apps/
     basemap/app.mjs     -> ../../shared/map/
     day-02-lines/app.mjs -> ../../shared/map/
+    terminal/app.mjs    -> ../../shared/fs/
+    notepad/app.mjs     -> ../../shared/fs/
 ```
+
+`shared/fs/` is the case where sharing is the feature rather than an economy: the terminal
+and Notepad must get the *same* filesystem, or a save in one lands in a tree the other cannot
+see. The module-level mount in `fs.mjs` is what guarantees it.
 
 **`shared/` is a sibling of `src/`, not a directory inside it.** `src/` is the window
 manager. A 1.6 MB map engine in there means webxp ships a map engine, which it does not:
@@ -320,9 +348,11 @@ and compares it against the window's own size, because nothing cheaper could tel
 | `day 02 lines` | The `mount`/`ready` split on a real map app: data loaded, its own layers present by id on whatever basemap is remembered, and the status bar uncovered with the drill-down panel open at three window sizes. |
 | `scaffold a new app` | `--new`, reload, it is in the menu and it opens. |
 | `mount failure` | A throwing `mount` reports instead of hanging. |
+| `launch arguments` | `launch(id, args)` reaches `mount`, and a singleton that cannot take them says so. |
+| `open across apps` | The terminal's `open` hands Notepad a path, Notepad saves, the terminal reads it back: two apps, one shared module, asserted rather than assumed. |
 
 `scaffold a new app` is the one that matters most: it is the only check that walks the path a
 person actually takes.
 
-These ten are the contract's. The suite is thirty-three; the rest belong to the window
+These twelve are the contract's. The suite is thirty-eight; the rest belong to the window
 manager and are described in `docs/windows.md`.

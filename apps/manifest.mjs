@@ -42,6 +42,7 @@ export const APPS = [
   'map-challenge',
   'notepad',
   'readme',
+  'terminal',
   'webview',
   'windows',
 ];

@@ -229,8 +229,10 @@ export class Desktop {
    * @param {boolean} [program.singleton]  A second launch focuses the open window.
    * @param {boolean} [program.onDesktop]  Also give it a desktop icon.
    * @param {boolean} [program.autostart]  Open it when the desktop mounts.
-   * @param {(ctx: {win: XPWindow, desktop: Desktop}) => Node|Node[]|Promise<Node|Node[]>}
-   *        program.mount                  Builds the content. May be async.
+   * @param {(ctx: {win: XPWindow, desktop: Desktop, args: object|null})
+   *          => Node|Node[]|Promise<Node|Node[]>}
+   *        program.mount                  Builds the content. May be async. `args` is
+   *                                       whatever `launch` was given.
    */
   register(program) {
     this.programs.set(program.id, program);
@@ -268,9 +270,12 @@ export class Desktop {
    * only then fills. `MIN_LOAD_MS` explains why the fill is not immediate.
    *
    * @param {string} id
+   * @param {object|null} [args] Handed to `mount` and `ready` as `args`. This is how one
+   *        program opens another on something — the terminal's `open` launching Notepad on a
+   *        path — without either of them knowing the other exists.
    * @returns {Promise<XPWindow|null>}
    */
-  async launch(id) {
+  async launch(id, args = null) {
     const program = this.programs.get(id);
     if (!program) return null;
 
@@ -279,6 +284,15 @@ export class Desktop {
       if (open) {
         if (open.state === 'min') await open.restore();
         this.focus(open, { moveFocus: true });
+        // A singleton is mounted once, so there is no second `mount` to hand these to. Said
+        // out loud rather than dropped: a launch whose arguments vanished looks like a
+        // program that ignored them.
+        if (args) {
+          console.warn(
+            `webxp: ${id} is a singleton and is already open; its launch arguments were not used`,
+            args,
+          );
+        }
         return open;
       }
     }
@@ -317,7 +331,7 @@ export class Desktop {
     let content;
     try {
       [content] = await Promise.all([
-        Promise.resolve().then(() => program.mount({ win, desktop: this })),
+        Promise.resolve().then(() => program.mount({ win, desktop: this, args })),
         zoom(win.el, this.anchorRect(win), 'in'),
       ]);
     } catch (error) {
@@ -350,7 +364,7 @@ export class Desktop {
       });
       if (win.closed) return win;
       try {
-        await program.ready({ win, desktop: this });
+        await program.ready({ win, desktop: this, args });
       } catch (error) {
         // Same treatment as a failed mount: the window says what broke rather than looking
         // finished and being empty.
