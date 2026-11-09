@@ -16,6 +16,28 @@ import { icon as makeIcon } from './icons.mjs';
 export const MIN_W = 220;
 export const MIN_H = 120;
 
+/**
+ * The size a window opens at when its spec names none. `apply()` writes `--win-w` and
+ * `--win-h` before the element reaches the document, so this is the only declaration the
+ * layout ever reads.
+ */
+export const DEFAULT_W = 480;
+export const DEFAULT_H = 320;
+
+/**
+ * The spec keys a window reads under the names a program spec already uses.
+ *
+ * Named here and nowhere else: `desktop.mjs` copies them off a program and `apps.mjs`
+ * validates an app spec against them, so one option is one edit. `title` and `iconName` are
+ * absent because they are renamed from `name` and `icon`, and `bodyClass` because the loader
+ * supplies it. `docs/apps.md` carries the types and the defaults.
+ */
+export const WINDOW_SPEC_KEYS = Object.freeze([
+  'width', 'height', 'x', 'y',
+  'resizable', 'minimizable', 'maximizable', 'maximized',
+  'status',
+]);
+
 //: How much of a window must stay on the desktop. XP clamped nothing but the taskbar, so a
 //: window could be dragged until only a corner showed and then not be draggable back. The
 //: title bar is the only way to move a window, so it is the thing kept reachable.
@@ -128,19 +150,12 @@ function clampBox(box, surface, barHeight) {
 
 export class XPWindow {
   /**
-   * @param {object} spec
+   * @param {object} spec                  `WINDOW_SPEC_KEYS` and the four below. The window
+   *        keys are typed in `docs/apps.md`, which is the contract an app is written
+   *        against; omitting `x` or `y` means cascade.
    * @param {string} spec.title
    * @param {string} [spec.id]             Defaults to a generated one.
    * @param {string} [spec.iconName]       A name `icons.mjs` knows, drawn in the title bar.
-   * @param {number} [spec.width]
-   * @param {number} [spec.height]
-   * @param {number} [spec.x]              Left, in desktop pixels. Omitted means cascade.
-   * @param {number} [spec.y]
-   * @param {boolean} [spec.resizable]     Default true.
-   * @param {boolean} [spec.minimizable]   Default true.
-   * @param {boolean} [spec.maximizable]   Default true.
-   * @param {boolean} [spec.maximized]     Open maximised.
-   * @param {boolean} [spec.status]        Give it a status bar at the foot.
    * @param {string} [spec.bodyClass]      Added to the client area, for an app's own CSS.
    * @param {object} host                  See the note at the top of this file.
    */
@@ -170,8 +185,8 @@ export class XPWindow {
     this.box = {
       x: Number.isFinite(spec.x) ? spec.x : 0,
       y: Number.isFinite(spec.y) ? spec.y : 0,
-      w: Math.max(spec.width || 480, MIN_W),
-      h: Math.max(spec.height || 320, MIN_H),
+      w: Math.max(spec.width || DEFAULT_W, MIN_W),
+      h: Math.max(spec.height || DEFAULT_H, MIN_H),
     };
     /**
      * `box` held inside the desktop: the geometry on the element, and where a gesture or an

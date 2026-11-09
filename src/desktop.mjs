@@ -9,12 +9,22 @@
  * markup, because windows are not: one builder keeps the two in step.
  */
 
-import { XPWindow, zoom } from './window.mjs';
+import { XPWindow, WINDOW_SPEC_KEYS, zoom } from './window.mjs';
 import { icon } from './icons.mjs';
 import { iconTile } from './widgets.mjs';
 
 //: The lowest z-index a window gets. Above the desktop icons, below the taskbar.
 const Z_BASE = 10;
+
+//: Every key an app may declare that `Desktop` reads, beside the window's own
+//: `WINDOW_SPEC_KEYS`. Named here and nowhere else: `apps.mjs` validates an app spec against
+//: both lists, so an option added to the shell is accepted by the loader without a second
+//: edit. `bodyClass` is deliberately absent — `launch` reads it, but the loader sets it and
+//: an app that declares one must be rejected.
+export const PROGRAM_KEYS = Object.freeze([
+  'id', 'name', 'icon', 'mount', 'ready',
+  'singleton', 'onDesktop', 'autostart', 'minLoadMs',
+]);
 
 //: How long the frame shows its marquee before the content replaces it, when the content
 //: was ready sooner.
@@ -221,6 +231,9 @@ export class Desktop {
   /**
    * Register a program.
    *
+   * A program carries `PROGRAM_KEYS`, which the shell reads, and `WINDOW_SPEC_KEYS`, which
+   * `launch` hands to the window untouched. `docs/apps.md` is the table of both.
+   *
    * @param {object} program
    * @param {string} program.id
    * @param {string} program.name          The window title and the menu label.
@@ -228,10 +241,14 @@ export class Desktop {
    * @param {boolean} [program.singleton]  A second launch focuses the open window.
    * @param {boolean} [program.onDesktop]  Also give it a desktop icon.
    * @param {boolean} [program.autostart]  Open it when the desktop mounts.
+   * @param {number} [program.minLoadMs]   Overrides the desktop's loading floor.
    * @param {(ctx: {win: XPWindow, desktop: Desktop, args: object|null})
    *          => Node|Node[]|Promise<Node|Node[]>}
    *        program.mount                  Builds the content. May be async. `args` is
    *                                       whatever `launch` was given.
+   * @param {(ctx: {win: XPWindow, desktop: Desktop, args: object|null}) => any}
+   *        [program.ready]                Runs once the content is in the document and laid
+   *                                       out.
    */
   register(program) {
     this.programs.set(program.id, program);
@@ -296,19 +313,14 @@ export class Desktop {
       }
     }
 
+    // Copied by the list rather than key by key. A window option named in one place and
+    // forgotten here is a key that validates and is then silently ignored, which is the
+    // failure the loader's own key list exists to prevent.
     const win = new XPWindow({
       title: program.name,
       iconName: program.icon,
-      width: program.width,
-      height: program.height,
-      x: program.x,
-      y: program.y,
-      resizable: program.resizable,
-      minimizable: program.minimizable,
-      maximizable: program.maximizable,
-      maximized: program.maximized,
-      status: program.status,
       bodyClass: program.bodyClass,
+      ...Object.fromEntries(WINDOW_SPEC_KEYS.map((key) => [key, program[key]])),
     }, this);
     win.programId = id;
 

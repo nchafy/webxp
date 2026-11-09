@@ -9,23 +9,28 @@
  * failure this is built to avoid is an app that is silently absent.
  */
 
+import { PROGRAM_KEYS } from './desktop.mjs';
+import { WINDOW_SPEC_KEYS } from './window.mjs';
 import { ICON_NAMES, FILETYPE_NAMES, iconFor } from './icons.mjs';
 
 //: Where the folders live, relative to the document. Overridable so a host page can keep its
 //: apps somewhere else, and so the checks can point at a fixture directory.
 export const DEFAULT_BASE = '/apps';
 
-//: Spec keys passed straight through to `Desktop.register`. Listed rather than spread, so a
-//: typo in an app's spec is caught by `validate` instead of being silently ignored.
-const PASS_THROUGH = [
-  'name', 'ready', 'width', 'height', 'x', 'y',
-  'resizable', 'minimizable', 'maximizable', 'maximized',
-  'status', 'singleton', 'onDesktop', 'autostart', 'minLoadMs',
-];
+//: The keys this module consumes itself rather than forwarding: the folder's identity, the
+//: two ways of filling a window, and the three the loader resolves into something else.
+const LOADER_OWNED = new Set(['id', 'icon', 'filetype', 'mount', 'styles', 'frame']);
 
-//: Every key an app spec may carry. Anything else is a mistake worth reporting: a
-//: misspelled `singelton` is indistinguishable from a missing feature at runtime.
-const KNOWN_KEYS = new Set([...PASS_THROUGH, 'id', 'icon', 'filetype', 'mount', 'styles', 'frame']);
+//: Every key an app spec may carry — the shell's, the window's, and the loader's own.
+//: Anything else is a mistake worth reporting: a misspelled `singelton` is
+//: indistinguishable from a missing feature at runtime.
+const KNOWN_KEYS = new Set([...PROGRAM_KEYS, ...WINDOW_SPEC_KEYS, ...LOADER_OWNED]);
+
+//: Spec keys passed straight through to `Desktop.register`: everything known that the
+//: loader does not consume. Derived rather than listed, so an option added to the shell or
+//: to the window is forwarded without an edit here — a key that validates and is then
+//: dropped on the way through is the failure this list exists to prevent.
+const PASS_THROUGH = [...KNOWN_KEYS].filter((key) => !LOADER_OWNED.has(key));
 
 //: `ready` is passed through to the desktop but is not required, and an app may have it
 //: without a `mount` only in the `frame` case — which has no use for it, since a hosted
