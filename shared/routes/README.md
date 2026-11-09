@@ -27,8 +27,10 @@ than a scheme this module would have to understand.
 
 The id **is** the program id: `#/day-02-lines`, not `#/day-02`. A prettier id needs a
 registry mapping one to the other, which is a second name for every app and a thing to
-drift. When an app can declare its own route name in its spec, that declaration replaces the
-question.
+drift. When an app can declare its own route name in its spec, that declaration has to
+*replace* the program id as the answer rather than sit beside it — two keys that both answer
+"what is this app called in a URL" is the same table again, in a shape that looks like a
+feature.
 
 ## What a link carries, and what it does not
 
@@ -38,6 +40,27 @@ they were sent, and it keeps the URL short enough to paste.
 
 An app opts in by reading `args.path` in its own `mount`. One that reads nothing still gets
 `#/<id>` and opens bare, which is the honest reading of a bare id.
+
+### A route does not suppress `~/Startup`
+
+It lands on top of it. `boot.mjs` opens the startup set first and restores the route last, so
+the linked window is the focused one and whatever the reader asked to open is still open
+behind it.
+
+The reverse looks tidier — a link opening exactly one window and nothing else — and it is
+wrong for a reason that only shows up when you ask whose folder it is. `~/Startup` is the
+*reader's* standing instruction about the *reader's* desktop; the filesystem lives in their
+browser, not the sender's. A link that suppressed it would let a stranger's URL quietly
+cancel your configuration, which is a worse surprise than a link opening alongside the two
+windows you asked for every morning.
+
+It is also the consistent reading of what a link is here: one app and its state, not a
+desktop. The sender is contributing a window, not replacing a machine — their `/home` is not
+the reader's either, so "what I see is what you see" was never on offer.
+
+A route naming an app the startup set already opened gives two windows of it, as two of
+anything non-singleton always does, and their state differs — which is the case where you
+want both.
 
 `args.path` is absolute whoever sends it — `open <dir>` passes a `realpath`, a link carries
 one with the leading slash implied, and `asAbsolute` puts it back. There is no second key for
