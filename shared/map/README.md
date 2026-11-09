@@ -22,7 +22,7 @@ Adding a fourth is one object in `BASEMAPS` plus one button in the page's
 `style()` returning a style object or a promise of one, and an `overlayBefore(style)`
 returning the layer id a day's overlay is inserted before.
 
-The reader's choice is remembered in `localStorage` under `30dmc:basemap`, so it
+The reader's choice is remembered in `localStorage` under `webxp:basemap`, so it
 survives moving between days. A page MAY force one with `basemap: 'satellite'`.
 
 ## The camera: tilt, 3D and the compass
@@ -86,16 +86,21 @@ This took three passes, and the two failures are worth recording:
 1. **Repainting positron, with its roads stripped.** Lost every park in the city, because
    positron has no park colour to override, and lost the look it was imitating, because a
    GPS screen was mostly roads.
-2. **Muting the palette** to keep a data overlay readable. The verdict was that it had
-   gone pale (2026-11-04). These screens were read at a glance in daylight through a
-   windscreen; nothing on them was subtle.
+2. **Muting the palette** to keep a data overlay readable. It read as pale rather than as
+   a satnav. These screens were read at a glance in daylight through a windscreen; nothing
+   on them was subtle.
 
 So the palette is saturated, and no layer is removed. A day whose data needs a quiet
 backdrop should pick `geography`, or empty `SATNAV`.
 
-Navy water broke liberty's own water labels — `#495e91` on `#1b4b8f` measures about
-1.5:1 — so `water_name_*` and `waterway_line_label` are re-coloured to light text on a
-dark halo, about 12:1. A palette change that breaks a label is not finished.
+Navy water broke liberty's own water labels — `#495e91` on `#1b4b8f` measures 1.34:1 — so
+`water_name_*` and `waterway_line_label` are re-coloured to light text on a dark halo. Two
+surfaces, so two numbers: `#dce8ff` on the halo composited over the navy
+(`rgba(8,28,64,0.9)` over `#1b4b8f`) is 12.9:1, and `#dce8ff` straight on the navy, where
+the halo does not reach, is 6.95:1. The palette is held to 6.95:1, the worse of the two.
+All three are the WCAG 2.1 relative-luminance ratio
+([§1.4.3](https://www.w3.org/TR/WCAG21/#contrast-minimum)). A palette change that breaks a
+label is not finished.
 
 ## Licensing
 

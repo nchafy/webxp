@@ -46,8 +46,8 @@
  * liberty draws `park` at `#d8e8c8` with a `park_outline`, plus grass, pitches, tracks and
  * cemeteries, which is what makes it read like a general-purpose map.
  *
- * liberty is also the style on openfreemap.org's own homepage, which is the reference the
- * owner asked for (2026-11-04).
+ * liberty is also the style on openfreemap.org's own homepage (https://openfreemap.org/),
+ * which is the reference this project matches against.
  *
  * OpenFreeMap publishes no SLA, so `FALLBACK_STYLE` is not decoration: when this request
  * fails the day's overlay must still draw.
@@ -76,15 +76,15 @@ const OPENTOPO = ['a', 'b', 'c'].map((s) => `https://${s}.tile.opentopomap.org/{
  * `scripts/inspect_style.py`; positron's ids are different, which is why a palette written
  * against positron silently did nothing here.
  *
- * Saturated on purpose. The second attempt muted all of this to keep a data overlay
- * readable and the owner's verdict was that it had gone pale (2026-11-04). These screens
- * were read at a glance in daylight through a windscreen, so nothing on them was subtle:
- * flat olive land, deep navy water, and arterials in a yellow that carries at arm's length.
- * A day whose data needs a quiet backdrop should pick `geography`, or empty this object.
+ * Saturated on purpose. An earlier attempt muted all of this to keep a data overlay
+ * readable, and it read as pale rather than as a satnav. These screens were read at a
+ * glance in daylight through a windscreen, so nothing on them was subtle: flat olive land,
+ * deep navy water, and arterials in a yellow that carries at arm's length. A day whose
+ * data needs a quiet backdrop should pick `geography`, or empty this object.
  *
  * Contrast is checked where it changed, not assumed. Navy water broke liberty's own water
- * labels — `#495e91` on `#1b4b8f` measures about 1.5:1 — so those are re-coloured at the
- * foot of this object rather than left unreadable.
+ * labels — `#495e91` on `#1b4b8f` measures 1.34:1 — so those are re-coloured at the foot
+ * of this object rather than left unreadable.
  */
 const SATNAV = {
   // Land, and the things growing on it.
@@ -171,8 +171,13 @@ const SATNAV = {
 
   /* Water labels, re-coloured because the fill under them changed. liberty sets `#495e91`
      with a white halo, which was written for its pale blue water; on `#1b4b8f` that is
-     about 1.5:1 and unreadable. Light text on a dark halo instead, which measures about
-     12:1 against the navy. */
+     1.34:1 and unreadable. Light text on a dark halo instead.
+
+     Two surfaces, two numbers, and conflating them overstates the result. The glyph sits
+     on its own halo for most of its edge — `#dce8ff` on the halo composited over the navy
+     (`rgba(8,28,64,0.9)` over `#1b4b8f`, so `rgb(10,33,72)`) is 12.9:1. Where the halo
+     does not reach, the glyph meets the navy directly, and that is 6.95:1. 6.95:1 is the
+     figure this palette is held to, because it is the worse of the two. */
   water_name_point_label: { 'text-color': '#dce8ff', 'text-halo-color': 'rgba(8,28,64,0.9)' },
   water_name_line_label: { 'text-color': '#dce8ff', 'text-halo-color': 'rgba(8,28,64,0.9)' },
   waterway_line_label: { 'text-color': '#dce8ff', 'text-halo-color': 'rgba(8,28,64,0.9)' },
@@ -290,7 +295,7 @@ const FALLBACK_STYLE = {
 
 //: Which basemap was last chosen, so the choice survives moving between days. A failure here
 //: is swallowed: private browsing throws on `localStorage` and that must not cost the map.
-const STORAGE_KEY = '30dmc:basemap';
+const STORAGE_KEY = 'webxp:basemap';
 
 function rememberedBasemap() {
   try {
@@ -423,7 +428,7 @@ export async function createBaseMap(options = {}) {
    * style keeps firing it for a while after `setStyle` has been called. A counter bumped
    * just before `setStyle` is therefore consumed by a late event belonging to the *old*
    * style, and the real event for the new one is then skipped — which left the satellite
-   * basemap with no overlay at all and no error to show for it (measured 2026-11-04).
+   * basemap with no overlay at all and no error to show for it.
    *
    * Stamping the style and comparing identifies the style rather than the moment, so a
    * stale event cannot match. */
@@ -433,7 +438,7 @@ export async function createBaseMap(options = {}) {
 
   const stamp = (style) => {
     serial += 1;
-    wantedTag = `30dmc-${serial}`;
+    wantedTag = `webxp-${serial}`;
     return { ...style, name: wantedTag };
   };
 
@@ -466,8 +471,7 @@ export async function createBaseMap(options = {}) {
    * liberty draws `building-3d` as a `fill-extrusion` from zoom 14, and at pitch 0 an
    * extrusion is seen straight down the top of itself: the walls collapse and it reads as a
    * smeared grey blob offset from its own footprint. So it is gated on the camera rather
-   * than left on — owner's decision, 2026-11-04. Looking down gets the flat map; leaning
-   * over gets the city.
+   * than left on. Looking down gets the flat map; leaning over gets the city.
    *
    * The layers are discovered by type, not named, so a basemap that ships more than one
    * extrusion layer is covered too. The flat `building` fill underneath is left alone: in
