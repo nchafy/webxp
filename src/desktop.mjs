@@ -67,7 +67,6 @@ export class Desktop {
     this.windows = [];
     this.active = null;
     this.z = Z_BASE;
-    this.opened = 0;
     this.minLoadMs = Number.isFinite(options.minLoadMs) ? options.minLoadMs : MIN_LOAD_MS;
 
     this.ready = false;
@@ -313,7 +312,6 @@ export class Desktop {
     }, this);
     win.programId = id;
 
-    this.opened += 1;
     this.windows.push(win);
     this.surface.append(win.el);
     this.addTaskButton(win);
@@ -561,8 +559,26 @@ export class Desktop {
     return rect.width ? rect : null;
   }
 
+  /**
+   * The lowest cascade lane no open window is in.
+   *
+   * Read off the windows rather than counted, because a count is not the question. A counter
+   * that only `launch` advances hands the same lane to a window built directly and to the
+   * next launched one, and a count of open windows hands back the lane of a window that is
+   * still on screen as soon as an earlier one closes. Either way two windows open at one
+   * origin, which is the pile the cascade exists to prevent.
+   *
+   * Two cases this cannot answer, both of which still produce one origin for two windows:
+   * a window built directly and never given to the desktop is not in `windows` and so is
+   * invisible here; and `cascade` wraps this lane by the number that fit its own height, so
+   * a window tall enough to have fewer lanes than are already taken wraps onto an occupied
+   * one. Closing the second needs the lane budget and the occupancy decided together.
+   */
   cascadeIndex() {
-    return this.opened;
+    const taken = new Set(this.windows.map((win) => win.cascadeSlot));
+    let lane = 0;
+    while (taken.has(lane)) lane += 1;
+    return lane;
   }
 
   /** How far in from the left the cascade should start: past the icon column, if there is

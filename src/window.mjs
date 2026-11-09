@@ -25,6 +25,15 @@ const MIN_VISIBLE = 72;
 //: desktop in a few seconds and fine enough to place a window against an edge.
 const KEY_STEP = 10;
 
+//: The cascade. Each new window steps `CASCADE_STEP` down and right of the one before,
+//: starting at `CASCADE_TOP`; `docs/windows.md` states the step. `CASCADE_FOOT` is the room
+//: left below the last lane, so a cascaded window's foot is not under the taskbar, and
+//: `CASCADE_EDGE` is how near the desktop's left or right edge a new window may start.
+const CASCADE_STEP = 26;
+const CASCADE_TOP = 24;
+const CASCADE_FOOT = 40;
+const CASCADE_EDGE = 10;
+
 //: The directions a resize handle can carry. `window.css` insets each edge grip by the
 //: corner size, so edges and corners meet without overlapping and the order of this list
 //: decides nothing.
@@ -329,18 +338,25 @@ export class XPWindow {
   /** Step each new window down and right, so a second window is not hidden by the first. */
   cascade() {
     const { w: sw, h: sh } = this.surface();
-    const step = 26;
     const index = this.host.cascadeIndex();
     // Wrap before the window would be pushed off the bottom, rather than letting the
     // cascade walk off the desktop and get clamped into a pile in the corner.
-    const lanes = Math.max(Math.floor((sh - this.box.h - 40) / step), 1);
-    const slot = index % lanes;
+    const lanes = Math.max(Math.floor((sh - this.box.h - CASCADE_FOOT) / CASCADE_STEP), 1);
+    /**
+     * Which lane this window took. The host reads it back off its open windows to hand the
+     * next one a lane nobody is in, so it is state and not a local. A window given an
+     * explicit `x` and `y` never cascades and never has one.
+     */
+    this.cascadeSlot = index % lanes;
     // Clear of the icon column. XP cascaded from the top-left corner and buried its own
     // desktop icons under the first window; starting to the right of them costs nothing
     // and leaves both reachable.
     const left = this.host.reservedLeft();
-    this.box.x = Math.min(left + slot * step, Math.max(sw - this.box.w - 10, 10));
-    this.box.y = 24 + slot * step;
+    this.box.x = Math.min(
+      left + this.cascadeSlot * CASCADE_STEP,
+      Math.max(sw - this.box.w - CASCADE_EDGE, CASCADE_EDGE),
+    );
+    this.box.y = CASCADE_TOP + this.cascadeSlot * CASCADE_STEP;
   }
 
   moveTo(x, y) {
