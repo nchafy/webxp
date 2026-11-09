@@ -67,6 +67,9 @@ function refusal(error) {
  * @param {string} [spec.value]   Letters that take a value: `-n 5`, `-n5`.
  * @param {string[]} [spec.long]  Long options, without the dashes.
  * @param {string} [spec.numeric] The letter a bare `-5` means, as `head -5` does.
+ * @param {number} [spec.max]     How many operands the command takes. Unlimited when
+ *        omitted; past it, an error. A command that accepted `pwd /tmp` and printed the
+ *        working directory anyway reported success for a line it did not carry out.
  * @returns {{flags: Set<string>, values: Record<string, string>, operands: string[]}}
  */
 export function options(ctx, spec = {}) {
@@ -121,6 +124,9 @@ export function options(ctx, spec = {}) {
     operands.push(word);
   }
   operands.push(...argv.slice(i));
+  if (spec.max !== undefined && operands.length > spec.max) {
+    throw new UsageError(`extra operand '${operands[spec.max]}'`);
+  }
   return { flags, values, operands };
 }
 
@@ -259,7 +265,7 @@ export const COMMANDS = {
     usage: 'pwd [-P]',
     summary: 'print the working directory; -P resolves every symlink',
     run(ctx) {
-      const { flags } = options(ctx, { bool: 'P' });
+      const { flags } = options(ctx, { bool: 'P', max: 0 });
       // Two answers, and they differ inside a symlinked directory. The shell keeps the path
       // you walked; -P asks the filesystem where you actually are.
       ctx.line(flags.has('P') ? ctx.fs.realpath(ctx.shell.cwd) : ctx.shell.cwd);
@@ -272,8 +278,7 @@ export const COMMANDS = {
     usage: 'cd [dir|-]',
     summary: 'change directory; no argument goes home, - goes back',
     run(ctx) {
-      const { operands } = options(ctx, {});
-      if (operands.length > 1) throw new UsageError('too many arguments');
+      const { operands } = options(ctx, { max: 1 });
       let target = operands[0] || HOME;
       if (target === '-') {
         if (!ctx.shell.oldcwd) throw new UsageError('OLDPWD not set');
@@ -367,7 +372,7 @@ export const COMMANDS = {
     usage: 'tree [-a] [-L depth] [dir]',
     summary: 'the directory as a tree',
     run(ctx) {
-      const { flags, values, operands } = options(ctx, { bool: 'a', value: 'L' });
+      const { flags, values, operands } = options(ctx, { bool: 'a', value: 'L', max: 1 });
       const root = operands[0] || '.';
       const maxDepth = values.L === undefined ? Infinity : count(values, 'L', Infinity);
       const stat = ctx.fs.lstat(root, { cwd: ctx.shell.cwd });
@@ -510,7 +515,7 @@ export const COMMANDS = {
     usage: 'df [-h]',
     summary: 'how much of the filesystem is used, and whether it is being saved',
     async run(ctx) {
-      const { flags } = options(ctx, { bool: 'h' });
+      const { flags } = options(ctx, { bool: 'h', max: 0 });
       const stats = ctx.fs.stats();
       const size = (value) => (flags.has('h') ? human(value) : String(value));
       const percent = Math.round((stats.used / stats.total) * 100);
@@ -722,8 +727,8 @@ export const COMMANDS = {
     usage: 'uniq [-c] [file]',
     summary: 'collapse repeated adjacent lines',
     run(ctx) {
-      const { flags, operands } = options(ctx, { bool: 'c' });
-      const { files, failed } = readInputs(ctx, operands.slice(0, 1));
+      const { flags, operands } = options(ctx, { bool: 'c', max: 1 });
+      const { files, failed } = readInputs(ctx, operands);
       const all = files.flatMap((file) => lines(file.text));
       let index = 0;
       while (index < all.length) {
@@ -908,6 +913,13 @@ export const COMMANDS = {
       if (!operands.length && !flags.has('f')) throw new UsageError('rm needs a path');
       let status = 0;
       const remove = (path) => {
+        // The root is refused before anything is read, the way GNU `rm` does with
+        // `--preserve-root`. Without it `rm -rf /` emptied the filesystem and then reported
+        // a child it happened to fail on last, naming a path the reader never typed.
+        if (abs(ctx, path) === '/') {
+          const typed = path === '/' ? "'/'" : `'${path}', which is '/'`;
+          throw new UsageError(`it is dangerous to operate recursively on ${typed}`);
+        }
         const stat = ctx.fs.lstat(path, { cwd: ctx.shell.cwd });
         // A symlink is removed as itself, never followed. `rm links/relative-dir` takes the
         // link; without this it would take the directory it points at.
@@ -1098,8 +1110,13 @@ export const COMMANDS = {
     usage: 'echo [-n] word...',
     summary: 'print the words',
     run(ctx) {
-      const { flags, operands } = options(ctx, { bool: 'n' });
-      ctx.write(operands.join(' ') + (flags.has('n') ? '' : '\n'));
+      // The one command that must not use `options()`. Everything after the command name is
+      // a word, including a word that starts with a dash: through the general parser, `echo
+      // -5` answered `invalid option -- '5'` where a shell prints `-5`.
+      const words = ctx.argv.slice(1);
+      const newline = words[0] !== '-n';
+      if (!newline) words.shift();
+      ctx.write(words.join(' ') + (newline ? '\n' : ''));
       return 0;
     },
   },
@@ -1111,7 +1128,7 @@ export const COMMANDS = {
     usage: 'help [command]',
     summary: 'this list, or one command in detail',
     run(ctx) {
-      const { operands } = options(ctx, {});
+      const { operands } = options(ctx, { max: 1 });
       if (operands.length) {
         const name = operands[0];
         const command = COMMANDS[name];
@@ -1140,7 +1157,7 @@ export const COMMANDS = {
     usage: 'history',
     summary: 'the lines this window has run',
     run(ctx) {
-      options(ctx, {});
+      options(ctx, { max: 0 });
       ctx.shell.history.forEach((line, index) => {
         ctx.line(`${String(index + 1).padStart(5)}  ${line}`);
       });
@@ -1153,7 +1170,7 @@ export const COMMANDS = {
     usage: 'clear',
     summary: 'empty the pane',
     run(ctx) {
-      options(ctx, {});
+      options(ctx, { max: 0 });
       ctx.control('clear');
       return 0;
     },
@@ -1164,7 +1181,7 @@ export const COMMANDS = {
     usage: 'exit',
     summary: 'close this window',
     run(ctx) {
-      options(ctx, {});
+      options(ctx, { max: 0 });
       ctx.control('exit');
       return 0;
     },
@@ -1175,7 +1192,7 @@ export const COMMANDS = {
     usage: 'whoami',
     summary: 'the user the filesystem checks permissions against',
     run(ctx) {
-      options(ctx, {});
+      options(ctx, { max: 0 });
       ctx.line(userName(ctx.fs.uid));
       return 0;
     },
@@ -1186,7 +1203,7 @@ export const COMMANDS = {
     usage: 'date',
     summary: 'the time, from the machine running the browser',
     run(ctx) {
-      options(ctx, {});
+      options(ctx, { max: 0 });
       const now = new Date();
       ctx.line(`${now.toDateString()} ${now.toTimeString()}`);
       return 0;
@@ -1198,7 +1215,7 @@ export const COMMANDS = {
     usage: 'uname [-a]',
     summary: 'what this is',
     run(ctx) {
-      const { flags } = options(ctx, { bool: 'a' });
+      const { flags } = options(ctx, { bool: 'a', max: 0 });
       // The filesystem's format version, read from the filesystem rather than written out
       // here: `vfs-1` beside a `FORMAT_VERSION` of 2 is a version report that is wrong.
       ctx.line(flags.has('a')
@@ -1213,7 +1230,7 @@ export const COMMANDS = {
     usage: 'ps',
     summary: 'the open windows',
     run(ctx) {
-      options(ctx, {});
+      options(ctx, { max: 0 });
       if (!ctx.desktop) throw new UsageError('no desktop to ask');
       ctx.line('PID      PROGRAM         STATE  TITLE');
       for (const win of ctx.desktop.windows) {
@@ -1281,7 +1298,7 @@ export const COMMANDS = {
     usage: 'format --yes',
     summary: 'put the seed filesystem back, discarding everything written',
     async run(ctx) {
-      const { flags } = options(ctx, { long: ['yes'] });
+      const { flags } = options(ctx, { long: ['yes'], max: 0 });
       if (!flags.has('--yes')) {
         ctx.warn('format: this discards every file. Run "format --yes" if that is what you want.');
         return 1;
