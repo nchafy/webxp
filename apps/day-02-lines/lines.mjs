@@ -112,39 +112,40 @@ const NOISE_SCRIM = 'noise-scrim';
 //: that street names read through it.
 const SCRIM = 'rgba(20, 22, 26, 0.62)';
 
-/* Diverging, blue to red, neutral grey midpoint. Signed data gets a diverging ramp, and a
- * diverging ramp gets a grey middle rather than a hue.
+/* Sequential, dim amber to bright gold. A percentage is not signed, so it does not get a
+ * diverging ramp.
  *
- * Every value measured against the casing colour with the palette validator:
+ * This replaced a diverging blue-to-red with a grey midpoint, which was correct while the
+ * mapped value was `adjusted_pts` -- a residual either side of zero, where the middle really
+ * did mean "unremarkable". The mapped value is now `inflation_pct`, which is above zero for
+ * 98.7% of the 395 streets measured, so a neutral midpoint would sit near the bottom of the
+ * data and mean nothing.
  *
- *   each arm as an ordinal ramp      monotone L, step gaps >= 0.06, PASS
- *   innermost steps vs the casing    4.10:1 blue, 4.12:1 red
- *   across the midpoint, CVD         worst pair dE 8.6 deutan, 10.5 tritan (>= 8 target)
- *   across the midpoint, normal      worst pair dE 17.4 (>= 15 floor)
- *   all three vs the casing          all clear 3:1
+ * Amber also takes noise off the two hues the run lines use. Those are magenta and cyan, and
+ * the old ramp's blue and red were close enough to both that a reader had to remember which
+ * scale a colour belonged to.
  *
- * The midpoint is #7f7f77 and not the palette's darker #383835, which is a deliberate
- * departure with a measurement behind it. A dark neutral is right for an area fill, where
- * "unremarkable" should recede toward the surface. On a thin line it recedes all the way to
- * invisible, and an invisible segment is indistinguishable from a segment with too few
- * passes to report -- a different fact. Lightening it costs separation from the red arm, so
- * it was walked up until the CVD gate passed again and no further: #5c5c56 and #6e6e67 both
- * fail at dE 5.8 and 5.7, and #7f7f77 clears at 8.6.
+ * Measured, every step against the casing it sits on and against both run inks:
  *
- * That makes the midpoint about as light as the innermost steps, so colour alone no longer
- * says "near zero is unremarkable". `NOISE_WIDTHS` says it instead: thin at the middle,
- * thickening outward. Two channels for one quantity, which also means the map reads before
- * anyone finds the legend. */
-const NOISE_RAMP = ['#9ec5f4', '#5598e7', '#2a78d6', '#7f7f77', '#d6453f', '#ef6a5e', '#f9a79c'];
+ *   monotone CIE L*                  43.9 -> 93.1, no reversal
+ *   each step vs the casing          3.23:1 at the dimmest, 15.23:1 at the brightest
+ *   each step vs the recorded ink    dE 81 at worst
+ *   each step vs the matched ink     dE 73 at worst
+ *
+ * On a dark scrimmed basemap, brighter means more, so salience tracks the measurement. */
+const NOISE_RAMP = ['#7d6436', '#997a37', '#b49238', '#cdab36', '#e0c342', '#eed76b', '#f8eda6'];
 
-//: Width per class, symmetric about the middle. The second channel: a near-zero segment is
-//: a hairline and an extreme one is heavy, so salience tracks the measurement even in
-//: greyscale or for a reader who cannot separate the two hues.
-const NOISE_WIDTHS = [4.5, 3.5, 2.5, 1.3, 2.5, 3.5, 4.5];
+//: Width per class, rising with the value rather than symmetric about a middle. The second
+//: channel: a quiet street is a hairline and a noisy one is heavy, so the map reads in
+//: greyscale, before anyone finds the legend, and for a reader who cannot separate the hues.
+const NOISE_WIDTHS = [1.3, 2.0, 2.6, 3.2, 3.8, 4.5, 5.2];
 
-const NOISE_BREAKS = [-1.0, -0.5, -0.2, 0.2, 0.5, 1.0];
+//: Class edges in percent, from the measured distribution across 395 streets rather than
+//: from round numbers picked first: median 3.31%, p10 1.22%, p90 6.96%, max 26.59%. The
+//: resulting classes hold 28, 67, 78, 100, 82, 32 and 8 streets.
+const NOISE_BREAKS = [1.0, 2.0, 3.0, 4.5, 7.0, 10.0];
 
-const PROP = 'adjusted_pts';
+const PROP = 'inflation_pct';
 //: The one crossing being shown, drawn over its own run.
 const PASS = 'pass';
 
@@ -215,7 +216,9 @@ function noiseCasingExpression() {
 
 /** Legend rows, in the same order the map paints them. */
 function noiseLegendRows() {
-  const fmt = (v) => `${v > 0 ? '+' : ''}${v.toFixed(1)}`;
+  // One decimal only where a break needs it: a 4.5% edge printed as "5%" names a
+  // boundary the map does not use, and two of these breaks are halves.
+  const fmt = (v) => `${Number.isInteger(v) ? v : v.toFixed(1)}%`;
   return NOISE_RAMP.map((colour, i) => {
     const lo = NOISE_BREAKS[i - 1];
     const hi = NOISE_BREAKS[i];
@@ -312,7 +315,7 @@ function buildCards(slot, instance) {
 
   // Measuring stick.
   const stickCard = el('div', 'card', slot);
-  heading(stickCard, 'Measuring stick');
+  heading(stickCard, 'Scale');
   const bar = el('div', 'trackbar', stickCard);
   const label = el('label', null, bar);
   label.textContent = 'Detail';
@@ -346,9 +349,9 @@ function buildCards(slot, instance) {
     span.textContent = text;
     return span;
   };
-  const keyRecordedEl = keyRow(INK_RECORDED, 'as recorded');
+  const keyRecordedEl = keyRow(INK_RECORDED, 'strava');
   keyRecordedEl.dataset.role = 'key-recorded';
-  keyRow(INK_MATCHED, 'snapped to the map');
+  keyRow(INK_MATCHED, 'map');
 
   const buttons = el('div', 'tilt-row', stickCard);
   const matchedToggle = el('button', null, buttons);
@@ -737,16 +740,13 @@ export async function startDay({ win, chrome }) {
       sub.className = 'sub';
       const bits = [];
       if (a.matchedCount && a.matched > 0) {
-        // Over the matched activities only, on both sides of the division.
-        const gap = ((a.recordedWhereMatched / a.matched - 1) * 100).toFixed(1);
-        const sign = gap >= 0 ? '+' : '';
-        bits.push(`snapped to the map ${fmtBigKm(a.matched)} — recording is ${sign}${gap}%`);
+        bits.push(`map distance ${fmtBigKm(a.matched)}`);
       }
       if (a.stravaCount) {
-        bits.push(`Strava says ${fmtBigKm(a.strava)}`);
+        bits.push(`Strava distance ${fmtBigKm(a.strava)}`);
       }
       if (a.matchedCount !== a.count) {
-        bits.push(`${a.count - a.matchedCount} did not snap`);
+        bits.push(`${a.count - a.matchedCount} unmatched`);
       }
       sub.textContent = bits.join(' · ');
       aggregateEl.append(sub);
@@ -759,11 +759,9 @@ export async function startDay({ win, chrome }) {
       if (!focus) {
         const hint = document.createElement('span');
         hint.className = 'sub';
-        hint.textContent = overview
-          ? `Pick a run to measure it. The map is drawn at a ${overview.floor_m} m floor; a selected run is full resolution.`
-          : '';
+        hint.textContent = '';
         readoutEl.append(hint);
-        if (keyRecordedEl) keyRecordedEl.textContent = 'as recorded';
+        if (keyRecordedEl) keyRecordedEl.textContent = 'strava';
         return;
       }
 
@@ -784,13 +782,13 @@ export async function startDay({ win, chrome }) {
       const sub = document.createElement('span');
       sub.className = 'sub';
       const bits = [`${measured.kept.toLocaleString()} of ${measured.total.toLocaleString()} points`];
-      if (d.matched_m) bits.push(`snapped ${fmtKm(d.matched_m)}`);
+      if (d.matched_m) bits.push(`map ${fmtKm(d.matched_m)}`);
       if (d.strava_m) bits.push(`Strava ${fmtKm(d.strava_m)}`);
       sub.textContent = `${d.name} · ${bits.join(' · ')}`;
       readoutEl.append(sub);
 
       if (keyRecordedEl) {
-        keyRecordedEl.textContent = tolerance > 0 ? `simplified to ${tolerance} m` : 'as recorded';
+        keyRecordedEl.textContent = tolerance > 0 ? `simplified to ${tolerance} m` : 'strava';
       }
     }
 
@@ -892,10 +890,6 @@ export async function startDay({ win, chrome }) {
        The drill-down: segment -> its passes -> the run one of them came from.
        --------------------------------------------------------------------------- */
 
-    //: Passes listed per segment. Thirty-seven buttons is a wall, and the interesting ones are
-    //: at the ends of the distribution, so the list is the worst few and the best few.
-    const PASSES_SHOWN = 6;
-
     function passButton(map, pass, cell) {
       const button = document.createElement('button');
       button.type = 'button';
@@ -949,42 +943,34 @@ export async function startDay({ win, chrome }) {
       const drawn = passes.length ? await drawGhosts(map, passes) : 0;
       const sign = (v) => `${v > 0 ? '+' : ''}${v.toFixed(2)}`;
       const stats = [
-        ['Recorded over simplified', `${props.inflation_pct.toFixed(2)}%`],
-        ['Speed-adjusted', `${sign(props.adjusted_pts)} points`],
-        ['Worst tenth of passes', `${props.p90_pct.toFixed(2)}%`],
-        ['Crossings measured', `${props.windows}`],
-        ['Different runs', `${props.activities}`],
+        ['Noise', `${props.inflation_pct.toFixed(2)}%`],
+        ['Worst tenth', `${props.p90_pct.toFixed(2)}%`],
+        // Not a percentage, and labelled so it cannot be read as one: it is this street's
+        // noise minus the noise of every traversal recorded at the same speed, in points.
+        // Zero means "as noisy as usual at this speed", which is why it can be negative.
+        ['vs same speed', `${sign(props.adjusted_pts)} pts`],
+        ['Crossings', `${props.windows}`],
+        ['Runs', `${props.activities}`],
       ];
 
-      const groups = [group('This stretch', { columns: ['Measure', 'Value'], rows: stats })];
+      const groups = [group('Overview', { columns: ['Measure', 'Value'], rows: stats })];
 
       if (passes.length) {
-        const worst = passes.slice(0, PASSES_SHOWN);
-        const best = passes.slice(-PASSES_SHOWN).reverse();
+        // Every crossing in one list, noisiest first. Two lists of the extremes left the
+        // middle of the distribution unreachable and implied the segment had only twelve
+        // crossings; the panel body scrolls, so the whole list costs nothing.
         groups.push(
           group(
-            `Noisiest crossings`,
-            worst.map((p) => passButton(map, p, props))
+            `Crossings`,
+            passes.map((p) => passButton(map, p, props))
           )
         );
-        if (passes.length > PASSES_SHOWN * 2) {
-          groups.push(
-            group(
-              `Quietest crossings`,
-              best.map((p) => passButton(map, p, props))
-            )
-          );
-        }
       }
 
       panel.open(
         `Segment at ${props.lat.toFixed(4)}, ${props.lon.toFixed(4)}`,
         groups,
-        drawn
-          ? `${drawn} of ${passes.length} crossings drawn on top of each other, spread evenly ` +
-            `from the noisiest to the quietest. The width of that bundle is the noise — pick ` +
-            `one to pull it to the front.`
-          : 'No individual crossings were kept for this segment.'
+        drawn ? '' : 'No crossings kept.'
       );
     }
 
@@ -1009,29 +995,29 @@ export async function startDay({ win, chrome }) {
       const back = document.createElement('button');
       back.type = 'button';
       back.className = 'pass-row';
-      back.textContent = '← back to the whole segment';
+      back.textContent = '← Whole segment';
       back.addEventListener('click', () => openSegment(map, cell));
 
       panel.open(pass.name || pass.activity, [
         group('This crossing', {
           columns: ['Measure', 'Value'],
           rows: [
-            ['Recorded over simplified', `${pass.inflation_pct.toFixed(2)}%`],
-            ['Speed-adjusted', `${sign(pass.adjusted_pts)} points`],
-            ['Speed through here', `${pass.speed_ms.toFixed(2)} m/s`],
-            ['Points in the stretch', `${pass.i1 - pass.i0 + 1}`],
+            ['Noise', `${pass.inflation_pct.toFixed(2)}%`],
+            ['vs same speed', `${sign(pass.adjusted_pts)} pts`],
+            ['Speed', `${pass.speed_ms.toFixed(2)} m/s`],
+            ['Points', `${pass.i1 - pass.i0 + 1}`],
           ],
         }),
-        group('The run it came from', {
+        group('Run', {
           columns: ['Field', 'Value'],
           rows: [
             ['Recorded', fmtKm(entry.doc.recorded_m)],
-            ...(entry.doc.matched_m ? [['Snapped', fmtKm(entry.doc.matched_m)]] : []),
+            ...(entry.doc.matched_m ? [['Map distance', fmtKm(entry.doc.matched_m)]] : []),
             ...(entry.doc.date ? [['Date', entry.doc.date]] : []),
           ],
         }),
         group('Elsewhere', [back]),
-      ], 'The slider now measures this whole run, at full resolution.');
+      ], '');
     }
 
     function openPanel() {
@@ -1040,13 +1026,13 @@ export async function startDay({ win, chrome }) {
       const keep = simplifyMask(focus.projected, tolerance);
       const atTolerance = planeLength(focus.projected, keep);
 
-      const rows = [['As recorded', fmtKm(d.recorded_m)]];
+      const rows = [['Strava distance', fmtKm(d.recorded_m)]];
       if (tolerance > 0) rows.push([`Simplified to ${tolerance} m`, fmtKm(atTolerance)]);
-      if (d.matched_m) rows.push(['Snapped to the map', fmtKm(d.matched_m)]);
+      if (d.matched_m) rows.push(['Map distance', fmtKm(d.matched_m)]);
       if (d.strava_m) rows.push(['Strava’s own figure', fmtKm(d.strava_m)]);
       if (d.matched_m) {
         const gap = (d.recorded_m / d.matched_m - 1) * 100;
-        rows.push(['Recorded over snapped', `${gap >= 0 ? '+' : ''}${gap.toFixed(1)}%`]);
+        rows.push(['Recorded vs map', `${gap >= 0 ? '+' : ''}${gap.toFixed(1)}%`]);
       }
 
       const recording = [['Points', d.points.toLocaleString()]];
@@ -1064,9 +1050,7 @@ export async function startDay({ win, chrome }) {
       panel.open(
         d.name || d.id,
         groups,
-        d.matched_m
-          ? 'Neither figure is the truth. Jitter adds length to the recording; snapping to the map cuts corners off it.'
-          : 'This trace did not snap to the map, so only the recorded length is known.'
+        d.matched_m ? '' : 'No map match for this trace.'
       );
     }
 
@@ -1413,8 +1397,7 @@ export async function startDay({ win, chrome }) {
       } else {
         const a = aggregate();
         setStatus(
-          `${a.count.toLocaleString()} activities, ${a.matchedCount.toLocaleString()} snapped to the map. ` +
-            `Click a run to measure it.`
+          `${a.count.toLocaleString()} activities · ${a.matchedCount.toLocaleString()} matched to the map`
         );
       }
 
@@ -1482,8 +1465,17 @@ export async function startDay({ win, chrome }) {
               noise.unit === 'osm_way'
                 ? 'streets'
                 : `${Math.round((noise.cell_deg || 0.002) * 111_000)} m squares`;
-            noiseNote.textContent =
-              `${noise.features.length} ${unit}, speed-adjusted.`;
+            // The median across streets, not a mean: the per-street figure is itself a
+            // median, and averaging medians would claim a precision the pipeline does not
+            // have. Computed here because the file carries no summary.
+            const pcts = noise.features
+              .map((f) => f.properties[PROP])
+              .filter((v) => typeof v === 'number')
+              .sort((a, b) => a - b);
+            const median = pcts.length ? pcts[Math.floor(pcts.length / 2)] : null;
+            noiseNote.textContent = median === null
+              ? `${noise.features.length} ${unit}`
+              : `${noise.features.length} ${unit} · median ${median.toFixed(1)}% noise`;
           }
           noiseToggle.addEventListener('click', () => {
             showNoise = !showNoise;

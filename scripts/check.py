@@ -1441,6 +1441,40 @@ def check_basemap_app(page) -> list[str]:
             "lost a specificity battle with MapLibre's own stylesheet"
         )
 
+    # The compass rose has to fit inside its own button and be centred in it.
+    #
+    # This is the third time in this project that rescoping a stylesheet tied a specificity
+    # battle and the generic rule won. Here `.map-root .map-zoom button` (two classes and a
+    # type) beat `.map-root .map-compass` (two classes), so the compass stayed 28px with a
+    # 34px rose inside it: overflowing three pixels a side and sitting four down and right,
+    # because grid centring cannot centre an oversized item. Nothing else in the suite looks
+    # inside a control, so nothing caught it — it was reported from a screenshot.
+    compass = page.evaluate(
+        "(() => { const w = window.webxp.windows.find((w) => w.programId === 'basemap');"
+        " if (!w) return null;"
+        " const b = w.bodyEl.querySelector('.map-compass');"
+        " const svg = b && b.querySelector('svg');"
+        " if (!b || !svg) return { missing: true };"
+        " const br = b.getBoundingClientRect(), sr = svg.getBoundingClientRect();"
+        " return { bw: Math.round(br.width), bh: Math.round(br.height),"
+        "          sw: Math.round(sr.width), sh: Math.round(sr.height),"
+        "          dx: +(sr.left + sr.width / 2 - (br.left + br.width / 2)).toFixed(1),"
+        "          dy: +(sr.top + sr.height / 2 - (br.top + br.height / 2)).toFixed(1) }; })()"
+    )
+    if compass is None or compass.get("missing"):
+        bad.append("basemap app: no compass button to measure")
+    else:
+        if compass["sw"] > compass["bw"] or compass["sh"] > compass["bh"]:
+            bad.append(
+                f"basemap app: the compass rose is {compass['sw']}x{compass['sh']} in a "
+                f"{compass['bw']}x{compass['bh']} button — it overflows its own control"
+            )
+        if abs(compass["dx"]) > 1 or abs(compass["dy"]) > 1:
+            bad.append(
+                f"basemap app: the compass rose is off centre by ({compass['dx']}, "
+                f"{compass['dy']})px"
+            )
+
     # And it has to have painted. Every flag above can read healthy over a blank canvas:
     # MapLibre reported styleLoaded, tilesLoaded and 113 layers while drawing nothing at all.
     if state["canvasRect"]:

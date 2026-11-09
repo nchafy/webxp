@@ -51,7 +51,6 @@ export default {
     ]);
     const chrome = buildMapChrome({
       basemaps: BASEMAPS,
-      hint: 'Click a run to measure it. The slider simplifies the one you pick.',
     });
     // The map's own status line carries progress from here on; `lines.mjs` writes the first
     // word into it before the first fetch.
