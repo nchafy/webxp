@@ -1,7 +1,12 @@
 /* Window list — the geometry of every open window, read live.
  *
- * A diagnostic as much as a demo: it makes a drag and a resize observable as numbers, which
- * is what the check harness reads too.
+ * A diagnostic as much as a demo: it makes a drag and a resize observable as numbers.
+ *
+ * The numbers are `placed`, the clamped geometry that is actually on the element, so they
+ * agree with what the reader sees. `box` is the unclamped intent a gesture wrote, which the
+ * check harness also reads; showing it here would print an off-desktop coordinate for a
+ * window that is visibly elsewhere, and would not move at all when a viewport change
+ * re-clamps the window.
  */
 
 import { sheet } from '../../src/widgets.mjs';
@@ -46,8 +51,8 @@ export default {
         const cells = [
           other.titleText,
           STATES[other.state],
-          `${other.box.x}, ${other.box.y}`,
-          `${other.box.w} × ${other.box.h}`,
+          `${other.placed.x}, ${other.placed.y}`,
+          `${other.placed.w} × ${other.placed.h}`,
         ];
         cells.forEach((text, index) => {
           const cell = document.createElement(index === 0 ? 'th' : 'td');

@@ -11,13 +11,18 @@ A window is in exactly one of three states, recorded in `XPWindow.state`:
 
 | State    | Meaning                                                    |
 | -------- | ---------------------------------------------------------- |
-| `normal` | Positioned and sized from `XPWindow.box`.                  |
+| `normal` | Positioned and sized from `XPWindow.placed`, which is `box` clamped to the desktop. |
 | `min`    | Out of the layout and out of the tab order. Button remains. |
 | `max`    | Filling the desktop. `box` is untouched, which is what makes a restore exact. |
 
-`box` is the single source of truth for geometry. It is never written while the window is
-maximised, so un-maximising needs no second copy of the numbers and cannot disagree with
-one (`maximise`).
+`box` is the single source of truth for geometry, and it records intent rather than
+placement. It is never written while the window is maximised, so un-maximising needs no
+second copy of the numbers and cannot disagree with one (`maximise`). `apply()` never writes
+it either, so a viewport shrink is not baked in and a desktop that grows back returns the
+window to where it was put (`viewport round trip`). A drag or a resize does write it, from
+`placed` plus the gesture's own delta: a gesture starts from where the window is, so one
+performed while the window is clamped adopts the clamped coordinate as the new intent
+(`drag`).
 
 Geometry reaches the element as four custom properties — `--win-x`, `--win-y`, `--win-w`,
 `--win-h` — written with `style.setProperty`. A `style` attribute would need `unsafe-inline`

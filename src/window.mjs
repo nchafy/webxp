@@ -25,8 +25,9 @@ const MIN_VISIBLE = 72;
 //: desktop in a few seconds and fine enough to place a window against an edge.
 const KEY_STEP = 10;
 
-//: The directions a resize handle can carry, in DOM order. Corners come last so they win
-//: the overlap with the edges they sit on.
+//: The directions a resize handle can carry. `window.css` insets each edge grip by the
+//: corner size, so edges and corners meet without overlapping and the order of this list
+//: decides nothing.
 const GRIPS = ['n', 's', 'w', 'e', 'nw', 'ne', 'sw', 'se'];
 
 let serial = 0;
@@ -34,6 +35,17 @@ let serial = 0;
 /** Honoured at call time, not at import time, so switching the OS setting takes effect. */
 function reducedMotion() {
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+//: A theme token's value. Tokens carry no JS fallback: a fallback is a second copy of the
+//: token that can disagree with it, and `theme.css` and `window.css` are linked separately,
+//: so the disagreement is reachable.
+function token(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function tokenNumber(name) {
+  return parseFloat(token(name));
 }
 
 /**
@@ -64,14 +76,45 @@ export function zoom(el, other, direction) {
   const full = { transform: 'translate(0px, 0px) scale(1, 1)', opacity: 1 };
   const frames = direction === 'in' ? [small, full] : [full, small];
 
-  const style = getComputedStyle(document.documentElement);
-  const ms = parseFloat(style.getPropertyValue('--zoom-ms')) || 160;
-  const animation = el.animate(frames, {
-    duration: ms,
-    easing: style.getPropertyValue('--zoom-ease').trim() || 'ease-out',
-    fill: 'none',
-  });
+  const ms = tokenNumber('--zoom-ms');
+  const easing = token('--zoom-ease');
+  // With no `theme.css` there are no tokens to read, and an animation takes neither a NaN
+  // duration nor an empty easing. Skipped rather than defaulted, for the reason on `token`.
+  if (!Number.isFinite(ms) || !easing) return Promise.resolve();
+
+  const animation = el.animate(frames, { duration: ms, easing, fill: 'none' });
   return animation.finished.catch(() => {});
+}
+
+/**
+ * Hold a box inside the desktop.
+ *
+ * Only the minimum size and the position are clamped. `MIN_VISIBLE` of the window stays
+ * horizontally on the desktop and the title bar stays between the top edge and the
+ * taskbar — a departure from XP, which let a window be dragged until its own handle was
+ * unreachable.
+ *
+ * The size is deliberately *not* capped to the desktop. A cap here cannot know which edge
+ * the pointer is holding, so it shrinks the window while leaving `x` and `y` alone and the
+ * anchored edge absorbs the difference, which is a resize quietly becoming a move. A window
+ * larger than the desktop is legitimate — XP allowed it — and the position clamp still keeps
+ * the title bar reachable. `resize past the desktop` in `scripts/check.py` holds the
+ * north and the west case.
+ *
+ * Pure arithmetic. The caller measures, so the result depends on nothing but the arguments
+ * and the same box can be clamped against a surface the window is not currently on.
+ *
+ * @param {{x: number, y: number, w: number, h: number}} box
+ * @param {{w: number, h: number}} surface  The desktop's size.
+ * @param {number} barHeight                The title bar's height, which is what must stay
+ *                                          above the taskbar.
+ */
+function clampBox(box, surface, barHeight) {
+  const w = Math.max(box.w, MIN_W);
+  const h = Math.max(box.h, MIN_H);
+  const x = Math.min(Math.max(box.x, MIN_VISIBLE - w), Math.max(surface.w - MIN_VISIBLE, 0));
+  const y = Math.min(Math.max(box.y, 0), Math.max(surface.h - barHeight, 0));
+  return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) };
 }
 
 export class XPWindow {
@@ -103,13 +146,29 @@ export class XPWindow {
 
     /** `normal`, `min` or `max`. The one place a window's state is recorded. */
     this.state = 'normal';
-    /** Where the window goes back to. Kept through a maximise, which is the whole point. */
+    /**
+     * Where the window goes back to. Kept through a maximise, which is the whole point.
+     *
+     * The single source of truth, and the geometry of the last gesture: `apply()` never
+     * writes it, so a desktop that briefly shrinks and grows back returns the window to
+     * where it was put rather than leaving it where it was squeezed.
+     *
+     * A gesture does write it, from `placed` plus its own delta — so a drag or a resize
+     * performed while the window is clamped adopts the clamped coordinate as the new intent.
+     * That is the gesture speaking, not the clamp: seeding a gesture from an off-screen
+     * `box` instead would make the window jump out from under the pointer.
+     */
     this.box = {
       x: Number.isFinite(spec.x) ? spec.x : 0,
       y: Number.isFinite(spec.y) ? spec.y : 0,
       w: Math.max(spec.width || 480, MIN_W),
       h: Math.max(spec.height || 320, MIN_H),
     };
+    /**
+     * `box` held inside the desktop: the geometry on the element, and where a gesture or an
+     * arrow key starts from. Recomputed by `apply()`; never written by a caller.
+     */
+    this.placed = { ...this.box };
     this.drag = null;
     this.closed = false;
 
@@ -220,53 +279,39 @@ export class XPWindow {
      Geometry.
      ------------------------------------------------------------------------- */
 
-  /** The desktop's size, which every clamp is measured against. */
+  /** The desktop's size, which every clamp is measured against. Size only: a window's
+      geometry is relative to the surface, so the surface's own offset answers nothing. */
   surface() {
     const rect = this.host.surface.getBoundingClientRect();
-    return { w: rect.width, h: rect.height, left: rect.left, top: rect.top };
+    return { w: rect.width, h: rect.height };
   }
 
   /**
-   * Hold a box inside the desktop.
+   * Derive `placed` from `box` and write it to the element.
    *
-   * Only the minimum size and the position are clamped. `MIN_VISIBLE` of the window stays
-   * horizontally on the desktop and the title bar stays between the top edge and the
-   * taskbar — a departure from XP, which let a window be dragged until its own handle was
-   * unreachable.
-   *
-   * The size is deliberately *not* capped to the desktop. A cap here cannot know which edge
-   * the pointer is holding, so it shrinks the window while leaving `x` and `y` alone and the
-   * anchored edge absorbs the difference: dragging the north grip of a window that hangs
-   * below the desktop moved its bottom edge up by 90px, and the west grip of one that
-   * extended past the right edge moved its right edge left by 110px. That is the same defect
-   * `applyGesture` was rewritten to remove, re-entering one call later. A window larger than
-   * the desktop is legitimate — XP allowed it — and the position clamp above still keeps the
-   * title bar reachable.
-   */
-  clamp(box) {
-    const { w: sw, h: sh } = this.surface();
-    const bar = this.bar.offsetHeight || 28;
-    const w = Math.max(box.w, MIN_W);
-    const h = Math.max(box.h, MIN_H);
-    const x = Math.min(Math.max(box.x, MIN_VISIBLE - w), Math.max(sw - MIN_VISIBLE, 0));
-    const y = Math.min(Math.max(box.y, 0), Math.max(sh - bar, 0));
-    return { x: Math.round(x), y: Math.round(y), w: Math.round(w), h: Math.round(h) };
-  }
-
-  /**
-   * Write the geometry to the element.
+   * `box` is left alone. The clamp belongs to the surface the window happens to be on, not
+   * to the window: baking it into `box` destroys the position the user chose, and a desktop
+   * that grows back cannot return it. Shrinking the browser and widening it again is the
+   * route to that, and there is no undo.
    *
    * Through `style.setProperty`, not a `style` attribute: CSP's `style-src` blocks a parsed
    * `style` attribute and does not hook the CSSOM, so a window can move under a policy with
    * no `unsafe-inline`.
    */
   apply() {
-    this.box = this.clamp(this.box);
+    // `--titlebar-h` is what `window.css` sizes the bar with, and unlike `offsetHeight` it
+    // is readable while the window is minimised and has no box to measure — which is exactly
+    // when `watchViewport` re-clamps it. Without `theme.css` there is no token: the y clamp
+    // then has no bar to hold above the taskbar and falls back to the desktop's own edge,
+    // which keeps the geometry a number instead of writing `NaNpx` and dropping every window
+    // to its static position.
+    const barHeight = tokenNumber('--titlebar-h') || 0;
+    this.placed = clampBox(this.box, this.surface(), barHeight);
     const { style } = this.el;
-    style.setProperty('--win-x', `${this.box.x}px`);
-    style.setProperty('--win-y', `${this.box.y}px`);
-    style.setProperty('--win-w', `${this.box.w}px`);
-    style.setProperty('--win-h', `${this.box.h}px`);
+    style.setProperty('--win-x', `${this.placed.x}px`);
+    style.setProperty('--win-y', `${this.placed.y}px`);
+    style.setProperty('--win-w', `${this.placed.w}px`);
+    style.setProperty('--win-h', `${this.placed.h}px`);
   }
 
   /** Step each new window down and right, so a second window is not hidden by the first. */
@@ -318,28 +363,41 @@ export class XPWindow {
   }
 
   beginGesture(event, { kind, dir }) {
+    // A second pointer — two fingers, or a mouse and a touch — re-enters here while a
+    // gesture is live. The one in flight is ended first: its listeners only answer to its
+    // own pointer id, so leaving them attached leaks three per re-entry for the window's
+    // lifetime.
+    if (this.drag) this.drag.end();
+
     const target = event.currentTarget;
     target.setPointerCapture(event.pointerId);
-    this.drag = {
+    // From `placed`, not `box`: the gesture starts from where the window is, so a drag that
+    // begins on a clamped window does not jump to the unclamped position it remembers.
+    const gesture = {
       kind,
       dir,
       id: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
-      box: { ...this.box },
+      box: { ...this.placed },
       target,
     };
+    this.drag = gesture;
     this.el.classList.add('is-moving');
 
     const onMove = (moveEvent) => {
-      if (!this.drag || moveEvent.pointerId !== this.drag.id) return;
-      this.applyGesture(moveEvent.clientX - this.drag.startX, moveEvent.clientY - this.drag.startY);
+      if (this.drag !== gesture || moveEvent.pointerId !== gesture.id) return;
+      this.applyGesture(moveEvent.clientX - gesture.startX, moveEvent.clientY - gesture.startY);
     };
     const onEnd = (endEvent) => {
-      if (this.drag && endEvent.pointerId !== this.drag.id) return;
+      if (endEvent.pointerId !== gesture.id) return;
+      gesture.end();
+    };
+    gesture.end = () => {
       target.removeEventListener('pointermove', onMove);
       target.removeEventListener('pointerup', onEnd);
       target.removeEventListener('pointercancel', onEnd);
+      if (this.drag !== gesture) return;
       this.el.classList.remove('is-moving');
       this.drag = null;
     };
@@ -408,11 +466,14 @@ export class XPWindow {
     if (!delta || this.state === 'max') return;
     event.preventDefault();
     const [kx, ky] = delta;
+    // From `placed` for the same reason a drag is: an arrow moves the window from where it
+    // is. Stepping from `box` would walk it off the desktop invisibly and make the way back
+    // the same number of presses out.
     if (event.shiftKey) {
       if (!this.resizable) return;
-      this.sizeTo(this.box.w + kx * KEY_STEP, this.box.h + ky * KEY_STEP);
+      this.sizeTo(this.placed.w + kx * KEY_STEP, this.placed.h + ky * KEY_STEP);
     } else {
-      this.moveTo(this.box.x + kx * KEY_STEP, this.box.y + ky * KEY_STEP);
+      this.moveTo(this.placed.x + kx * KEY_STEP, this.placed.y + ky * KEY_STEP);
     }
   }
 
