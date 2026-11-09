@@ -407,6 +407,8 @@ and compares it against the window's own size, because nothing cheaper could tel
 | --- | --- |
 | `manifest is current` | The manifest agrees with the folders on disk. |
 | `app loading` | Every folder became a program, in manifest order. |
+| `app filetypes` | A `filetype` picks the icon, an explicit `icon` overrides it, an unknown one is rejected — and two apps of one filetype resolve to the *same* icon, which is the property the key exists for. |
+| `autostart` | `Desktop.autostart()` opens the programs that ask for it and leaves the others shut, exercised with programs registered by the check rather than with whichever app happens to carry the key. |
 | `app styles` | One link per app, it applies, and it is scoped to that app's windows. |
 | `broken app` | Each way a spec can be wrong is rejected — and a valid one is accepted. |
 | `iframe app` | A `frame` app hosts its page, and the shim raises its window. |
@@ -421,5 +423,13 @@ and compares it against the window's own size, because nothing cheaper could tel
 `scaffold a new app` is the one that matters most: it is the only check that walks the path a
 person actually takes.
 
-These twelve are the contract's. The rest of the suite belongs to the window
-manager and are described in `docs/windows.md`.
+The rest of the suite divides the same way the code does. The window manager's own
+behaviour — opening, focus, dragging, the eight resize edges, the clamps, minimise and
+maximise — is in `docs/windows.md`. The filesystem's is in `shared/fs/README.md`:
+`filesystem` for the model, `terminal` for the shell over it, `mount` and `mount index is
+current` for the repository grafted at `/usr/src/webxp`, `explorer` for the folder window,
+and `filesystem persists` for a reload.
+
+No count here, deliberately. Three prose counts in this file and `docs/review.md` have
+already gone stale — each one the same way, a check added without the sentence above it
+being read — and `CHECKS` in `scripts/check.py` is the list that cannot.
