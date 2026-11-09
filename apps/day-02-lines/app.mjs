@@ -21,7 +21,7 @@
 export default {
   id: 'day-02-lines',
   name: 'Day 02 — Lines',
-  icon: 'document',
+  filetype: 'map',
   singleton: true,
   // No desktop icon: the thirty days live in the 30DaysOfMaps folder, which is the one icon
   // on the desktop. `apps/map-challenge/` draws them.

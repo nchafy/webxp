@@ -10,10 +10,9 @@ import { group, sheet } from '../../src/widgets.mjs';
 export default {
   id: 'readme',
   name: 'Read me',
-  icon: 'info',
+  filetype: 'info',
   singleton: true,
   onDesktop: true,
-  autostart: true,
   width: 560,
   height: 420,
   status: true,

@@ -9,7 +9,7 @@
  * failure this is built to avoid is an app that is silently absent.
  */
 
-import { ICON_NAMES } from './icons.mjs';
+import { ICON_NAMES, FILETYPE_NAMES, FILETYPES, iconFor } from './icons.mjs';
 
 //: Where the folders live, relative to the document. Overridable so a host page can keep its
 //: apps somewhere else, and so the checks can point at a fixture directory.
@@ -18,14 +18,14 @@ export const DEFAULT_BASE = '/apps';
 //: Spec keys passed straight through to `Desktop.register`. Listed rather than spread, so a
 //: typo in an app's spec is caught by `validate` instead of being silently ignored.
 const PASS_THROUGH = [
-  'name', 'icon', 'ready', 'width', 'height', 'x', 'y',
+  'name', 'ready', 'width', 'height', 'x', 'y',
   'resizable', 'minimizable', 'maximizable', 'maximized',
   'status', 'singleton', 'onDesktop', 'autostart', 'minLoadMs',
 ];
 
 //: Every key an app spec may carry. Anything else is a mistake worth reporting: a
 //: misspelled `singelton` is indistinguishable from a missing feature at runtime.
-const KNOWN_KEYS = new Set([...PASS_THROUGH, 'id', 'mount', 'styles', 'frame']);
+const KNOWN_KEYS = new Set([...PASS_THROUGH, 'id', 'icon', 'filetype', 'mount', 'styles', 'frame']);
 
 //: `ready` is passed through to the desktop but is not required, and an app may have it
 //: without a `mount` only in the `frame` case — which has no use for it, since a hosted
@@ -98,6 +98,12 @@ export function validate(spec, id) {
   if (spec.icon !== undefined && !ICON_NAMES.includes(spec.icon)) {
     problems.push(`icon ${JSON.stringify(spec.icon)} is not one of: ${ICON_NAMES.join(', ')}`);
   }
+  // An unknown filetype is an error rather than a fallback, for the same reason an unknown icon
+  // is: a typo would otherwise be a silently generic window, and the whole point of a filetype
+  // is that every app of one filetype looks the same.
+  if (spec.filetype !== undefined && !FILETYPE_NAMES.includes(spec.filetype)) {
+    problems.push(`filetype ${JSON.stringify(spec.filetype)} is not one of: ${FILETYPE_NAMES.join(', ')}`);
+  }
   if (spec.styles !== undefined && !Array.isArray(spec.styles)) {
     problems.push('styles must be an array of paths relative to the app folder');
   }
@@ -113,7 +119,7 @@ export function validate(spec, id) {
 /**
  * Build the mount for an iframe app.
  *
- * The focus shim is the reason this is a first-class kind rather than three lines in an
+ * The focus shim is the reason this is a first-class fill mode rather than three lines in an
  * app's own mount. A pointer event inside an iframe does not cross the document boundary, so
  * the window's own focus handler never sees a click on hosted content and the window cannot
  * be raised by clicking it. The shim is a transparent layer that exists only while the
@@ -182,7 +188,8 @@ export async function loadApp(id, base = DEFAULT_BASE) {
     return { id, program: brokenProgram(id, problems, spec), problems };
   }
 
-  const program = { id, bodyClass: `app-${id}` };
+  const program = { id, bodyClass: `app-${id}`, icon: iconFor(spec) };
+  if (spec.filetype) program.filetype = spec.filetype;
   for (const key of PASS_THROUGH) {
     if (spec[key] !== undefined) program[key] = spec[key];
   }

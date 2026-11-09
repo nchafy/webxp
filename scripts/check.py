@@ -405,18 +405,32 @@ def contrast(fg: tuple[int, int, int], bg: tuple[int, int, int]) -> float:
 
 
 def check_boot(page) -> list[str]:
-    """One autostarted window, one taskbar button, and the frame actually laid out."""
+    """An empty desktop, then a window that lays out, focuses and fills.
+
+    Nothing autostarts: the desktop comes up bare, which is the behaviour Nick asked for and
+    is asserted here rather than merely no longer contradicted. Everything after the launch
+    is what this check was always really about -- a frame at a real size, focused, with its
+    grips, and past its loading marquee.
+    """
     bad = []
     state = probe(page)
-    if len(state["wins"]) != 1:
-        bad.append(f"boot: {len(state['wins'])} windows open, want 1 (Read me autostarts)")
+    if state["wins"]:
+        bad.append(
+            f"boot: {len(state['wins'])} windows open on a fresh desktop, want 0 — "
+            f"{[w['program'] for w in state['wins']]} autostarted"
+        )
+    if state["taskButtons"]:
+        bad.append(f"boot: {state['taskButtons']} taskbar buttons with no windows open")
+
+    launch(page, "readme")
+    state = probe(page)
     if state["taskButtons"] != len(state["wins"]):
         bad.append(
             f"boot: {state['taskButtons']} taskbar buttons for {len(state['wins'])} windows"
         )
     win = window_of(state, "readme")
     if win is None:
-        return bad + ["boot: Read me did not autostart"]
+        return bad + ["boot: Read me did not open"]
     if win["rect"]["w"] < MIN_W or win["rect"]["h"] < MIN_H:
         # The failure this catches is a frame that reports its geometry and lays out at
         # zero, which is invisible to any assertion that only reads `box`.
@@ -790,7 +804,7 @@ def check_offscreen_clamp(page) -> list[str]:
     """A window dragged at the desktop edges keeps enough of itself to be grabbed back.
 
     `docs/windows.md` promises 72 px horizontally and a title bar never above the top. A
-    documented guarantee with no check is the kind that stops being true quietly.
+    documented guarantee with no check is the filetype that stops being true quietly.
     """
     bad = []
     selector = win_selector(page, "readme")
@@ -1073,6 +1087,55 @@ def check_app_loading(page) -> list[str]:
     return bad
 
 
+def check_app_filetypes(page) -> list[str]:
+    """A filetype picks the icon, an explicit icon overrides it, and a bad one is rejected.
+
+    The point of a filetype is that every app of one filetype looks the same, so the thing worth
+    asserting is that two map apps resolved to the *same* icon — not merely that each
+    resolved to something.
+    """
+    result = page.evaluate(
+        "(async () => {"
+        " const { validate } = await import('/src/apps.mjs');"
+        " const { iconFor, FILETYPES, FILETYPE_NAMES } = await import('/src/icons.mjs');"
+        " return {"
+        "   byFiletype: iconFor({ filetype: 'map' }),"
+        "   override: iconFor({ filetype: 'map', icon: 'check' }),"
+        "   neither: iconFor({}),"
+        "   filetypes: FILETYPE_NAMES,"
+        "   mapIcon: FILETYPES.map.icon,"
+        "   badFiletype: validate({ id: 'x', name: 'X', mount(){}, filetype: 'nope' }, 'x'),"
+        "   goodFiletype: validate({ id: 'x', name: 'X', mount(){}, filetype: 'map' }, 'x'),"
+        "   registered: [...window.webxp.programs.entries()]"
+        "     .map(([id, p]) => [id, p.filetype || null, p.icon]) }; })()",
+        await_promise=True,
+    )
+    bad = []
+    if result["byFiletype"] != result["mapIcon"]:
+        bad.append(f"app filetypes: filetype 'map' gave {result['byFiletype']!r}, want the map icon")
+    # An explicit icon has to win, or an app cannot be an exception to its own filetype.
+    if result["override"] != "check":
+        bad.append(f"app filetypes: an explicit icon lost to the filetype — got {result['override']!r}")
+    if result["neither"] != "window":
+        bad.append(f"app filetypes: neither icon nor filetype gave {result['neither']!r}")
+    if not result["badFiletype"]:
+        bad.append("app filetypes: validate() accepted an unknown filetype")
+    if result["goodFiletype"]:
+        bad.append(f"app filetypes: validate() rejected a valid filetype — {result['goodFiletype']}")
+
+    # Every map app must share one icon. This is the property the feature exists for, and the
+    # one a per-app `icon` would let drift.
+    maps = [row for row in result["registered"] if row[1] == "map"]
+    if len(maps) < 2:
+        bad.append(f"app filetypes: only {len(maps)} apps declare filetype 'map' — want at least 2 to compare")
+    icons = {row[2] for row in maps}
+    if len(icons) > 1:
+        bad.append(f"app filetypes: map apps resolved to differing icons {icons}")
+    elif maps and icons != {result["mapIcon"]}:
+        bad.append(f"app filetypes: map apps resolved to {icons}, want {{{result['mapIcon']!r}}}")
+    return bad
+
+
 def check_app_styles(page) -> list[str]:
     """An app's stylesheet is linked once, applies, and is scoped to its own windows."""
     bad = []
@@ -1160,7 +1223,7 @@ def check_broken_app(page) -> list[str]:
 def check_iframe_app(page) -> list[str]:
     """A `frame:` app hosts its page, and clicking it raises its window.
 
-    The shim is the whole reason `frame` is a first-class kind: a pointer event inside an
+    The shim is the whole reason `frame` is a first-class filetype: a pointer event inside an
     iframe does not reach the parent document, so without it a hosted app cannot be raised
     by clicking it.
     """
@@ -2306,6 +2369,7 @@ CHECKS = (
     ("boot", check_boot),
     ("launch all", check_launch_all),
     ("app loading", check_app_loading),
+    ("app filetypes", check_app_filetypes),
     ("app styles", check_app_styles),
     ("broken app", check_broken_app),
     ("iframe app", check_iframe_app),

@@ -44,7 +44,8 @@ the check is the original app vanishing from the registry, replaced by its copy.
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `icon` | string | `window` | One of the names in `src/icons.mjs`. An unknown name is an error, not a fallback. |
+| `filetype` | string | — | What the app opens. Picks the icon. See below. |
+| `icon` | string | from `filetype` | One of the names in `src/icons.mjs`. Overrides the filetype. An unknown name is an error, not a fallback. |
 | `ready` | function | — | Runs after your nodes are in the document and laid out. |
 | `styles` | string[] | none | Paths relative to the folder, linked once before first mount. |
 | `width`, `height` | number | 480 × 320 | |
@@ -61,6 +62,42 @@ the check is the original app vanishing from the registry, replaced by its copy.
 
 Any other key is an error. A misspelled `singelton` is indistinguishable from a missing
 feature at runtime, so the loader rejects what it does not recognise rather than ignoring it.
+
+### `filetype` — one group, one icon
+
+Declare what the app opens, not which picture to draw:
+
+```js
+filetype: 'map',      // yes — every map app now looks like a map
+icon: 'map',          // works, but says it once per app instead of once
+```
+
+Thirty map apps with `filetype: 'map'` share one answer to "which icon", and changing that
+answer is one edit in `src/icons.mjs` instead of thirty. The registry is the extension point:
+
+| `filetype` | Icon | For |
+| --- | --- | --- |
+| `map` | folded map | an app that draws a map |
+| `document` | page | text, prose, a report |
+| `notes` | page and pencil | something editable |
+| `folder` | folder | an app that holds other apps |
+| `settings` | monitor | a control panel |
+| `info` | info bubble | a read-me, an about box |
+| `web` | globe | a hosted page — `frame: { src }` |
+| `tool` | tick | a diagnostic |
+
+**Adding a filetype is one entry in `FILETYPES`**, and a new icon is one entry in `SHAPES`
+beside it. Nothing else changes: the loader asks `iconFor(spec)` and the Start menu, the
+taskbar and the desktop all follow.
+
+Resolution order is `icon`, then `filetype`, then a generic window. So an app that is an
+exception to its own group sets `icon` and keeps its `filetype` honest — `apps/about/` does
+exactly that. An unknown `filetype` is an error for the same reason an unknown `icon` is: a
+typo would otherwise be a silently generic window, and the point of a group is that
+everything in it looks the same.
+
+`label` on each entry is not rendered yet. It exists so that a future grouped Start menu, or
+a folder of everything of one filetype, has a name to use rather than inventing one.
 
 ### `mount`
 

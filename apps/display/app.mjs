@@ -17,7 +17,7 @@ const WALLPAPERS = [
 export default {
   id: 'display',
   name: 'Display Properties',
-  icon: 'display',
+  filetype: 'settings',
   singleton: true,
   onDesktop: true,
   width: 380,

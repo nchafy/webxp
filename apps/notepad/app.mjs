@@ -6,7 +6,7 @@
 export default {
   id: 'notepad',
   name: 'Untitled - Notepad',
-  icon: 'notepad',
+  filetype: 'notes',
   onDesktop: true,
   width: 440,
   height: 300,
