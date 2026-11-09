@@ -1,6 +1,6 @@
 """Noise per street, keyed by the OSM way the matcher put you on.
 
-    .venv/bin/python -I days/02-lines/street_segments.py ~/path/to/strava_export
+    .venv/bin/python -I apps/day-02-lines/tools/street_segments.py ~/path/to/strava_export
 
 Writes `street-noise.json` beside the measured data: one LineString per way, with its
 median speed-adjusted inflation and every crossing of it.
@@ -19,9 +19,10 @@ and it is the thing the first pass never asked for.
 
 ## What an edge is, and why traversals exist
 
-Valhalla splits ways at every node, so its edges are tiny: measured on a 1.4 km probe, 86
-edges with a median length of 7 m, over 54 distinct ways. An inflation ratio over 7 m of
-road is noise about noise.
+Valhalla splits ways at every node, so its edges are tiny: `probe_edges.py` measured 86
+edges with a median length of 7 m over 54 distinct ways on a 1.4 km trace. That probe talks
+to the public matcher, so re-run it rather than trusting these three numbers. An inflation
+ratio over 7 m of road is noise about noise.
 
 So consecutive edges sharing a `way_id` are merged into one **traversal** -- one continuous
 run along one street -- and a traversal has to cover `MIN_TRAVERSAL_M` before it counts.
@@ -79,11 +80,29 @@ ATTRIBUTES = [
 
 #: Metres of snapped path a traversal must cover to be measured. Below this the ratio is
 #: dominated by where the matcher placed two endpoints.
+#:
+#: This floor is probably too low, and it is the lead on why this pipeline does not clear its
+#: own speed-control bar. The grid gets speed down to 0.6% of variance; this gets to 1.4%, so
+#: `r_after` trips the warning at -0.119. Splitting the measured traversals at their median
+#: length of 115 m locates it:
+#:
+#:     short, <= 115 m   n=7,465   r=-0.139   1.94% of variance
+#:     long,  >  115 m   n=7,461   r=+0.032   0.10%
+#:
+#: The leftover is entirely in the short half, and the first guess -- that a traversal is a
+#: longer, more variable unit than the grid's fixed 150 m window -- is the opposite of what
+#: the data says: the median traversal is *shorter* than that window, and p5 is 65 m, sitting
+#: right on this floor. A 65 m traversal has few points, so both its inflation and its speed
+#: are noisily estimated, and noise in the regressor attenuates the correction it is used for.
+#:
+#: Raising the floor is the obvious experiment and has not been run, because it would move
+#: every published street figure again. Recorded here rather than acted on.
 MIN_TRAVERSAL_M = 60.0
 
-#: As the grid. Walking or standing still is indistinguishable from bad reception.
-SPEED_BAND_MS = (2.0, 5.0)
-SPACING_BAND_M = (3.0, 4.0)
+#: The speed and spacing gates, from `gpsnoise` rather than restated here, so this pipeline
+#: and `noise_by_area.py` cannot disagree about what they filtered on.
+SPEED_BAND_MS = gn.SPEED_BAND_MS
+SPACING_BAND_M = gn.SPACING_BAND_M
 
 #: A way needs this many traversals, from this many different activities, before it is
 #: reported. One activity passing ten times is one day's satellite geometry.
@@ -202,9 +221,14 @@ def traversals(edges, matched, offset, shape_x, shape_y, raw_x, raw_y, times, fr
     #
     # This, and not the edge shape, is what the snapped length is measured over. Measuring
     # the full shape span against a raw span that enters and leaves the edges part-way
-    # overstates the snapped side at both ends -- it put the 5th percentile at -10.5%,
-    # recorded apparently shorter than the road. Point-for-point, the two measurements
-    # share their endpoints by construction and the bias is gone.
+    # overstates the snapped side at both ends, which pushed the 5th percentile of inflation
+    # to around -10% -- recorded apparently shorter than the road, across a twentieth of all
+    # crossings. Point-for-point, the two measurements share their endpoints by construction
+    # and the systematic part is gone: the 5th percentile now sits within a fraction of a
+    # point of zero (`streets.crossings.p5_pct` in `data/noise-summary.json`). It is not
+    # exactly zero and should not be -- a matcher that cuts a corner really can return a
+    # path shorter than the recording, which is the finding under "Matching is not a lower
+    # bound" in the README.
     mlat = np.array([m.get("lat", np.nan) for m in matched])
     mlon = np.array([m.get("lon", np.nan) for m in matched])
     match_x = (mlon - frame["lon0"]) * frame["kx"]
@@ -234,21 +258,24 @@ def traversals(edges, matched, offset, shape_x, shape_y, raw_x, raw_y, times, fr
         if not (np.isfinite(match_x[p0 : p1 + 1]).all()):
             continue
 
-        # Two index spaces, and mixing them was a real defect.
+        # Two index spaces, and mixing them is a real defect rather than a tidiness point.
         #
         # `p0`/`p1` index this *chunk*: they come from `enumerate(matched)`, and `match_x` is
         # built from that same list. But `raw_x`, `raw_y` and `times` are the whole trace, so
-        # reading them needs the offset. Without it, a traversal in the second chunk measured
-        # a different part of the run — on a 5,000-point trace whose second leg was 20 km
-        # away, the traversal reported at points 3999..4999 got recorded_m 2971.5 where the
-        # truth for that span is 10978.9, and −1.0% inflation where it is +265.9%.
+        # reading them needs the offset. Without it a traversal in the second chunk measures a
+        # different part of the run entirely, and the speed gate in `main` then admits or
+        # drops it on the `dt` computed here — so the error is selection bias as well as a
+        # wrong length.
         #
-        # It reached the published output: 85 of 401 activities exceed one chunk, and 174 of
-        # 395 streets carried at least one contaminated crossing, which is what put the
-        # contaminated subset at 32.7% negative inflation against 4.8% for the clean one.
-        # The speed gate in `main` then admits or drops the traversal on `dt` computed here,
-        # so it was selection bias as well as a wrong number. Wrong values persist in
-        # `street-cache.jsonl`, so correcting this needs a `--fresh` rebuild.
+        # The blast radius is not an edge case: on the measured export 68 of 397 activities
+        # span more than one `CHUNK`, and between them they touch 134 of the 351 reported
+        # streets -- over a third. `export.chunk_offset` in `data/noise-summary.json` counts
+        # both, so the exposure can be re-read rather than taken on trust.
+        # `test_gpsnoise.py` holds this with three checks, including one that requires the
+        # un-offset read to be distinguishable from the correct one.
+        #
+        # Wrong values persist in `street-cache.jsonl`, so correcting this needs a `--fresh`
+        # rebuild.
         g0, g1 = offset + p0, offset + p1
 
         # Both lengths over the same point span: the raw positions, and the snapped
@@ -285,6 +312,17 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--fresh", action="store_true", help="clear the resume cache first")
     ap.add_argument("--top", type=int, default=12)
+    # The same flag and the same default as `prepare.py`, because the two must agree about
+    # how much came off. A tool that reads the export and does not crop writes spans that
+    # address points the cropped documents do not have.
+    ap.add_argument(
+        "--trim-m",
+        type=float,
+        default=gn.QUARTER_MILE_M,
+        metavar="METRES",
+        help=f"crop this much off each end of every run (default {gn.QUARTER_MILE_M:.0f}; "
+        "must match whatever prepare.py used)",
+    )
     args = ap.parse_args()
 
     files = prepare.find_activities(args.targets)
@@ -321,7 +359,7 @@ def main() -> int:
     classes: dict[int, str] = {}
     used = 0
     fresh_count = 0
-    skipped_sport = skipped_spacing = 0
+    skipped_sport = skipped_spacing = skipped_short = 0
 
     #: One set across every file, which is the whole mechanism.
     #:
@@ -347,6 +385,22 @@ def main() -> int:
 
         track.lat = np.round(track.lat, prepare.COORD_DP)
         track.lon = np.round(track.lon, prepare.COORD_DP)
+
+        # The same crop `prepare.py` applies, in the same place in the sequence.
+        #
+        # This tool reads the export rather than `prepare.py`'s output, so without this it
+        # measures uncropped traces while `index.json` holds cropped ones — and the `[i0, i1]`
+        # spans it writes then address points that do not exist in the documents the page
+        # loads. The page slices `doc.recorded[i0:i1+1]`, so a shifted span draws a confident
+        # line along the wrong stretch of road: the one wrong answer this file exists to
+        # avoid. An over-long span is the harmless half; a shifted in-range one is not.
+        if args.trim_m > 0:
+            trimmed = gn.trim_ends(track, args.trim_m)
+            if trimmed is None:
+                skipped_short += 1
+                continue
+            track = trimmed
+
         raw_x, raw_y, frame = gn.project(track.lat, track.lon)
         steps = gn.segment_lengths(raw_x, raw_y)
         if steps.size == 0:
@@ -450,6 +504,7 @@ def main() -> int:
     )
     if abs(r_after) > 0.1:
         print("  WARNING: over 1% of the variance is still speed.")
+        print("  Expected on this data; see the note in the source. Short traversals carry it.")
 
     by_way: dict[int, dict] = {}
     for i, (way, t, aid, title) in enumerate(rows):
