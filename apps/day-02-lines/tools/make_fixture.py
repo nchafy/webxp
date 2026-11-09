@@ -1,6 +1,6 @@
 """Build a synthetic Strava export, for checking the pipeline and for the page to draw.
 
-    .venv/bin/python days/02-lines/make_fixture.py --out days/02-lines/fixture
+    .venv/bin/python apps/day-02-lines/tools/make_fixture.py --out apps/day-02-lines/fixture
 
 Real activities are private, so they are gitignored and never committed. The page still
 has to render in `scripts/check.py`, and the pipeline still has to be checkable by
@@ -33,6 +33,14 @@ import numpy as np
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import gpsnoise as gn  # noqa: E402
+
+#: The app folder, which is this script's parent -- not its own directory. `fixture/` lives
+#: beside `app.mjs`, one level above `tools/`, which is the same anchoring `prepare.py` uses
+#: and for the same reason: a relative default is only correct when the command is run from
+#: the repository root, and when it is wrong it creates the directory somewhere else and
+#: reports success.
+APP = pathlib.Path(__file__).resolve().parent.parent
+FIXTURE_OUT = APP / "fixture"
 
 # name, sport, (lat, lon) via-points, metres between samples, noise sigma in metres.
 # The spread in sigma and spacing is the point: it should produce a spread in inflation,
@@ -104,7 +112,12 @@ def write_gpx(path: pathlib.Path, name: str, sport: str, lat, lon, start: dt.dat
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", type=pathlib.Path, default=pathlib.Path("days/02-lines/fixture"))
+    ap.add_argument(
+        "--out",
+        type=pathlib.Path,
+        default=FIXTURE_OUT,
+        help=f"where to write the synthetic export (default {FIXTURE_OUT})",
+    )
     args = ap.parse_args()
 
     acts = args.out / "activities"

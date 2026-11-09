@@ -1,7 +1,7 @@
 """Integration check for map matching. Hits the network, so it is separate from
 `test_gpsnoise.py`, which is pure and fast.
 
-    .venv/bin/python days/02-lines/test_matching.py
+    .venv/bin/python apps/day-02-lines/tools/test_matching.py
 
 The trick is to manufacture a trace whose correct answer is already known. Ask Valhalla
 to route between two points, and it returns both the path along the OSM network and the

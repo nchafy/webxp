@@ -1,6 +1,6 @@
 """Find out what `trace_attributes` returns for edges, before anything is built on it.
 
-    .venv/bin/python -I days/02-lines/probe_edges.py
+    .venv/bin/python -I apps/day-02-lines/tools/probe_edges.py
 
 Street-level segments need three things the current pipeline never asked for: the OSM way
 id behind each matched edge, the edge's own length, and which raw trackpoints matched to

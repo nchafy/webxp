@@ -1,6 +1,6 @@
 """Summarise a measured directory: the three distances, and how far apart they are.
 
-    .venv/bin/python -I days/02-lines/report.py days/02-lines/private
+    .venv/bin/python -I apps/day-02-lines/tools/report.py apps/day-02-lines/private
 
 Prints the aggregate and the distribution. Three figures per activity, none of them the
 truth:

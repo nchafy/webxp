@@ -1,6 +1,6 @@
 """Survey an export before measuring it: how much data, and where in the world.
 
-    .venv/bin/python -I days/02-lines/survey.py ~/path/to/export
+    .venv/bin/python -I apps/day-02-lines/tools/survey.py ~/path/to/export
 
 Reads every activity, reports point counts, sample spacing and the bounding box, and
 prices the map matching in requests. Nothing is written and nothing is fetched.

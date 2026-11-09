@@ -1,6 +1,6 @@
 """Build the map's overview geometry from an already-measured directory.
 
-    .venv/bin/python -I days/02-lines/build_overview.py days/02-lines/private
+    .venv/bin/python -I apps/day-02-lines/tools/build_overview.py apps/day-02-lines/private
 
 Separate from `prepare.py` on purpose: `prepare.py` does the expensive, network-bound map
 matching, and this only reshapes what it wrote. Changing how the overview is drawn should

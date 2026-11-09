@@ -1,6 +1,6 @@
 """Find the public matcher's shape limit, so chunking can be sized to it rather than guessed.
 
-    .venv/bin/python -I days/02-lines/probe_limits.py
+    .venv/bin/python -I apps/day-02-lines/tools/probe_limits.py
 
 `match_trace` chunks at 1500 points, which was a guess. At that size a 1.6M-point history
 is over 1,200 requests against a volunteer-run service. If the instance accepts a much
