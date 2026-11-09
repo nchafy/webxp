@@ -4800,6 +4800,44 @@ FS_ASSERTIONS = """(async () => {
     fs.chmod('/t/nowrite', 0o555);
   });
   refuses('touch on a directory without the write bit', 'EACCES', () => fs.touch('/t/nowrite'));
+  // Every route to a mounted inode, refused.
+  //
+  // One permission enforced in one function is enforced nowhere: `cp`, `chmod`, `touch` and
+  // `ln` each reached the inode without passing through `readFile` or `writeFile`, and each
+  // one got through. These assert the doors, not the lock.
+  setup('a mount to write at', () => {
+    fs.mountIndex('/mnt-probe', {
+      version: 1,
+      files: [['readme.txt', 12, 1762000000, 1]],
+    }, (relative) => `/usr/src/webxp/${relative}`);
+  });
+  refuses('a write to a mounted file', 'EACCES', () => fs.writeFile('/mnt-probe/readme.txt', 'x'));
+  refuses('chmod on a mounted file', 'EPERM', () => fs.chmod('/mnt-probe/readme.txt', 0o644));
+  refuses('touch on a mounted file', 'EACCES', () => fs.touch('/mnt-probe/readme.txt'));
+  refuses('a hard link into the mount', 'EPERM', () => fs.link('/mnt-probe/readme.txt', '/t/ln'));
+  refuses('unlinking a mounted file', 'EACCES', () => fs.unlink('/mnt-probe/readme.txt'));
+  refuses('a write inside a mounted directory', 'EACCES', () => fs.writeFile('/mnt-probe/new', 'x'));
+
+  // And a refused write must not announce one. A guard that refuses the change but still
+  // fires the event has told the persistence layer that a read-only file changed, which is a
+  // save of a tree nobody edited.
+  const announced = [];
+  setup('watching a refused write', () => {
+    const unwatch = fs.watch((event) => announced.push(event.op));
+    for (const attempt of [
+      () => fs.touch('/mnt-probe/readme.txt'),
+      () => fs.writeFile('/mnt-probe/readme.txt', 'x'),
+      () => fs.chmod('/mnt-probe/readme.txt', 0o644),
+    ]) {
+      try {
+        attempt();
+      } catch {
+        // The refusal is asserted above. What is asserted here is the silence after it.
+      }
+    }
+    unwatch();
+  });
+  want('a refused write notifies nobody', () => announced.join(), '');
 
   // A batch notifies once, at the end, with the tree whole. Un-batched, the first mutation
   // of a reseed told every watcher the filesystem was empty.

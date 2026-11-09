@@ -711,6 +711,20 @@ export class VFS {
   link(existing, path, { cwd = '/' } = {}) {
     const source = this.#existing(existing, { cwd });
     if (source.inode.type === DIR) throw new FsError('EPERM', existing);
+    // A second name for a mounted file cannot be kept.
+    //
+    // It used to succeed: `ln /usr/src/webxp/LICENSE /tmp/linked` exited 0, bumped the
+    // mounted inode's ctime, and the name was gone after a reload — `serialize` drops
+    // mounted inodes and the entries pointing at them, so the user's file vanished with no
+    // word. Refused here rather than silently discarded later, and it names the thing that
+    // does work.
+    if (source.inode.source || source.inode.mounted) {
+      throw new FsError(
+        'EPERM',
+        existing,
+        'Mounted read-only — a hard link into it cannot be saved. Use cp to make a copy',
+      );
+    }
     const slot = this.#slot(path, { cwd });
     if (slot.ino !== null) throw new FsError('EEXIST', path);
     this.#need(slot.dir, W, path);
