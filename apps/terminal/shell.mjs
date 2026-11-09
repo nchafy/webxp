@@ -19,7 +19,7 @@
  */
 
 import { COMMANDS, UsageError } from './commands.mjs';
-import { expandGlob } from './glob.mjs';
+import { expandGlob, hasMagic } from './glob.mjs';
 import { HOME, HOSTNAME, userName } from '../../shared/fs/seed.mjs';
 import { DIR, FsError } from '../../shared/fs/vfs.mjs';
 
@@ -27,26 +27,26 @@ import { DIR, FsError } from '../../shared/fs/vfs.mjs';
    Words.
    --------------------------------------------------------------------------- */
 
-const OPERATORS = new Set(['|', '>', '>>', '<']);
-
 /**
- * Split a line into words and operators, remembering which words were quoted.
+ * Split a line into words and operators, reporting which words still carry a glob.
  *
- * The quoted flag is load-bearing: `ls '*'` must look for a file called `*`, and a glob that
- * expanded regardless of quoting would make it impossible to name one.
+ * Quoting is tracked per character span, not per word. `magic` is true only for a `*`, `?`
+ * or `[` the user left unquoted, which is what makes both halves of the rule work: `ls '*'`
+ * looks for a file called `*`, and `ls "no"*` still expands — a word-wide flag made one
+ * quoted character suppress globbing across the whole word.
  *
- * @returns {{text: string, quoted: boolean, operator?: boolean}[]}
+ * @returns {{text: string, magic: boolean, operator?: boolean}[]}
  */
 export function tokenize(line) {
   const tokens = [];
   let text = '';
-  let quoted = false;
+  let magic = false;
   let started = false;
 
   const push = () => {
-    if (started) tokens.push({ text, quoted });
+    if (started) tokens.push({ text, magic });
     text = '';
-    quoted = false;
+    magic = false;
     started = false;
   };
 
@@ -59,19 +59,25 @@ export function tokenize(line) {
       const next = line[i + 1];
       if (next === undefined) throw new UsageError('unexpected end of line after \\');
       text += next;
-      quoted = true;
       started = true;
       i += 1;
       continue;
     }
 
-    if (char === "'" || char === '"') {
-      const close = line.indexOf(char, i + 1);
-      if (close < 0) throw new UsageError(`unterminated ${char === "'" ? 'single' : 'double'} quote`);
+    if (char === "'") {
+      const close = line.indexOf("'", i + 1);
+      if (close < 0) throw new UsageError('unterminated single quote');
       text += line.slice(i + 1, close);
-      quoted = true;
       started = true;
       i = close;
+      continue;
+    }
+
+    if (char === '"') {
+      const span = doubleQuoted(line, i);
+      text += span.text;
+      started = true;
+      i = span.end;
       continue;
     }
 
@@ -92,12 +98,13 @@ export function tokenize(line) {
     if (char === '|' || char === '<' || char === '>') {
       push();
       const double = char === '>' && line[i + 1] === '>';
-      tokens.push({ text: double ? '>>' : char, quoted: false, operator: true });
+      tokens.push({ text: double ? '>>' : char, magic: false, operator: true });
       if (double) i += 1;
       continue;
     }
 
     text += char;
+    if (hasMagic(char)) magic = true;
     started = true;
   }
   push();
@@ -105,14 +112,43 @@ export function tokenize(line) {
 }
 
 /**
+ * The contents of a double-quoted span, and the index of its closing quote.
+ *
+ * `\` is honoured, and only before the two characters that are still special inside double
+ * quotes. A scan that looked for the next `"` with `indexOf` stopped at an escaped one, so
+ * `echo "a\"b"` reported an unterminated quote for a line that has none.
+ *
+ * @param {string} line
+ * @param {number} open Index of the opening quote.
+ */
+function doubleQuoted(line, open) {
+  let text = '';
+  let i = open + 1;
+  while (i < line.length && line[i] !== '"') {
+    if (line[i] === '\\' && (line[i + 1] === '"' || line[i + 1] === '\\')) {
+      text += line[i + 1];
+      i += 2;
+      continue;
+    }
+    text += line[i];
+    i += 1;
+  }
+  if (i >= line.length) throw new UsageError('unterminated double quote');
+  return { text, end: i };
+}
+
+/**
  * Group tokens into pipeline stages.
  *
- * @returns {{words: {text: string, quoted: boolean}[], out: {path: string, append: boolean}|null,
- *            in: string|null}[]}
+ * `outs` is every `>` and `>>` in the stage, in the order they were written. A shell opens
+ * all of them — `echo a > f1 > f2` creates `f1` as well — and the last one gets the output.
+ *
+ * @returns {{words: {text: string, magic: boolean}[],
+ *            outs: {path: string, append: boolean}[], in: string|null}[]}
  */
 export function parse(line) {
   const stages = [];
-  let stage = { words: [], out: null, in: null };
+  let stage = { words: [], outs: [], in: null };
   const tokens = tokenize(line);
 
   for (let i = 0; i < tokens.length; i += 1) {
@@ -124,7 +160,7 @@ export function parse(line) {
     if (token.text === '|') {
       if (!stage.words.length) throw new UsageError('syntax error near |');
       stages.push(stage);
-      stage = { words: [], out: null, in: null };
+      stage = { words: [], outs: [], in: null };
       continue;
     }
     const target = tokens[i + 1];
@@ -133,10 +169,10 @@ export function parse(line) {
     }
     i += 1;
     if (token.text === '<') stage.in = target.text;
-    else stage.out = { path: target.text, append: token.text === '>>' };
+    else stage.outs.push({ path: target.text, append: token.text === '>>' });
   }
 
-  if (stage.words.length || stage.out || stage.in) {
+  if (stage.words.length || stage.outs.length || stage.in) {
     if (!stage.words.length) throw new UsageError('syntax error: redirection with no command');
     stages.push(stage);
   }
@@ -233,8 +269,8 @@ export class Shell {
       const words = [];
       for (const word of stage.words) {
         const text = expandTilde(word.text);
-        if (word.quoted) words.push(text);
-        else words.push(...expandGlob(this.fs, this.cwd, text));
+        if (word.magic) words.push(...expandGlob(this.fs, this.cwd, text));
+        else words.push(text);
       }
 
       const name = words[0];
@@ -255,7 +291,7 @@ export class Shell {
 
       // A piped or redirected stage collects its output; the last unredirected stage writes
       // straight through, so a long listing appears as it is produced.
-      const collecting = !last || stage.out !== null;
+      const collecting = !last || stage.outs.length > 0;
       let buffer = '';
       const write = collecting ? (text) => { buffer += text; } : io.write;
 
@@ -299,15 +335,27 @@ export class Shell {
         // rather than printing nothing at all.
       }
 
-      if (stage.out) {
-        try {
-          this.fs.writeFile(expandTilde(stage.out.path), buffer, {
-            cwd: this.cwd,
-            append: stage.out.append,
-          });
-        } catch (error) {
-          io.warn(`sh: ${error.message}\n`);
-          return 1;
+      if (stage.outs.length) {
+        // Every target is opened, and only the last one is written: `echo a > f1 > f2`
+        // leaves `f1` there and empty. Writing only the last one created neither the file
+        // nor a word about it.
+        for (let out = 0; out < stage.outs.length; out += 1) {
+          const { path, append } = stage.outs[out];
+          const written = out === stage.outs.length - 1;
+          try {
+            // An earlier `>>` opens without truncating, so its file is created and left as
+            // it was — the one case a write of '' would get wrong.
+            if (!written && append) this.fs.touch(expandTilde(path), { cwd: this.cwd });
+            else {
+              this.fs.writeFile(expandTilde(path), written ? buffer : '', {
+                cwd: this.cwd,
+                append,
+              });
+            }
+          } catch (error) {
+            io.warn(`sh: ${error.message}\n`);
+            return 1;
+          }
         }
         stdin = '';
       } else {
@@ -324,11 +372,13 @@ export class Shell {
    *          the caller can replace exactly that much of the line.
    */
   complete(line) {
-    const words = line.split(/\s+/);
-    const word = words[words.length - 1];
-    const first = words.filter(Boolean).length <= 1 && !/\s$/.test(line);
+    const word = line.split(/\s+/).pop();
+    // A command position is the start of a line or the word after a `|`, so `ls | ca`
+    // offers `cat`. Decided from what precedes the word rather than from its index: the
+    // first word of the line is not the only place a command name goes.
+    const before = line.slice(0, line.length - word.length);
 
-    if (first) {
+    if (/(^|\|)\s*$/.test(before)) {
       const matches = Object.keys(COMMANDS).filter((name) => name.startsWith(word)).sort();
       return { matches, prefix: word };
     }
@@ -352,7 +402,7 @@ export class Shell {
     const matches = entries
       .filter((entry) => entry.name.startsWith(stem) && (stem.startsWith('.') || !entry.name.startsWith('.')))
       // A directory completes with its slash, so the next Tab continues into it.
-      .map((entry) => (cut < 0 ? '' : expanded.slice(0, cut + 1)) + entry.name + (entry.type === 'dir' ? '/' : ''))
+      .map((entry) => (cut < 0 ? '' : expanded.slice(0, cut + 1)) + entry.name + (entry.type === DIR ? '/' : ''))
       .sort();
     return { matches, prefix: word };
   }
