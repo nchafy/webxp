@@ -355,6 +355,9 @@ def main() -> int:
 
     rows = []
     geoms: dict[int, np.ndarray] = {}
+    #: Metres of snapped road each stored geometry covers, so the longest observed extent
+    #: wins rather than whichever activity was walked first.
+    geom_extent: dict[int, float] = {}
     names: dict[int, str] = {}
     classes: dict[int, str] = {}
     used = 0
@@ -464,10 +467,37 @@ def main() -> int:
             way = t["way"]
             rows.append((way, t, aid, track.name))
             found += 1
-            # First geometry wins. Every crossing of a way snaps to the same graph edges,
-            # so they agree.
-            if way not in geoms:
-                geoms[way] = np.array(t["geometry"])
+            # The longest geometry wins, and the reason is a defect this used to assert away.
+            #
+            # It read: "First geometry wins. Every crossing of a way snaps to the same graph
+            # edges, so they agree." They do not agree. A segment here is one OSM *way*, and a
+            # way is whatever the mapper drew — East Drive in Prospect Park is a whole park
+            # loop road, not a block. Runs cross different amounts of it: one joins mid-way,
+            # another does the full circuit. Measured across the 351 segments, longest crossing
+            # over shortest is a median of 1.13x, over 1.5x on 30% of them, over 2x on 24%, and
+            # 12.5x at worst. East Drive's drawn line was 480 m while its 53 crossings covered
+            # 94 m to 1,096 m.
+            #
+            # Taking the first was arbitrary — whichever activity the walk reached first — so
+            # the drawn segment was one crossing's extent and every other crossing ran off the
+            # end of it or stopped short. Position was never the problem: the crossings sit a
+            # median of 6.1 m from the line, so it is the right road. Taking the longest makes
+            # the line the union of what was observed, which is the honest extent for a figure
+            # aggregated over all of them.
+            #
+            # This does not fix the statistic. `inflation_pct` is still a median over
+            # traversals of wildly different lengths, each weighted equally, and a 94 m sample
+            # should probably not count the same as a 1,096 m one. That is the same complaint
+            # as the short-traversal residual at `MIN_TRAVERSAL_M`, and it is unaddressed.
+            # Compared in metres, not in point count: the snapped shape is sampled by the
+            # matcher, so more vertices does not mean more road.
+            shape = np.array(t["geometry"])
+            # Column 0 is lon and column 1 is lat -- the shape is built with
+            # `column_stack([slon, slat])` -- and `track_length_m` takes (lat, lon).
+            extent = gn.track_length_m(shape[:, 1], shape[:, 0]) if len(shape) > 1 else 0.0
+            if way not in geom_extent or extent > geom_extent[way]:
+                geoms[way] = shape
+                geom_extent[way] = extent
             if t["name"] and way not in names:
                 names[way] = t["name"]
             if t["road_class"] and way not in classes:
