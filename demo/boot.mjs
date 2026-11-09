@@ -47,6 +47,26 @@ const routes = await import('../shared/routes/routes.mjs');
 // page script turned out to be flaky against a single-threaded `http.server`, which is a
 // reason to use the page's own object rather than a reason to retry.
 window.webxpRoutes = routes;
+
+// `/pages` — what is routable, as a directory you can `ls`.
+//
+// A view of the route table, not the table itself: the filesystem shows what routes and the
+// router decides what routing means. That split is why `cat /pages/terminal` can print
+// something true. A tree that *was* the router would have to answer what `chmod 000
+// /pages/day-02-lines` does — break the site, or be decoration — and this project spent
+// today removing four permissions that were decoration.
+//
+// Read-only, `444`, grafted by the same mechanism as the repository at `/usr/src/webxp`.
+// Registered, not applied: the filesystem is mounted the first time a window needs one, and
+// a reader who opens nothing should not pay for a directory they never look at.
+const { onMount } = await import('../shared/fs/fs.mjs');
+onMount((fs) => {
+  window.webxpPages = fs.mountText(
+    '/pages',
+    [...desktop.programs.values()].map((program) => [program.id, routes.describe(program)]),
+  );
+});
+
 window.webxpRoute = await routes.restore(desktop);
 
 // Clippy, in place of the Read me opening itself. Offering help and taking no for an answer

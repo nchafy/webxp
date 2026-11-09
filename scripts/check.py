@@ -4506,6 +4506,56 @@ def check_routes(page) -> list[str]:
     if page.evaluate("window.location.hash") != "#/terminal/etc":
         bad.append("routes: the published link did not follow the second cd")
 
+    # `/pages`: a view of the route table, in the filesystem, through the pane.
+    #
+    # Driven from the shell because that is the artifact the feature is for — "the CLI
+    # traverses the pages" is the ask, and a directory nobody can `cd` into would satisfy an
+    # in-page assertion while failing the request.
+    listing = term_run(page, "ls /pages", shell)
+    for program in ("terminal", "explorer", "notepad", "basemap"):
+        if program not in listing:
+            bad.append(f"routes: /pages does not list {program} — {listing.strip()[:120]!r}")
+    described = term_run(page, "cat /pages/terminal", shell)
+    for fragment in ("app:   terminal", "link:  #/terminal", "state: a path"):
+        if fragment not in described:
+            bad.append(f"routes: cat /pages/terminal is missing {fragment!r}")
+    # An app that restores no state says so by omission rather than by claiming it does.
+    plain = term_run(page, "cat /pages/about", shell)
+    if "state:" in plain:
+        bad.append(f"routes: /pages/about claims state it cannot restore — {plain.strip()[:120]!r}")
+    if "link:  #/about" not in plain:
+        bad.append(f"routes: /pages/about carries no link — {plain.strip()[:120]!r}")
+
+    # The link a page advertises has to be the link that works. Read it out of the file and
+    # open it, rather than asserting a string that happens to match one written elsewhere.
+    advertised = term_run(page, "grep link: /pages/explorer", shell)
+    link = advertised.split("link:")[-1].strip().split()[0] if "link:" in advertised else ""
+    if not link.startswith("#/"):
+        bad.append(f"routes: /pages/explorer advertises {link!r}, which is not a link")
+    else:
+        open_link(link)
+        if not page.evaluate(
+            "window.webxp.windows.some((w) => w.programId === 'explorer')"
+        ):
+            bad.append(f"routes: the link /pages/explorer advertises ({link}) opened nothing")
+        page.evaluate("window.history.replaceState(null, '', window.location.pathname)")
+        page.call("Page.reload", ignoreCache=True)
+        time.sleep(1.0)
+        wait_for_apps(page)
+        console_errors(page)
+        shell = terminal_session(page)
+
+    # Read-only, and refused by the mode bits like the repository mount.
+    for line, want_text in (
+        ("echo x > /pages/terminal", "Permission denied"),
+        ("rm /pages/terminal", "Permission denied"),
+        ("chmod 644 /pages/terminal", "Mounted read-only"),
+        ("touch /pages/terminal", "Permission denied"),
+    ):
+        refused = term_run(page, line, shell)
+        if want_text not in refused:
+            bad.append(f"routes: {line!r} was not refused — {refused.strip()[:120]!r}")
+
     fs_reset(page)
     return bad
 

@@ -96,6 +96,56 @@ export function publish(id, state = {}) {
 }
 
 /**
+ * What `/pages/<id>` holds: one routable app, as text.
+ *
+ * Text, because this is a filesystem and `cat` has to print something true. A page that is a
+ * module would have nothing honest to show — which is the reason `/pages` is a view of the
+ * route table rather than the route table itself. The filesystem shows what is routable; the
+ * router decides what routes.
+ *
+ * @param {object} program A registered program.
+ */
+export function describe(program) {
+  const lines = [
+    `app:   ${program.id}`,
+    `name:  ${program.name}`,
+    `link:  ${format(program.id)}`,
+  ];
+  // Only the three apps that take a path say so, and they say it because they accept
+  // `args.path` — not because a list here claims they do.
+  if (STATEFUL.has(program.id)) {
+    lines.push(`state: a path, as ${format(program.id, { path: '/some/path' })}`);
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+//: The apps that restore state from a link today. Derived from what they accept — each one
+//: reads `args.path` in its own `mount` — and listed here only so `/pages` can say which
+//: entries take more than a bare id. When an app can declare this in its spec, this set is
+//: that declaration and goes away.
+const STATEFUL = new Set(['terminal', 'explorer', 'notepad']);
+
+/**
+ * Build the `/pages` index: one row per registered program.
+ *
+ * Shaped like `scripts/mount.py`'s output so `VFS.mountIndex` can graft it unchanged —
+ * read-only, `444`, `chmod` refused. One mount mechanism, two things mounted.
+ *
+ * @param {Iterable<object>} programs `desktop.programs.values()`.
+ */
+export function pagesIndex(programs, { at = '/pages' } = {}) {
+  const now = Math.floor(Date.now() / 1000);
+  const files = [];
+  for (const program of programs) {
+    // A program that failed to load is registered so it can explain itself, and a link to it
+    // would open a window that says it is broken. That is honest, so it is listed.
+    files.push([program.id, describe(program).length, now, 1]);
+  }
+  files.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  return { version: 1, root: at, files };
+}
+
+/**
  * A link's path as an absolute filesystem path.
  *
  * `#/explorer/home/user` carries `home/user`, because a leading slash in a hash reads as an

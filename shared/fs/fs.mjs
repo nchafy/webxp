@@ -43,6 +43,37 @@ export const persistence = {
 
 let pending = null;
 
+//: Grafts the host page wants applied to the one filesystem, whenever it comes to exist.
+//:
+//: `/pages` is a view of the route table, so the host page owns what is in it — but making
+//: the host page graft it directly would mean mounting the filesystem on every page load for
+//: a directory nobody may open. Registering it here keeps the decision where it belongs and
+//: the timing where it belongs: the graft runs when something first needs a filesystem.
+const grafts = new Set();
+let live = null;
+
+function applyGraft(graft, fs) {
+  try {
+    graft(fs);
+  } catch (error) {
+    // One failed view does not cost the caller its filesystem.
+    console.error('webxp: a filesystem graft failed', error);
+  }
+}
+
+/**
+ * Run `graft(fs)` once the filesystem exists — immediately, if it already does.
+ *
+ * @param {(fs: import('./vfs.mjs').VFS) => void} graft
+ */
+export function onMount(graft) {
+  if (live) {
+    applyGraft(graft, live);
+    return;
+  }
+  grafts.add(graft);
+}
+
 /**
  * The filesystem, mounted once.
  *
@@ -106,6 +137,8 @@ async function mount() {
   // deliberately absent from what was saved, so grafting first would mean restoring over it.
   await graftRepository(fs);
   attachSaving(fs);
+  live = fs;
+  for (const graft of grafts) applyGraft(graft, fs);
   return fs;
 }
 

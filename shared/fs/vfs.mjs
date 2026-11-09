@@ -889,6 +889,47 @@ export class VFS {
     return grafted;
   }
 
+  /**
+   * Graft read-only files whose contents are generated rather than fetched.
+   *
+   * `mountIndex` is for files that live on a server: it records a URL and a size and the body
+   * arrives on first read. A generated view has its text already, so giving it a URL nothing
+   * will ever fetch would be a lie in the data structure. This is the same graft without that
+   * half — `444` files in a `555` directory, dropped from what is saved, and never counted
+   * against the quota.
+   *
+   * @param {string} at
+   * @param {Iterable<[string, string]>} files `[name, contents]`.
+   * @returns {number} How many were grafted.
+   */
+  mountText(at, files) {
+    let grafted = 0;
+    this.batch('mount', () => {
+      const dir = this.#mountDir(at);
+      for (const [name, text] of files) {
+        if (typeof name !== 'string' || !name || name.includes('/')) {
+          throw new FsError('EINVAL', at, `not a usable name: ${JSON.stringify(name)}`);
+        }
+        const existing = dir.entries.get(name);
+        // Regenerated in place, so a second graft of a changed view replaces it rather than
+        // refusing or duplicating. The registry can gain an app while the desktop is running.
+        if (existing !== undefined) {
+          const inode = this.#inode(existing);
+          inode.data = String(text);
+          this.#stamp(inode);
+          grafted += 1;
+          continue;
+        }
+        const inode = this.#create(FILE, { mode: 0o444 });
+        inode.data = String(text);
+        inode.mounted = true;
+        dir.entries.set(name, inode.ino);
+        grafted += 1;
+      }
+    });
+    return grafted;
+  }
+
   /** The directory at a path, creating it and its parents as mounted if need be. */
   #mountDir(path) {
     const parts = splitPath(path);
