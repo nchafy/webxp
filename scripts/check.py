@@ -2026,6 +2026,16 @@ def check_day_02(page) -> list[str]:
             # localStorage, so this window opens on a four-layer raster style and a threshold
             # tuned to liberty's hundred-odd fails on a day that drew correctly.
             "   own: ['all', 'all-hit', 'matched', 'focus'].filter((id) => map.getLayer(id)),"
+            # Where the camera actually is, against where the day says it opens. Compared to
+            # the app's own constant rather than to a copy here, so there is one definition.
+            "   openAt: w.lines.openAt,"
+            "   center: [map.getCenter().lng, map.getCenter().lat],"
+            "   zoom: map.getZoom(),"
+            # How many distinct runs are painted in that view.
+            "   tracesOnScreen: map.getLayer('all')"
+            "     ? new Set(map.queryRenderedFeatures({ layers: ['all'] })"
+            "         .map((f) => f.properties.id)).size"
+            "     : 0,"
             "   statusTop: sr ? Math.round(sr.top) : null,"
             "   areaBottom: ar ? Math.round(ar.bottom) : null,"
             "   creditTop: tr ? Math.round(tr.top) : null,"
@@ -2060,6 +2070,43 @@ def check_day_02(page) -> list[str]:
         bad.append(
             f"day 02: on the {state['basemap']!r} basemap these layers are absent: "
             f"{sorted(missing)} — the day's overlay was not added"
+        )
+
+    # The camera opens where the day says it opens, and nothing moves it afterwards.
+    #
+    # This is the assertion, and getting to it took two wrong ones. The day used to fit
+    # `overview.home` — a bbox spanning a degree of longitude, from a city to the mountains
+    # an hour east — which centred the view on the gap between two clusters of runs. The
+    # first attempt asserted "some runs are on screen", which that camera satisfies: its
+    # bbox does contain its own cluster, just as distant threads. The property that actually
+    # distinguishes the two is whether the camera is where `OPEN_AT` put it.
+    #
+    # `openAt` is read from the app rather than copied here, so the expectation cannot drift
+    # from the constant it is checking.
+    want = state["openAt"]
+    if not want:
+        bad.append("day 02: the app exposes no openAt, so the opening camera cannot be checked")
+    else:
+        for axis, got, expected in (
+            ("longitude", state["center"][0], want["center"][0]),
+            ("latitude", state["center"][1], want["center"][1]),
+        ):
+            # A tenth of a degree is about 11 km of latitude: far tighter than the 1-degree
+            # drift the old camera produced, and loose enough for a fitted or nudged view.
+            if abs(got - expected) > 0.1:
+                bad.append(
+                    f"day 02: opens at {axis} {got:.3f}, want {expected:.3f} — something "
+                    "moved the camera away from OPEN_AT"
+                )
+        if abs(state["zoom"] - want["zoom"]) > 1.0:
+            bad.append(
+                f"day 02: opens at zoom {state['zoom']:.1f}, want {want['zoom']} — at a "
+                "wider zoom every trace is a thread and there is nothing to click"
+            )
+    if state["activities"] and state["tracesOnScreen"] < 1:
+        bad.append(
+            "day 02: the opening view contains no runs at all — the layers exist and the "
+            "camera is pointed away from every one of them"
         )
 
     # The argument. Simplifying has to shorten, and the two ends have to differ by more than

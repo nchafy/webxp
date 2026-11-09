@@ -37,6 +37,23 @@
   cursor: pointer;
 }
 
+/* The slider does nothing until a run is selected, and it has to look like it.
+ *
+ * It is `disabled` until then — there is no geometry to simplify — but a range input gets no
+ * default disabled appearance once `appearance: none` is set, so it looked live, swallowed a
+ * drag and read as broken rather than as not-yet. Measured: a recompute is 0.2 ms, so slowness
+ * was never the cause. The label and readout fade with it, because a crisp label beside a dead
+ * control puts the blame on the control. */
+.app-day-02-lines .trackbar input[type="range"]:disabled {
+  cursor: not-allowed;
+  opacity: .45;
+}
+
+.app-day-02-lines .trackbar:has(input[type="range"]:disabled) label,
+.app-day-02-lines .trackbar:has(input[type="range"]:disabled) output {
+  color: var(--muted);
+}
+
 .app-day-02-lines .trackbar input[type="range"]::-webkit-slider-runnable-track {
   height: 4px;
   background: var(--sunk);

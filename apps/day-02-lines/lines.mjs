@@ -231,6 +231,20 @@ function noiseLegendRows() {
 //: against the ladder `prepare.py` wrote; the slider is continuous and uses neither.
 const LADDER_TOLERANCES = [0, 0.5, 1, 2, 3, 5, 8, 12, 20, 35, 60, 100];
 
+/* Where the day opens. A stated choice, not a derived one.
+ *
+ * It used to fit the camera to `overview.home`, the densest cluster `build_overview.py`
+ * computes — and that opened on empty hillside. The box spans a degree of longitude,
+ * reaching from a city to mountains an hour east of it, so its midpoint is in neither: the
+ * runs were two tight knots at opposite ends of a frame centred on the gap between them.
+ *
+ * A history with runs in several places has no single correct opening view, so deriving one
+ * produces a confident wrong answer. New York is where this project's committed synthetic
+ * data is, where its basemap and park checks point, and where the second-largest cluster of
+ * real runs sits — so it is never an empty map. To open somewhere else, change this.
+ */
+const OPEN_AT = { center: [-73.95, 40.7], zoom: 11 };
+
 //: Where the data might be, most private first. `private/` is what `tools/prepare.py` writes
 //: by default and is gitignored; `data/` holds the committed synthetic fixture, so this day
 //: renders for someone with no Strava export.
@@ -556,22 +570,25 @@ export async function startDay({ win, chrome }) {
     function goToCells(map) {
       if (!noise || !noise.features.length) return;
 
-      // Only the cells in the home cluster. Fitting *all* of them spans every city the runner
-      // has ever visited -- here, 50 degrees of longitude -- so the camera went continental
-      // and all 190 cells came out sub-pixel. Same reasoning as the page's opening camera.
-      const home = overview && overview.home;
+      // The segments where the reader is already looking, not a fixed cluster.
+      //
+      // Fitting *all* of them spans every city the runner has ever visited — here 262 degrees
+      // of longitude — so the camera goes continental and every segment is sub-pixel. The
+      // previous rule was `overview.home`, which meant pressing this in New York flew to
+      // Seattle. Asking the map what is on screen keeps the press local, and it needs no
+      // stored idea of where home is.
+      //
       // LineString, so `coordinates` is already the list of positions. It was `[[ring]]` when
       // these were squares, and the leftover `[0]` indexing fed bare numbers to a destructure
-      // -- "number is not iterable", thrown once per press.
-      const inHome = home
-        ? noise.features.filter((f) => {
-            const [lon, lat] = f.geometry.coordinates[0];
-            return (
-              lon >= home[0][0] && lon <= home[1][0] && lat >= home[0][1] && lat <= home[1][1]
-            );
-          })
-        : noise.features;
-      const chosen = inHome.length ? inHome : noise.features;
+      // — "number is not iterable", thrown once per press.
+      const view = map.getBounds();
+      const inView = noise.features.filter((f) => {
+        const [lon, lat] = f.geometry.coordinates[0];
+        return view.contains([lon, lat]);
+      });
+      // Nothing here: show everything rather than nothing, so the reader learns the data is
+      // somewhere else instead of watching the button do nothing.
+      const chosen = inView.length ? inView : noise.features;
 
       const box = boundsOfCoords(chosen.flatMap((f) => f.geometry.coordinates));
       if (!box) return;
@@ -1087,19 +1104,10 @@ export async function startDay({ win, chrome }) {
       noise = null;
     }
 
-    //: Where the camera opens. `home` is the densest cluster of activities, computed by
-    //: `build_overview.py`: a history spanning continents cannot be opened by fitting all of
-    //: it, because the camera goes to world zoom and every trace becomes a sub-pixel thread.
-    //: Falling back to fitting everything is right for a history that really is in one place.
-    const fitTo = overview
-      ? overview.home ||
-        boundsOfCoords(overview.recorded.features.flatMap((f) => f.geometry.coordinates))
-      : null;
-
     const base = await createBaseMap({
       root: chrome.root,
-      center: [-73.95, 40.7],
-      zoom: 11,
+      center: OPEN_AT.center,
+      zoom: OPEN_AT.zoom,
 
       draw(map, ctx) {
         map.addSource(ALL, { type: 'geojson', data: allData() });
@@ -1350,6 +1358,9 @@ export async function startDay({ win, chrome }) {
         },
         dataDir: () => dataDir,
         overviewFloor: () => (overview ? overview.floor_m : null),
+        //: The stated opening view, so a check can assert the camera honours it without
+        //: a second copy of the coordinates.
+        openAt: OPEN_AT,
         //: The noise layer and its drill-down, for `scripts/check.py`.
         hasNoise: () => Boolean(noise),
         noiseCells: () => (noise ? noise.features.length : 0),
@@ -1392,8 +1403,6 @@ export async function startDay({ win, chrome }) {
           return out;
         },
       };
-
-      if (fitTo) map.fitBounds(fitTo, { padding: 60, duration: 0 });
 
       setSliderEnabled(false);
       renderAggregate();
