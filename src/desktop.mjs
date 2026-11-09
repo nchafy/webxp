@@ -11,7 +11,7 @@
 
 import { XPWindow, WINDOW_SPEC_KEYS, zoom } from './window.mjs';
 import { icon } from './icons.mjs';
-import { iconTile } from './widgets.mjs';
+import { group, iconTile, sheet } from './widgets.mjs';
 
 //: The lowest z-index a window gets. Above the desktop icons, below the taskbar.
 const Z_BASE = 10;
@@ -38,28 +38,21 @@ const MIN_LOAD_MS = 120;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * What a window shows when its program's `mount` threw.
+ * What a window shows when the program that fills it threw.
  *
- * It names the program and the error. "Something went wrong" in a window with a title bar
- * and a taskbar button is worse than a hang, because it looks like a finished state.
+ * It names the program, the call that failed, and the error. "Something went wrong" in a
+ * window with a title bar and a taskbar button is worse than a hang, because it looks like a
+ * finished state.
+ *
+ * @param {object} program
+ * @param {string} phase   `mount` or `ready` — the call that threw.
+ * @param {any} error
  */
-function mountFailure(program, error) {
-  const box = document.createElement('fieldset');
-  box.className = 'group';
-  const legend = document.createElement('legend');
-  legend.textContent = `${program.name} could not start`;
-  const what = document.createElement('p');
-  what.className = 'group-line';
-  what.textContent = error && error.message ? error.message : String(error);
-  const where = document.createElement('p');
-  where.className = 'group-line';
-  where.textContent = `Thrown by mount of ${program.id}. See the console.`;
-  box.append(legend, what, where);
-
-  const sheet = document.createElement('div');
-  sheet.className = 'sheet';
-  sheet.append(box);
-  return sheet;
+function startFailure(program, phase, error) {
+  return sheet(group(`${program.name} could not start`, [
+    error && error.message ? error.message : String(error),
+    `Thrown by ${phase} of ${program.id}. See the console.`,
+  ]));
 }
 
 export class Desktop {
@@ -345,11 +338,7 @@ export class Desktop {
         zoom(win.el, this.anchorRect(win), 'in'),
       ]);
     } catch (error) {
-      if (win.closed) return win;
-      win.setContent(mountFailure(program, error));
-      win.setStatus(`${program.id} failed to start`);
-      this.announce(`${program.name} failed to start`);
-      console.error(`webxp: mount failed for program ${program.id}`, error);
+      this.failStart(win, program, 'mount', error);
       return win;
     }
 
@@ -376,15 +365,32 @@ export class Desktop {
       try {
         await program.ready({ win, desktop: this, args });
       } catch (error) {
-        // Same treatment as a failed mount: the window says what broke rather than looking
-        // finished and being empty.
-        win.setContent(mountFailure(program, error));
-        win.setStatus(`${program.id} failed to start`);
-        this.announce(`${program.name} failed to start`);
-        console.error(`webxp: ready failed for program ${program.id}`, error);
+        this.failStart(win, program, 'ready', error);
       }
     }
     return win;
+  }
+
+  /**
+   * Report a program that threw on its way up, in the window it threw in.
+   *
+   * Both `mount` and `ready` land here. The console line is unconditional: a swallowed
+   * failure is a defect and the program did fail. The window is written to only if it is
+   * still there — `ready` is awaited across two frames, so it can throw after a close, and
+   * a removed window takes content nobody sees while the live region says "Foo failed to
+   * start" about a window the reader has already shut.
+   *
+   * @param {XPWindow} win
+   * @param {object} program
+   * @param {'mount'|'ready'} phase
+   * @param {any} error
+   */
+  failStart(win, program, phase, error) {
+    console.error(`webxp: ${phase} failed for program ${program.id}`, error);
+    if (win.closed) return;
+    win.setContent(startFailure(program, phase, error));
+    win.setStatus(`${program.id} failed to start`);
+    this.announce(`${program.name} failed to start`);
   }
 
   /* -------------------------------------------------------------------------
