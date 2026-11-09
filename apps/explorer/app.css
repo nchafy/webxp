@@ -1,0 +1,180 @@
+/* Explorer's own styles, scoped under `.app-explorer`.
+ *
+ * The list is a CSS grid of four columns shared by the header and every row, declared once
+ * in `--exp-columns`: two grids with hand-matched widths is how a header stops lining up
+ * with its own table.
+ */
+
+/* Two classes, deliberately — `.window-body` in `src/window.css` is also one class, so a
+   single `.app-explorer` would tie it and win on source order alone. `docs/apps.md`
+   describes that trap; count the classes before touching this selector. */
+.window-body.app-explorer {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0;
+  /* The list scrolls, not the client area. */
+  overflow: hidden;
+}
+
+.app-explorer .exp {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  /* One definition of the column widths, used by the header and the rows. */
+  --exp-columns: minmax(8rem, 1fr) 5.5rem minmax(7rem, 14rem) 7.5rem;
+}
+
+/* ---------------------------------------------------------------------------
+   The toolbar.
+   --------------------------------------------------------------------------- */
+
+.app-explorer .exp-bar {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  padding: .3rem .4rem;
+  background: var(--face);
+  border-bottom: 1px solid var(--sunk);
+}
+
+.app-explorer .exp-up {
+  /* The theme's button, at the size a toolbar wants. */
+  padding: .1rem .5rem;
+  min-width: 3rem;
+}
+
+.app-explorer .exp-address-label {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.app-explorer .exp-address {
+  flex: 1;
+  min-width: 0;
+  font: 11px/1.4 Tahoma, "Segoe UI", sans-serif;
+}
+
+/* ---------------------------------------------------------------------------
+   The list.
+   --------------------------------------------------------------------------- */
+
+.app-explorer .exp-head,
+.app-explorer .exp-row {
+  display: grid;
+  grid-template-columns: var(--exp-columns);
+  align-items: center;
+  gap: .4rem;
+}
+
+.app-explorer .exp-head {
+  padding: .2rem .5rem;
+  font-size: 11px;
+  font-weight: normal;
+  color: var(--muted);
+  background: var(--face);
+  border-bottom: 1px solid var(--rule);
+}
+
+.app-explorer .exp-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--bg);
+}
+
+.app-explorer .exp-row {
+  width: 100%;
+  padding: .15rem .5rem;
+  font: 11px/1.6 Tahoma, "Segoe UI", sans-serif;
+  color: var(--ink);
+  text-align: left;
+  /* The theme's button is a bevelled control; a row is a line of text that happens to be
+     activatable, so everything the button face brings is removed here. */
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  cursor: default;
+}
+
+.app-explorer .exp-row:hover {
+  /* Explorer's hover wash, mixed from the title-bar blue rather than written as a literal
+     so it cannot drift from the theme it quotes. */
+  background: color-mix(in srgb, var(--title-b) 16%, transparent);
+}
+
+.app-explorer .exp-row[aria-selected="true"] {
+  /* XP's selection: the title-bar blue with white text, measured at 5.31:1 — clear of AA
+     for body text, and the same pairing the title bar already uses. */
+  background: var(--title-b);
+  color: #fff;
+}
+
+.app-explorer .exp-row:focus-visible {
+  outline: 1px dotted var(--ink);
+  outline-offset: -2px;
+}
+
+.app-explorer .exp-row[aria-selected="true"]:focus-visible {
+  /* The dotted black outline disappears into the selection blue, where white reads. */
+  outline-color: #fff;
+}
+
+.app-explorer .exp-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-explorer .exp-name {
+  display: flex;
+  align-items: center;
+  gap: .3rem;
+}
+
+.app-explorer .exp-size {
+  /* Right-aligned and tabular, so sizes compare down the column. */
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.app-explorer .exp-type,
+.app-explorer .exp-modified {
+  color: var(--muted);
+}
+
+.app-explorer .exp-row[aria-selected="true"] .exp-type,
+.app-explorer .exp-row[aria-selected="true"] .exp-modified {
+  /* `--muted` is a dark grey chosen for white backgrounds; on the selection blue it measures
+     2.14:1 and fails. Inherit the row's white instead. */
+  color: inherit;
+}
+
+.app-explorer .exp-note {
+  margin: 0;
+  padding: .6rem .5rem;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* A narrow window has the same problem a narrow phone has, and `@media` cannot see it.
+   The two columns a reader can do without go first. */
+@container window (max-width: 34rem) {
+  .app-explorer .exp {
+    --exp-columns: minmax(8rem, 1fr) 5.5rem minmax(7rem, 14rem);
+  }
+  .app-explorer .exp-modified {
+    display: none;
+  }
+}
+
+@container window (max-width: 24rem) {
+  .app-explorer .exp {
+    --exp-columns: minmax(6rem, 1fr) 5rem;
+  }
+  .app-explorer .exp-type {
+    display: none;
+  }
+}

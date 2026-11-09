@@ -65,8 +65,9 @@ refuses to load. A directory's link count is recomputed from the entries that su
 
 ## Why there is one mount
 
-`openFileSystem()` memoises a promise at module scope. Two apps that open "the filesystem"
-have to get the same object, or a save in Notepad lands in a tree the terminal cannot see.
+`openFileSystem()` memoises a promise at module scope. Three apps open "the filesystem" —
+the terminal, Notepad and Explorer — and they have to get the same object, or a save in
+Notepad lands in a tree the terminal cannot see and Explorer lists a folder nobody else has.
 ES modules dedupe by resolved URL, so every importer of `fs.mjs` shares one mount however
 many windows ask for it.
 
@@ -195,7 +196,9 @@ fs.batch('reset', () => { /* many mutations */ });   // one event, at the end
 ```
 
 The terminal uses this for two things: its status bar, and noticing that its own working
-directory has been removed by another window. A watcher that throws is reported to the
+directory has been removed by another window. Explorer uses it to re-list the folder it is
+showing, which is why a `touch` in a terminal appears in a folder window with no refresh —
+and why a folder window that needed a refresh button would be lying between clicks. A watcher that throws is reported to the
 console and skipped — the write it is reacting to has already happened, and the filesystem is
 not the place for a listener's bug to surface.
 

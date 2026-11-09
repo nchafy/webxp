@@ -33,15 +33,30 @@ export default {
     area.spellcheck = false;
 
     let fs = null;
+    let writable = true;
     if (path) {
       // Dynamic, so a desktop whose reader never opens a file never loads the filesystem.
-      const { openFileSystem } = await import('../../shared/fs/fs.mjs');
+      const { openFileSystem, hydrate } = await import('../../shared/fs/fs.mjs');
       fs = await openFileSystem();
+      // A file under `/usr/src/webxp` is mounted: it has a name and a size before it has
+      // contents, and reading it without fetching first fails with `EAGAIN`. Awaited here
+      // because this window is the caller that needs the body — the shell does the same
+      // before running a command that reads one.
+      await hydrate(fs, [path]);
       // A read that fails here throws, and the loader turns that into a window naming the
       // program and the reason. That is the honest outcome: an editor that opened an empty
       // buffer for an unreadable file would offer to save over it.
       area.value = fs.readFile(path);
       win.setTitle(`${path.split('/').pop()} - Notepad`);
+      // The repository is mounted read-only, so a file can be perfectly readable and
+      // unsaveable. Said at the top rather than discovered by a Ctrl+S that fails.
+      const { PERM } = await import('../../shared/fs/vfs.mjs');
+      try {
+        fs.access(path, PERM.W);
+      } catch {
+        writable = false;
+        area.readOnly = true;
+      }
     } else {
       area.value = SCRATCH;
     }
@@ -57,7 +72,10 @@ export default {
         win.setStatus(`${area.value.length} characters`);
         return;
       }
-      win.setStatus(`${path} · ${area.value.length} characters · ${dirty ? 'Ctrl+S to save' : 'saved'}`);
+      const state = !writable
+        ? 'read-only'
+        : dirty ? 'Ctrl+S to save' : 'saved';
+      win.setStatus(`${path} · ${area.value.length} characters · ${state}`);
     };
 
     const save = () => {

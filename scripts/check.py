@@ -66,8 +66,9 @@ MIN_VISIBLE = 72
 MIN_W = 220
 MIN_H = 120
 
-#: Every program `demo/programs.mjs` registers, and whether it is resizable. The names are
-#: the window titles at launch.
+#: Every program the desktop registers, and whether it is resizable. The string is the
+#: window's title once it has mounted — not its Start menu label, which `launch` asks the
+#: desktop for: Explorer is listed as `Explorer` and names its window after the folder.
 PROGRAMS = {
     "readme": ("Read me", True),
     "notepad": ("Untitled - Notepad", True),
@@ -77,6 +78,7 @@ PROGRAMS = {
     "basemap": ("Base map", True),
     "map-challenge": ("30DaysOfMaps", True),
     "terminal": ("Terminal", True),
+    "explorer": ("user - Explorer", True),
     "about": ("About webxp", False),
 }
 
@@ -528,7 +530,18 @@ def win_selector(page, program: str) -> str:
 
 
 def launch(page, program: str) -> None:
-    """Open a program through the Start menu, so the menu is covered too."""
+    """Open a program through the Start menu, so the menu is covered too.
+
+    The menu label is asked of the desktop rather than read from `PROGRAMS`. The two are not
+    the same string for every app: Explorer is listed as `Explorer` and titles its window
+    after the folder it is showing, so a table serving as both the label and the expected
+    title has to lie about one of them.
+    """
+    label = page.evaluate(
+        "((window.webxp.programs.get(%s) || {}).name) || ''" % json.dumps(program)
+    )
+    if not label:
+        raise CDPError(f"the desktop has no program registered as {program!r}")
     page.evaluate("document.getElementById('start').click()")
     time.sleep(0.05)
     clicked = page.evaluate(
@@ -536,10 +549,10 @@ def launch(page, program: str) -> None:
         " const want = %s;"
         " const hit = items.find((b) => b.textContent.includes(want));"
         " if (!hit) return false; hit.click(); return true; })()"
-        % json.dumps(PROGRAMS[program][0])
+        % json.dumps(label)
     )
     if not clicked:
-        raise CDPError(f"no Start menu item matching {program!r}")
+        raise CDPError(f"no Start menu item labelled {label!r} for {program!r}")
     # Past the zoom, the mount and the minimum loading floor.
     time.sleep(0.6)
 
@@ -803,7 +816,7 @@ def check_launch_all(page) -> list[str]:
     """Every program opens, gets a button, and does not land on top of the last one."""
     bad = []
     for program in ("notepad", "display", "windows", "webview", "basemap", "map-challenge",
-                    "terminal", "about"):
+                    "terminal", "explorer", "about"):
         launch(page, program)
     state = probe(page)
 
@@ -5485,6 +5498,250 @@ def check_terminal(page, *, invert: bool = False) -> list[str]:
     return bad
 
 
+#: One Explorer window's state, by window id. Every lookup is required to find something:
+#: a renamed class must fail the check rather than skip it — `docs/review.md` rule 1.
+EXPLORER_PARTS = """(() => {
+  const wins = window.webxp.windows.filter((w) => w.programId === 'explorer');
+  const win = ID ? wins.find((w) => w.id === ID) : wins[wins.length - 1];
+  if (!win) return { error: 'no Explorer window' };
+  const list = win.el.querySelector('.exp-list');
+  const address = win.el.querySelector('.exp-address');
+  const up = win.el.querySelector('.exp-up');
+  const head = win.el.querySelector('.exp-head');
+  if (!list) return { error: 'no .exp-list in the Explorer window — nothing to list' };
+  if (!address) return { error: 'no .exp-address — the address bar is gone' };
+  if (!up) return { error: 'no .exp-up — the Up button is gone' };
+  const rows = [...list.querySelectorAll('.exp-row')].map((row) => {
+    const cell = (name) => {
+      const found = row.querySelector('.exp-' + name);
+      // A missing cell reads as the string 'MISSING', so a renamed column fails an
+      // assertion instead of comparing undefined to undefined.
+      return found ? found.textContent.trim() : 'MISSING';
+    };
+    const box = row.getBoundingClientRect();
+    return {
+      name: row.dataset.name,
+      label: cell('name'),
+      size: cell('size'),
+      type: cell('type'),
+      modified: cell('modified'),
+      selected: row.getAttribute('aria-selected') === 'true',
+      // The laid-out rect, not the window's own numbers: a row with no height is a row
+      // nobody can click, and that is invisible to a textContent assertion.
+      height: Math.round(box.height),
+      x: box.left + 40,
+      y: box.top + box.height / 2,
+    };
+  });
+  return {
+    id: win.id,
+    title: win.titleText,
+    status: win.statusEl ? win.statusEl.textContent : '',
+    address: address.value,
+    upDisabled: up.disabled,
+    note: (list.querySelector('.exp-note') || {}).textContent || '',
+    modifiedShown: head.querySelector('.exp-modified')
+      ? getComputedStyle(head.querySelector('.exp-modified')).display !== 'none'
+      : null,
+    rows,
+  };
+})()"""
+
+
+def explorer_parts(page, win_id: str | None = None) -> dict:
+    parts = page.evaluate(EXPLORER_PARTS.replace("ID", json.dumps(win_id) if win_id else "null"))
+    if parts.get("error"):
+        raise CDPError(parts["error"])
+    return parts
+
+
+def explorer_row(parts: dict, name: str) -> dict | None:
+    for row in parts["rows"]:
+        if row["name"] == name:
+            return row
+    return None
+
+
+def check_explorer(page) -> list[str]:
+    """A folder window over the real filesystem: it lists it, navigates it, and follows it.
+
+    Every condition this asserts is created here, from a terminal, rather than inherited from
+    whatever the seed tree happens to contain — `docs/review.md` rule 4. The files it makes
+    are named so a failure says which check left them behind.
+    """
+    bad = []
+    shell = term_parts(page)["id"]
+    term_run(page, "rm -rf ~/exp-probe", shell)
+    term_run(page, "mkdir -p ~/exp-probe/inner", shell)
+    term_run(page, "echo twenty-characters-x > ~/exp-probe/note.txt", shell)
+    term_run(page, "ln -s /etc/motd ~/exp-probe/shortcut", shell)
+
+    page.evaluate("window.webxp.launch('explorer', { path: '/home/user/exp-probe' })")
+    time.sleep(1.2)
+    parts = explorer_parts(page)
+    window_id = parts["id"]
+
+    if "exp-probe" not in parts["title"]:
+        bad.append(f"explorer: the window is titled {parts['title']!r}")
+    if parts["address"] != "/home/user/exp-probe":
+        bad.append(f"explorer: the address bar reads {parts['address']!r}")
+
+    # Folders first, then by name. Asserted as the order of the rows rather than as "inner
+    # is present", because the sort is the claim.
+    order = [row["name"] for row in parts["rows"]]
+    if order != ["inner", "note.txt", "shortcut"]:
+        bad.append(f"explorer: rows are {order}, want folders first then by name")
+
+    note = explorer_row(parts, "note.txt")
+    if note is None:
+        bad.append("explorer: the file this check created is not listed")
+    else:
+        if note["size"] != "20 B":
+            bad.append(f"explorer: note.txt's size reads {note['size']!r}, want '20 B'")
+        if note["type"] != "File":
+            bad.append(f"explorer: note.txt's type reads {note['type']!r}")
+        if note["height"] < 8:
+            bad.append(f"explorer: a row laid out {note['height']}px high — nothing to click")
+
+    link = explorer_row(parts, "shortcut")
+    if link is None:
+        bad.append("explorer: the symlink is not listed")
+    elif "Shortcut to /etc/motd" not in link["type"]:
+        # lstat, not stat: a shortcut lists as a shortcut and says where it points.
+        bad.append(f"explorer: the symlink's type reads {link['type']!r}")
+
+    folder = explorer_row(parts, "inner")
+    if folder is None:
+        bad.append("explorer: the folder this check created is not listed")
+    elif folder["size"] != "":
+        bad.append(f"explorer: a folder's size column reads {folder['size']!r}, want empty")
+
+    # The filesystem is shared, so a write from the terminal has to appear with no
+    # interaction here at all. This is the whole reason the window watches it.
+    term_run(page, "touch ~/exp-probe/appeared-by-itself.txt", shell)
+    time.sleep(0.4)
+    live = explorer_parts(page, window_id)
+    if explorer_row(live, "appeared-by-itself.txt") is None:
+        bad.append(
+            "explorer: a file created in the terminal did not appear — the window is not "
+            "watching the filesystem it is showing"
+        )
+
+    # Double-click a folder: it navigates, and Up comes back.
+    target = explorer_row(explorer_parts(page, window_id), "inner")
+    if target is None:
+        bad.append("explorer: cannot test navigation, the folder is missing")
+    else:
+        raise_window(page, window_id)
+        double_click(page, target["x"], target["y"])
+        time.sleep(0.5)
+        inner = explorer_parts(page, window_id)
+        if inner["address"] != "/home/user/exp-probe/inner":
+            bad.append(f"explorer: double-click left the address at {inner['address']!r}")
+        if "This folder is empty" not in inner["note"]:
+            bad.append(f"explorer: an empty folder says {inner['note']!r}")
+        page.evaluate(
+            "window.webxp.windows.find((w) => w.id === %s).el.querySelector('.exp-up').click()"
+            % json.dumps(window_id)
+        )
+        time.sleep(0.4)
+        back = explorer_parts(page, window_id)
+        if back["address"] != "/home/user/exp-probe":
+            bad.append(f"explorer: Up left the address at {back['address']!r}")
+
+        # The same navigation from the keyboard. A single click focuses the row — it is a
+        # button — and Enter opens it, so a reader who never touches the mouse gets there.
+        again = explorer_row(explorer_parts(page, window_id), "inner")
+        mouse(page, "mousePressed", again["x"], again["y"], buttons=1)
+        mouse(page, "mouseReleased", again["x"], again["y"], buttons=0)
+        page.press("Enter")
+        time.sleep(0.5)
+        typed = explorer_parts(page, window_id)
+        if typed["address"] != "/home/user/exp-probe/inner":
+            bad.append(f"explorer: Enter on a focused row left the address at {typed['address']!r}")
+        page.evaluate(
+            "window.webxp.windows.find((w) => w.id === %s).el.querySelector('.exp-up').click()"
+            % json.dumps(window_id)
+        )
+        time.sleep(0.4)
+
+    # The root has no parent, so Up must be unavailable rather than inert.
+    page.evaluate(
+        "(() => { const w = window.webxp.windows.find((w) => w.id === %s);"
+        " w.app.show('/'); })()" % json.dumps(window_id)
+    )
+    time.sleep(0.3)
+    at_root = explorer_parts(page, window_id)
+    if not at_root["upDisabled"]:
+        bad.append("explorer: Up is still enabled at /")
+    if at_root["address"] != "/":
+        bad.append(f"explorer: showing / reports {at_root['address']!r}")
+
+    # A mounted file: read-only in the list, and opening it hands Notepad a path it has to
+    # fetch before it can read. That is the EAGAIN path, end to end.
+    page.evaluate(
+        "(() => { const w = window.webxp.windows.find((w) => w.id === %s);"
+        " w.app.show('/usr/src/webxp/src'); })()" % json.dumps(window_id)
+    )
+    time.sleep(0.4)
+    mounted = explorer_parts(page, window_id)
+    source = explorer_row(mounted, "icons.mjs")
+    if source is None:
+        bad.append("explorer: the mounted repository does not list src/icons.mjs")
+    else:
+        if source["type"] != "File, read-only":
+            bad.append(f"explorer: a mounted file's type reads {source['type']!r}")
+        raise_window(page, window_id)
+        double_click(page, source["x"], source["y"])
+        time.sleep(1.4)
+        pad = notepad_parts(page)
+        if pad is None:
+            bad.append("explorer: double-clicking a file opened no Notepad window")
+        else:
+            if not (pad["value"] or "").startswith("/* The icon set"):
+                bad.append(
+                    "explorer: Notepad shows "
+                    f"{(pad['value'] or '')[:40]!r} — a mounted file was not fetched"
+                )
+            if "read-only" not in pad["status"]:
+                bad.append(f"explorer: Notepad's status for a mounted file is {pad['status']!r}")
+
+    # An unreadable directory reports instead of looking finished and empty.
+    term_run(page, "mkdir -p ~/exp-probe/sealed", shell)
+    term_run(page, "chmod 000 ~/exp-probe/sealed", shell)
+    page.evaluate(
+        "(() => { const w = window.webxp.windows.find((w) => w.id === %s);"
+        " w.app.show('/home/user/exp-probe/sealed'); })()" % json.dumps(window_id)
+    )
+    time.sleep(0.4)
+    sealed = explorer_parts(page, window_id)
+    if "Permission denied" not in sealed["note"]:
+        bad.append(f"explorer: an unreadable folder shows {sealed['note']!r}, want the refusal")
+    if sealed["rows"]:
+        bad.append("explorer: an unreadable folder listed rows")
+
+    # The columns reflow. Both extremes, because a layout checked at one width is a layout
+    # checked nowhere.
+    page.evaluate(
+        "(() => { const w = window.webxp.windows.find((w) => w.id === %s);"
+        " w.app.show('/home/user/exp-probe'); w.sizeTo(660, 420); })()" % json.dumps(window_id)
+    )
+    time.sleep(0.3)
+    wide = explorer_parts(page, window_id)
+    page.evaluate(
+        "window.webxp.windows.find((w) => w.id === %s).sizeTo(320, 420)" % json.dumps(window_id)
+    )
+    time.sleep(0.3)
+    narrow = explorer_parts(page, window_id)
+    if not wide["modifiedShown"]:
+        bad.append("explorer: the Modified column is hidden in a 660px window")
+    if narrow["modifiedShown"]:
+        bad.append("explorer: the Modified column is still shown in a 320px window")
+
+    term_run(page, "chmod 755 ~/exp-probe/sealed", shell)
+    term_run(page, "rm -rf ~/exp-probe", shell)
+    return bad
+
 def check_open_across_apps(page) -> list[str]:
     """`open` hands another app a path, and both apps turn out to hold one filesystem.
 
@@ -5752,6 +6009,7 @@ CHECKS = (
     ("terminal", check_terminal),
     # After `terminal`, because it asks the session that check opens.
     ("mount", check_mount),
+    ("explorer", check_explorer),
     ("open across apps", check_open_across_apps),
     ("launch arguments", check_launch_arguments),
     ("filesystem persists", check_fs_persistence),

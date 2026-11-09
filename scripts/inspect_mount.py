@@ -127,6 +127,33 @@ def main(argv: list[str] | None = None) -> int:
             target = out_dir / "mount-session.png"
             target.write_bytes(base64.b64decode(data["data"]))
             print(f"\nwrote {target.relative_to(REPO_ROOT)}")
+
+            # The same mount, seen the other way. A folder window is the view where a wrong
+            # size column or an unreadable row is obvious and a pane of text is not.
+            page.evaluate(
+                "window.webxp.windows.find((w) => w.programId === 'terminal').minimize()"
+            )
+            page.evaluate("window.webxp.launch('explorer', { path: '/usr/src/webxp/src' })")
+            time.sleep(1.4)
+            page.evaluate(
+                "(() => { const w = window.webxp.windows.find((w) => w.programId === 'explorer');"
+                " w.moveTo(120, 60); w.sizeTo(840, 480); })()"
+            )
+            time.sleep(0.4)
+            rows = page.evaluate(
+                "(() => { const w = window.webxp.windows.find((w) => w.programId === 'explorer');"
+                " return [...w.el.querySelectorAll('.exp-row')].map((r) => ["
+                "   r.querySelector('.exp-name').textContent.trim(),"
+                "   r.querySelector('.exp-size').textContent.trim(),"
+                "   r.querySelector('.exp-type').textContent.trim()].join(' | ')); })()"
+            )
+            print("\nExplorer at /usr/src/webxp/src:")
+            for row in rows:
+                print(f"  {row}")
+            data = page.call("Page.captureScreenshot", format="png")
+            target = out_dir / "mount-explorer.png"
+            target.write_bytes(base64.b64decode(data["data"]))
+            print(f"\nwrote {target.relative_to(REPO_ROOT)}")
     finally:
         server.terminate()
         server.wait(timeout=10)

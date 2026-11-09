@@ -39,6 +39,7 @@ export const APPS = [
   'day-29-raster',
   'day-30-pen-and-paper',
   'display',
+  'explorer',
   'map-challenge',
   'notepad',
   'readme',
