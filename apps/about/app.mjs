@@ -6,6 +6,7 @@ import { group, sheet } from '../../src/widgets.mjs';
 export default {
   id: 'about',
   name: 'About webxp',
+  filetype: 'info',
   icon: 'check',
   singleton: true,
   width: 320,

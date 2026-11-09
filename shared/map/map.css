@@ -114,7 +114,6 @@
 
 .map-root .tilt-row { display: flex; align-items: center; gap: .45rem; margin-top: .4rem; }
 
-.map-root .tilt-note { font-size: 10px; color: var(--muted); }
 
 /* Zoom buttons, bottom-left over the canvas: a map control belongs on the map. */
 /* Bottom-right, opposite the control column.

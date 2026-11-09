@@ -70,7 +70,7 @@ def main(argv: list[str] | None = None) -> int:
                 "(() => { const w = window.webxp.windows.find((w) => w.programId === 'day-02-lines');"
                 " if (!w) return { error: 'no window' };"
                 " const note = w.bodyEl.querySelector('[data-role=noise-note]');"
-                " const legend = [...w.bodyEl.querySelectorAll('[data-role=noise-legend] .key-row')]"
+                " const legend = [...w.bodyEl.querySelectorAll('[data-role=noise-legend] > div')]"
                 "   .map((r) => r.textContent.trim());"
                 " const agg = w.bodyEl.querySelector('[data-role=aggregate]');"
                 " return { note: note && note.textContent,"

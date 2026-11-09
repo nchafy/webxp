@@ -419,7 +419,7 @@ def check_boot(page) -> list[str]:
             f"boot: {len(state['wins'])} windows open on a fresh desktop, want 0 — "
             f"{[w['program'] for w in state['wins']]} autostarted"
         )
-    if state["taskButtons"]:
+    elif state["taskButtons"]:
         bad.append(f"boot: {state['taskButtons']} taskbar buttons with no windows open")
 
     launch(page, "readme")
@@ -804,7 +804,7 @@ def check_offscreen_clamp(page) -> list[str]:
     """A window dragged at the desktop edges keeps enough of itself to be grabbed back.
 
     `docs/windows.md` promises 72 px horizontally and a title bar never above the top. A
-    documented guarantee with no check is the filetype that stops being true quietly.
+    documented guarantee with no check is the kind that stops being true quietly.
     """
     bad = []
     selector = win_selector(page, "readme")
@@ -1133,6 +1133,41 @@ def check_app_filetypes(page) -> list[str]:
         bad.append(f"app filetypes: map apps resolved to differing icons {icons}")
     elif maps and icons != {result["mapIcon"]}:
         bad.append(f"app filetypes: map apps resolved to {icons}, want {{{result['mapIcon']!r}}}")
+    return bad
+
+
+def check_autostart(page) -> list[str]:
+    """`Desktop.autostart()` opens programs that ask for it, and skips the ones that do not.
+
+    The documented key lost its only user when the read-me stopped autostarting, so it was
+    documented, untested, and forbidden by `check_boot` all at once. This exercises the
+    mechanism directly instead of relying on an app to carry it.
+    """
+    before = page.evaluate("window.webxp.windows.map((w) => w.id)")
+    result = page.evaluate(
+        "(async () => { const d = window.webxp;"
+        " d.register({ id: 'auto-yes', name: 'Auto Yes', filetype: 'tool', autostart: true,"
+        "   mount: () => document.createTextNode('yes') });"
+        " d.register({ id: 'auto-no', name: 'Auto No', filetype: 'tool',"
+        "   mount: () => document.createTextNode('no') });"
+        " await d.autostart();"
+        " return d.windows.map((w) => w.programId); })()",
+        await_promise=True,
+    )
+    bad = []
+    if "auto-yes" not in result:
+        bad.append("autostart: a program with autostart: true was not opened by autostart()")
+    if "auto-no" in result:
+        bad.append("autostart: a program without autostart was opened anyway")
+    page.evaluate(
+        "(() => { const keep = new Set(%s);"
+        " for (const w of [...window.webxp.windows]) if (!keep.has(w.id)) w.close();"
+        " window.webxp.programs.delete('auto-yes');"
+        " window.webxp.programs.delete('auto-no');"
+        " window.webxp.renderStartMenu(); window.webxp.renderDesktopIcons(); })()"
+        % json.dumps(before)
+    )
+    time.sleep(0.4)
     return bad
 
 
@@ -2409,6 +2444,7 @@ CHECKS = (
     ("launch all", check_launch_all),
     ("app loading", check_app_loading),
     ("app filetypes", check_app_filetypes),
+    ("autostart", check_autostart),
     ("app styles", check_app_styles),
     ("broken app", check_broken_app),
     ("iframe app", check_iframe_app),
@@ -2528,8 +2564,7 @@ def main(argv: list[str] | None = None) -> int:
                 mobile=False,
             )
             page.navigate(base + "/")
-            # The autostarted window has to finish its zoom and its mount before anything
-            # is measured.
+            # The apps have to finish loading before anything is measured.
             time.sleep(1.0)
 
             for name, check in checks:

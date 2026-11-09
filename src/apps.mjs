@@ -9,7 +9,7 @@
  * failure this is built to avoid is an app that is silently absent.
  */
 
-import { ICON_NAMES, FILETYPE_NAMES, FILETYPES, iconFor } from './icons.mjs';
+import { ICON_NAMES, FILETYPE_NAMES, iconFor } from './icons.mjs';
 
 //: Where the folders live, relative to the document. Overridable so a host page can keep its
 //: apps somewhere else, and so the checks can point at a fixture directory.
@@ -119,7 +119,7 @@ export function validate(spec, id) {
 /**
  * Build the mount for an iframe app.
  *
- * The focus shim is the reason this is a first-class fill mode rather than three lines in an
+ * The focus shim is the reason `frame` is a first-class option rather than three lines in an
  * app's own mount. A pointer event inside an iframe does not cross the document boundary, so
  * the window's own focus handler never sees a click on hosted content and the window cannot
  * be raised by clicking it. The shim is a transparent layer that exists only while the

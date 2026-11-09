@@ -19,6 +19,11 @@ const SVG = 'http://www.w3.org/2000/svg';
 //: reason it is a question and not a label.
 const GREETING = "It looks like you're looking at a desktop. Would you like help with that?";
 
+//: Where his dismissal is remembered. Without it the header's claim that he appears once is
+//: false: he came back on every load and had to be declined again, which is the behaviour
+//: taking the read-me off autostart was meant to remove.
+const SEEN_KEY = 'webxp.clippy.seen';
+
 function svg(tag, attrs) {
   const node = document.createElementNS(SVG, tag);
   for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, String(value));
@@ -85,6 +90,12 @@ function clip() {
  * @returns {{dismiss: () => void}}
  */
 export function mountClippy({ root, onAccept }) {
+  try {
+    if (localStorage.getItem(SEEN_KEY)) return { dismiss: () => {} };
+  } catch {
+    /* no storage, so he asks */
+  }
+
   const wrap = document.createElement('div');
   wrap.className = 'clippy';
 
@@ -103,17 +114,29 @@ export function mountClippy({ root, onAccept }) {
   const buttons = document.createElement('div');
   buttons.className = 'clippy-buttons';
 
+  says.id = 'clippy-says';
   const yes = document.createElement('button');
   yes.type = 'button';
   yes.textContent = 'Yes, please';
+  // Without this a reader tabbing in hears "Office Assistant, Yes please, button" and never
+  // the question being answered.
+  yes.setAttribute('aria-describedby', says.id);
 
   const no = document.createElement('button');
   no.type = 'button';
+  no.setAttribute('aria-describedby', 'clippy-says');
   // Period-correct, and the only honest label for the button that makes him leave.
   no.textContent = 'No, just let me work';
 
   const dismiss = () => {
     wrap.remove();
+    // A refusal is the answer to the question, so it is kept. Wrapped because a browser with
+    // storage denied throws on write, and an assistant is not worth an exception.
+    try {
+      localStorage.setItem(SEEN_KEY, '1');
+    } catch {
+      /* no storage, so he asks again next time */
+    }
   };
 
   yes.addEventListener('click', () => {

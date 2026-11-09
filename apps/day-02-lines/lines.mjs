@@ -169,8 +169,8 @@ const PASS = 'pass';
  * stops being a smear and becomes a blob. */
 const GHOSTS = 'ghosts';
 
-//: How many crossings the worm draws. A cap, not a sample of convenience: the panel still
-//: lists the extremes, and the ghosts are there to be *looked* at.
+//: How many crossings the worm draws. A cap, not a sample of convenience: the panel lists
+//: every crossing, and the ghosts are there to be *looked* at.
 const GHOST_CAP = 12;
 
 /**
@@ -753,10 +753,6 @@ export async function startDay({ win, chrome }) {
       readoutEl.replaceChildren();
 
       if (!focus) {
-        const hint = document.createElement('span');
-        hint.className = 'sub';
-        hint.textContent = '';
-        readoutEl.append(hint);
         if (keyRecordedEl) keyRecordedEl.textContent = 'strava';
         return;
       }
@@ -934,10 +930,19 @@ export async function startDay({ win, chrome }) {
         // Every crossing in one list, noisiest first. Two lists of the extremes left the
         // middle of the distribution unreachable and implied the segment had only twelve
         // crossings; the panel body scrolls, so the whole list costs nothing.
+        //
+        // Sorted here rather than trusting the file's order. `street_segments.py` writes
+        // `passes` by descending `adjusted_pts`, which is the speed residual; this panel
+        // labels and prints `inflation_pct`. Under the file's order a crossing at 3.0% with
+        // a +9pt residual sorted above one at 12.0% with -3pt, beneath a heading promising
+        // the noisiest first.
+        const byNoise = [...passes].sort(
+          (a, b) => (b.inflation_pct ?? 0) - (a.inflation_pct ?? 0)
+        );
         groups.push(
           group(
             `Crossings`,
-            passes.map((p) => passButton(map, p, props))
+            byNoise.map((p) => passButton(map, p, props))
           )
         );
       }
