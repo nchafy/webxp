@@ -1343,7 +1343,7 @@ export const COMMANDS = {
       const real = ctx.fs.realpath(path, { cwd: ctx.shell.cwd });
       const stat = ctx.fs.stat(real);
       if (stat.type === DIR) {
-        await ctx.desktop.launch('terminal', { cwd: real });
+        await ctx.desktop.launch('terminal', { path: real });
         ctx.line(`opened a terminal in ${real}`);
         return 0;
       }

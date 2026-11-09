@@ -25,7 +25,9 @@ export default {
   styles: ['app.css'],
 
   async mount({ win, args }) {
-    const path = (args && args.path) || null;
+    // Absolute whoever sent it; a link carries it with the leading slash implied.
+    const { asAbsolute } = await import('../../shared/routes/routes.mjs');
+    const path = args && args.path ? asAbsolute(String(args.path)) : null;
 
     const area = document.createElement('textarea');
     area.className = 'notepad-area';
@@ -127,6 +129,10 @@ export default {
     });
 
     report();
+    if (path) {
+      const routes = await import('../../shared/routes/routes.mjs');
+      routes.publish('notepad', { path });
+    }
     win.app = { area, save, path };
     return area;
   },

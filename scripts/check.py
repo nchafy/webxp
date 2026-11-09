@@ -4347,6 +4347,168 @@ def check_manifest_current(page) -> list[str]:
     return []
 
 
+#: Routes, parsed and formatted without a browser's help, in the browser.
+#:
+#: The pure half of the router asserted directly: these are the cases a hand-written hash can
+#: be wrong in, and none of them needs a desktop to be standing.
+ROUTE_ASSERTIONS = """(async () => {
+  const bad = [];
+  // The page's own router, not a second copy. A missing one is a failure, not a skip.
+  const routes = window.webxpRoutes;
+  if (!routes) return ['window.webxpRoutes is absent — the host page published no router'];
+  const want = (label, got, expected) => {
+    if (JSON.stringify(got) !== JSON.stringify(expected)) {
+      bad.push(label + ': got ' + JSON.stringify(got) + ', want ' + JSON.stringify(expected));
+    }
+  };
+  const shape = (hash) => {
+    const route = routes.parse(hash);
+    if (!route) return null;
+    return { id: route.id, path: route.path, params: [...route.params] };
+  };
+
+  want('no hash is no route', shape(''), null);
+  want('a bare # is no route', shape('#'), null);
+  // A browser produces a bare `#` for "top of page", and reading that as a route would open
+  // a window for a reader who clicked an anchor.
+  want('an empty route is no route', shape('#/'), null);
+  want('a plain id', shape('#/terminal'), { id: 'terminal', path: '', params: [] });
+  want('an id and a path', shape('#/explorer/home/user/notes'),
+       { id: 'explorer', path: 'home/user/notes', params: [] });
+  want('a query', shape('#/notepad/etc/motd?ro=1'),
+       { id: 'notepad', path: 'etc/motd', params: [['ro', '1']] });
+  // Each segment is decoded on its own, so `home` and `a%2Fb` are two components and the
+  // result is `home/a/b`.
+  //
+  // Which means an encoded slash and a real one are indistinguishable once joined:
+  // `#/explorer/home/a%2Fb` and `#/explorer/home/a/b` both arrive as `home/a/b`. Nothing is
+  // lost, because a name in this filesystem cannot contain a slash — `#lookup` splits paths
+  // on it — so there is no file the ambiguity could hide.
+  want('each segment decodes on its own', shape('#/explorer/home/a%2Fb'),
+       { id: 'explorer', path: 'home/a/b', params: [] });
+  want('a space', shape('#/notepad/home/user/my%20notes.txt'),
+       { id: 'notepad', path: 'home/user/my notes.txt', params: [] });
+
+  want('format a plain id', routes.format('terminal'), '#/terminal');
+  want('format a path', routes.format('explorer', { path: '/home/user' }), '#/explorer/home/user');
+  want('format drops a trailing slash', routes.format('explorer', { path: '/home/user/' }),
+       '#/explorer/home/user');
+  want('format a query', routes.format('notepad', { path: '/etc/motd', params: { ro: '1' } }),
+       '#/notepad/etc/motd?ro=1');
+  // A round trip is the property that matters: what a window publishes must parse back to
+  // the state it published.
+  for (const [id, state] of [
+    ['terminal', { path: '/usr/src/webxp' }],
+    ['explorer', { path: '/home/user/links' }],
+    ['notepad', { path: '/home/user/my notes.txt' }],
+  ]) {
+    const back = routes.parse(routes.format(id, state));
+    want('round trip ' + id, { id: back.id, path: routes.asAbsolute(back.path) },
+         { id, path: state.path });
+  }
+
+  want('asAbsolute adds the slash', routes.asAbsolute('home/user'), '/home/user');
+  want('asAbsolute keeps one', routes.asAbsolute('/home/user'), '/home/user');
+  want('asAbsolute on nothing', routes.asAbsolute(''), '');
+  return bad;
+})()"""
+
+
+def check_routes(page) -> list[str]:
+    """A link opens a window on the state it names, and a window publishes a link to itself.
+
+    The reason this exists at all: before it, nothing in the desktop was linkable. Open a
+    folder, drill into a street, and there was no URL to send anybody — `grep -rn
+    'location.hash'` over the source returned nothing.
+    """
+    bad = []
+    wait_for_apps(page)
+    try:
+        found = page.evaluate(ROUTE_ASSERTIONS, await_promise=True)
+    except CDPError as error:
+        return [f"routes: the assertion table could not run — {error}"]
+    bad += [f"routes: {message}" for message in found]
+
+    # A link, loaded the way a reader loads one: the hash in place, the document fresh.
+    #
+    # Set-then-reload rather than `navigate` to the hashed URL: a navigation that differs
+    # only by the fragment is a same-document navigation, so no load event fires and the
+    # harness's `navigate` waits for one until the channel to Chrome times out. Which is
+    # itself the right behaviour to know about — the first version of this check killed the
+    # run.
+    def open_link(hash_: str) -> None:
+        page.evaluate("window.location.hash = %s" % json.dumps(hash_))
+        page.call("Page.reload", ignoreCache=True)
+        time.sleep(1.0)
+        wait_for_apps(page)
+        # Past the route's own launch, which `boot.mjs` awaits after the apps are registered.
+        time.sleep(0.7)
+
+    for hash_, program, expect in (
+        ("#/explorer/usr/src/webxp/src", "explorer", "/usr/src/webxp/src"),
+        ("#/terminal/etc", "terminal", "/etc"),
+        ("#/notepad/etc/motd", "notepad", "motd"),
+    ):
+        open_link(hash_)
+        console_errors(page)
+        state = page.evaluate(
+            "(() => { const route = window.webxpRoute;"
+            " const win = window.webxp.windows.find((w) => w.programId === %s);"
+            " if (!win) return { route, opened: false };"
+            " return { route, opened: true, title: win.titleText,"
+            "          address: (win.el.querySelector('.exp-address') || {}).value || null,"
+            "          prompt: (win.el.querySelector('.term-prompt') || {}).textContent || null,"
+            "          status: win.statusEl ? win.statusEl.textContent : '' }; })()"
+            % json.dumps(program)
+        )
+        if not state["opened"]:
+            bad.append(f"routes: {hash_} opened no {program} window — route was {state['route']!r}")
+            continue
+        # Each app reports where it landed differently; one of the three has to carry it.
+        where = state["address"] or state["prompt"] or state["status"]
+        if expect not in (where or ""):
+            bad.append(f"routes: {hash_} opened {program} at {where!r}, want {expect!r}")
+        # And only that window: a link names one app and its state, not a desktop.
+        others = page.evaluate("window.webxp.windows.length")
+        if others != 1:
+            bad.append(f"routes: {hash_} opened {others} windows, want 1")
+
+    # A link to a program that does not exist is a dead link, and must say so rather than
+    # opening nothing in silence.
+    open_link("#/no-such-program")
+    dead = page.evaluate("window.webxpRoute")
+    if not dead or dead.get("opened") is not False:
+        bad.append(f"routes: a link to a missing program reported {dead!r}")
+    console_errors(page)
+
+    # And the other direction: a window publishes a link to itself as it moves.
+    page.evaluate("window.history.replaceState(null, '', window.location.pathname)")
+    page.call("Page.reload", ignoreCache=True)
+    time.sleep(1.0)
+    wait_for_apps(page)
+    console_errors(page)
+    shell = terminal_session(page)
+    term_run(page, "cd /usr/src/webxp/docs", shell)
+    time.sleep(0.2)
+    published = page.evaluate("window.location.hash")
+    if published != "#/terminal/usr/src/webxp/docs":
+        bad.append(f"routes: after a cd the address bar reads {published!r}")
+    # `replaceState`, so using a window does not fill the back button with steps nobody took.
+    before = page.evaluate("window.history.length")
+    term_run(page, "cd /etc", shell)
+    time.sleep(0.2)
+    after = page.evaluate("window.history.length")
+    if after != before:
+        bad.append(
+            f"routes: a cd added {after - before} history entries — the back button now "
+            "steps through someone's working directory"
+        )
+    if page.evaluate("window.location.hash") != "#/terminal/etc":
+        bad.append("routes: the published link did not follow the second cd")
+
+    fs_reset(page)
+    return bad
+
 def check_mount_index(page) -> list[str]:
     """The index agrees with the tracked files, and lists nothing it must not.
 
@@ -4973,6 +5135,7 @@ MOUNT_ASSERTIONS = """(async () => {
 
 def check_mount(page) -> list[str]:
     """The grafted repository, asked of the filesystem the apps hold."""
+    wait_for_apps(page)
     terminal_session(page)
     try:
         found = page.evaluate(MOUNT_ASSERTIONS, await_promise=True)
@@ -5002,6 +5165,7 @@ def fs_reset(page) -> None:
 def check_filesystem(page) -> list[str]:
     """The filesystem model: resolution, symlinks, links, modes, serialisation."""
     fs_reset(page)
+    wait_for_apps(page)
     try:
         found = page.evaluate(FS_ASSERTIONS, await_promise=True)
     except CDPError as error:
@@ -5027,6 +5191,32 @@ TERM_PARTS = """(() => {
            prompt: win.el.querySelector('.term-prompt').textContent,
            x: r.left + r.width / 2, y: r.top + r.height / 2, count: wins.length };
 })()"""
+
+
+def wait_for_apps(page, timeout: float = 8.0) -> None:
+    """Block until the desktop has finished loading its apps.
+
+    `demo/boot.mjs` publishes `window.webxpApps` once `loadApps` resolves, which is the only
+    signal that the forty-odd module fetches a boot makes are done.
+
+    This exists because of a flake that cost two runs: `python3 -m http.server` is
+    single-threaded, and a check's own `import()` arriving while those fetches are in flight
+    comes back as `Failed to fetch dynamically imported module` — which Chrome then caches
+    against that specifier, so the check fails for the rest of the run with a message that
+    reads like a missing file. Waiting is not a workaround for a product defect; the server
+    is the constraint.
+
+    A timeout is a failure, not a skip: a desktop that never finishes loading is the thing
+    worth reporting.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if page.evaluate("Boolean(window.webxpApps && window.webxpApps.loaded)"):
+            return
+        time.sleep(0.15)
+    raise CDPError(
+        "the desktop never published window.webxpApps — its apps did not finish loading"
+    )
 
 
 def term_parts(page, win_id: str | None = None) -> dict:
@@ -6063,7 +6253,7 @@ def check_launch_arguments(page) -> list[str]:
         " console.warn = (...parts) => { window.__warned.push(parts.map(String).join(' '));"
         "   original.apply(console, parts); }; })()"
     )
-    page.evaluate("window.webxp.launch('terminal', { cwd: '/etc' })")
+    page.evaluate("window.webxp.launch('terminal', { path: '/etc' })")
     time.sleep(1.0)
     started = term_parts(page)
     if "/etc$" not in started["prompt"]:
@@ -6130,7 +6320,7 @@ def check_fs_persistence(page) -> list[str]:
     # A second session, sitting in a directory the seed tree also has. `format` must not
     # move it: the rebuild is one batch, and un-batched its first step told every watcher the
     # filesystem was empty — which moved this window to `/` and left it there.
-    page.evaluate("window.webxp.launch('terminal', { cwd: '/home/user/notes' })")
+    page.evaluate("window.webxp.launch('terminal', { path: '/home/user/notes' })")
     time.sleep(1.0)
     bystander = term_parts(page)["id"]
     opened_at = term_parts(page, bystander)["prompt"]
@@ -6232,6 +6422,9 @@ CHECKS = (
     # After `terminal`, because it asks the session that check opens.
     ("mount", check_mount),
     ("explorer", check_explorer),
+    # After the app checks, because it navigates with a hash and reloads: it hands the
+    # desktop back on a clean URL rather than leaving a route in the address bar.
+    ("routes", check_routes),
     ("open across apps", check_open_across_apps),
     ("launch arguments", check_launch_arguments),
     ("filesystem persists", check_fs_persistence),

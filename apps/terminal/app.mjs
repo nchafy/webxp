@@ -39,10 +39,11 @@ export default {
   async mount({ win, desktop, args }) {
     // Dynamic, so the whole desktop does not pay for the filesystem at startup just because
     // every `app.mjs` is imported to build the Start menu. See `docs/apps.md`.
-    const [{ openFileSystem, persistence }, { Shell }, { HOME }] = await Promise.all([
+    const [{ openFileSystem, persistence }, { Shell }, { HOME }, routes] = await Promise.all([
       import('../../shared/fs/fs.mjs'),
       import('./shell.mjs'),
       import('../../shared/fs/seed.mjs'),
+      import('../../shared/routes/routes.mjs'),
     ]);
     const fs = await openFileSystem();
 
@@ -92,7 +93,9 @@ export default {
       fs,
       desktop,
       win,
-      cwd: (args && args.cwd) || HOME,
+      // `path`, the same key a link carries and the same key `open <dir>` passes. One name
+      // for "where this session starts".
+      cwd: (args && args.path) ? routes.asAbsolute(String(args.path)) : HOME,
       columns: () => columns,
     });
 
@@ -155,6 +158,10 @@ export default {
         busy = false;
         refreshPrompt();
         refreshStatus();
+        // The address bar holds a link to this session, updated as it moves. Two terminals
+        // means the one you last typed in owns the URL — a link names one app and its state,
+        // so the window you are acting in is the one it describes.
+        routes.publish('terminal', { path: shell.cwd });
         input.focus();
       }
     };
@@ -233,6 +240,7 @@ export default {
 
     refreshPrompt();
     refreshStatus();
+    routes.publish('terminal', { path: shell.cwd });
 
     /* ----------------------------- live state ----------------------------- */
 

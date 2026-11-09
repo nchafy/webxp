@@ -73,11 +73,13 @@ export default {
   styles: ['app.css'],
 
   async mount({ win, desktop, args }) {
-    const [{ openFileSystem, hydrate }, { HOME }, { normalize, joinPath }] = await Promise.all([
-      import('../../shared/fs/fs.mjs'),
-      import('../../shared/fs/seed.mjs'),
-      import('../../shared/fs/vfs.mjs'),
-    ]);
+    const [{ openFileSystem, hydrate }, { HOME }, { normalize }, routes] =
+      await Promise.all([
+        import('../../shared/fs/fs.mjs'),
+        import('../../shared/fs/seed.mjs'),
+        import('../../shared/fs/vfs.mjs'),
+        import('../../shared/routes/routes.mjs'),
+      ]);
     const fs = await openFileSystem();
 
     const root = document.createElement('div');
@@ -127,10 +129,11 @@ export default {
 
     /* ------------------------------ navigation ------------------------------ */
 
-    // A relative `args.path` would resolve against `/` inside `fs.list`, and a trailing
-    // slash made the title the empty string.
-    const asked = args && args.path ? String(args.path) : HOME;
-    let here = normalize(asked.startsWith('/') ? asked : joinPath(HOME, asked));
+    // `args.path` is absolute whoever sent it: `open` passes a `realpath`, and a link
+    // carries one with its leading slash implied. A trailing slash used to make the title the
+    // empty string, which `normalize` now removes.
+    const asked = args && args.path ? routes.asAbsolute(String(args.path)) : HOME;
+    let here = normalize(asked);
     let selected = null;
 
     const title = (path) => (path === '/' ? '/' : path.slice(path.lastIndexOf('/') + 1));
@@ -282,6 +285,8 @@ export default {
 
       const dirs = entries.filter((entry) => entry.type === 'dir').length;
       win.setStatus(`${entries.length} item${entries.length === 1 ? '' : 's'}, ${dirs} folder${dirs === 1 ? '' : 's'}`);
+      // A folder window's state is the folder, so the address bar is a link to it.
+      routes.publish('explorer', { path: here });
     }
 
     /** The icon for a row. A shortcut to a folder draws a folder. */

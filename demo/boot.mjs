@@ -31,6 +31,24 @@ window.webxpApps = { loaded, broken };
 
 await desktop.autostart();
 
+// A link, if the address bar carries one.
+//
+// After the apps are registered, because a route names a program and the registry is what
+// says whether that program exists. After `autostart` too: a link is a request for one
+// particular window, so it opens last and ends up on top.
+//
+// The host page does this rather than `Desktop`, for the same reason it will read
+// `~/Startup`: deciding what opens is the environment's business and opening it is the
+// window manager's. `src/` stays testable without a URL or a filesystem.
+const routes = await import('../shared/routes/routes.mjs');
+// Published for the devtools console and for `scripts/check.py`, the same way `window.webxp`
+// and `window.webxpApps` are. A check that imported its own copy would be asserting about a
+// second module instance rather than the one the desktop is using — and an `import()` from a
+// page script turned out to be flaky against a single-threaded `http.server`, which is a
+// reason to use the page's own object rather than a reason to retry.
+window.webxpRoutes = routes;
+window.webxpRoute = await routes.restore(desktop);
+
 // Clippy, in place of the Read me opening itself. Offering help and taking no for an answer
 // is the same thought as an autostarting window, minus the part where it takes the desktop
 // before you have asked for anything.
