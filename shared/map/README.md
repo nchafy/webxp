@@ -204,8 +204,8 @@ guard.
 
 Anything that has to survive a switch — a selection, a filter, a clicked point — lives
 in a variable outside `draw` and is read back in. `apps/basemap/app.mjs` does exactly this
-with its clicked point; `apps/day-02-lines/lines.mjs` does it with the selected run, the
-tolerance and the segment overlay.
+with its clicked point; `apps/day-02-lines/lines.mjs` does it with the selected run and the
+segment overlay.
 
 `ctx.beforeId` is the insertion point that keeps place labels above the overlay.
 `ctx.basemap` is the active preset's name, for a day that wants to paint differently
@@ -268,9 +268,36 @@ a confident yes is worse than answered with no.
   quarter of the sky.
 - **The JS/Python geometry pair.** `apps/day-02-lines/geo.mjs` and `tools/gpsnoise.py`
   implement the same Douglas-Peucker and the same local-plane length, and they are supposed
-  to agree to the millimetre. That agreement has been measured by hand (≤0.5 mm across all
-  twelve rungs, identical kept-point counts) but no check enforces it, so a divergence would
-  be found by noticing a wrong number on screen.
+  to agree to the millimetre. No check enforces it, so a divergence would be found by
+  noticing a wrong number on screen. The agreement has been measured by hand, by driving
+  `geo.mjs`'s `ladder()` over every document in a measured directory and comparing it with
+  the ladder `prepare.py` wrote there.
+
+  On the committed fixture — `apps/day-02-lines/data/`, six activities and 72 rungs — every
+  surviving-point count matched and the worst length gap was 0.50 mm. That 0.50 mm is the
+  floor rather than a disagreement: `prepare.LENGTH_DP` writes lengths to three decimal
+  places, so half a millimetre is rounding. Reproducible by anyone, because the fixture is
+  committed.
+
+  On a private 397-activity export — 4,764 rungs — the counts again all matched, and
+  **4,763 of the 4,764 lengths fell inside that same 0.500 mm floor.** One did not: an
+  18,349-point, 11.1 km trace at the 0.5 m rung, 72.1 mm apart, which is 6.5e-6 relative.
+  That is a single Douglas-Peucker decision flipped by a last-bit difference between
+  `math.cos` and `Math.cos` at the frame origin, and no amount of care on either side
+  removes it.
+
+  The shape of that result is what a check should be built on, and it is not what a first
+  guess suggests:
+
+  - **The integer counts are exact.** 4,836 rungs across both datasets, zero mismatches. No
+    tolerance needed or wanted.
+  - **Every length is at the rounding floor except where a decision flips.** 0.500 mm is the
+    whole budget for 4,835 of 4,836 rungs.
+  - **A flip is not proportional to the trace.** It swaps which of two nearby points
+    survives, so its size is set by local geometry — 72 mm on an 11.1 km trace here, 8.5 mm
+    on a 14.8 km trace before the crop. A length-scaled tolerance models this wrongly; a
+    relative bar of 1e-5 covers both with room, where a flat 2 mm bar passes the fixture and
+    fails the real export.
 - **A clean clone's segment feature.** `apps/day-02-lines/data/` carries no
   `street-noise.json`, so on a fresh checkout the choropleth, its legend, the drill-down and
   the ghost worm never execute. `day 02 lines` says so rather than passing silently, but the

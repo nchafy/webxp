@@ -1,30 +1,25 @@
 /* Length and simplification, in the browser.
  *
  * This is a second implementation of what `gpsnoise.py` already does, which is a thing
- * worth justifying rather than doing quietly. The page's whole point is a slider the
- * reader drags, and a continuous slider means re-simplifying on every frame; shipping a
- * pre-computed geometry per rung would make the control stepped and the payload several
- * times larger. So the arithmetic has to be here.
+ * worth justifying rather than doing quietly. The page measures a selected run at a
+ * resolution it chooses, and shipping a pre-computed geometry per rung of the ladder would
+ * multiply the payload by the number of rungs. So the arithmetic has to be here.
  *
- * Two implementations of one fact is exactly the thing that drifts. The guard is that
- * `prepare.py` writes its own ladder into each activity document, and `scripts/check.py`
- * drives this module over the same geometry and requires the two to agree. If they ever
- * disagree the check fails rather than the page quietly disagreeing with its own data.
+ * Two implementations of one fact is exactly the thing that drifts, and **nothing enforces
+ * the agreement**. `prepare.py` writes its own ladder into each activity document and
+ * `ladder()` below recomputes it, but no check compares them; a divergence would be found
+ * by noticing a wrong number on screen. `shared/map/README.md` § Not checked carries the
+ * gap and the agreement measured by hand.
  *
  * The constants and the frame are deliberately identical to the Python: same WGS84 radii
- * of curvature, same origin at the trace's mean latitude and longitude. A different
- * origin would be a correct projection and a different answer.
+ * of curvature, same origin at the bounding-box midpoint of the trace's own latitudes and
+ * longitudes. A different origin would be a correct projection and a different answer.
  */
 
 const WGS84_A = 6378137.0;
 const WGS84_F = 1.0 / 298.257223563;
 const WGS84_E2 = WGS84_F * (2.0 - WGS84_F);
 
-/* Project [lon, lat] pairs to metres east/north about their own mean.
- *
- * Returns flat Float64Arrays rather than an array of pairs: a 3,000-point trace
- * re-simplified on every pointer move allocates either way, and two typed arrays cost
- * one allocation instead of 3,000 objects. */
 /* The tangent plane's origin on one axis: the bounding-box midpoint, to 6 dp.
  *
  * Must stay identical to `gpsnoise.frame_origin`, down to the last bit. The long version
@@ -38,6 +33,10 @@ function frameOrigin(min, max) {
   return Math.floor(((min + max) / 2) * 1e6 + 0.5) / 1e6;
 }
 
+/* Project [lon, lat] pairs to metres east/north about their bounding-box midpoint.
+ *
+ * Returns flat Float64Arrays rather than an array of pairs: a 3,000-point trace costs one
+ * allocation per axis instead of 3,000 pair objects. */
 export function project(coords) {
   const n = coords.length;
   let lonMin = Infinity;
@@ -72,8 +71,8 @@ export function project(coords) {
 
 /* Length in metres of the polyline through the kept points of a projected trace.
  *
- * `keep` is optional; without it every point counts. Summing only the kept points is
- * what makes the slider cheap: no new array is built per frame. */
+ * `keep` is optional; without it every point counts. Summing over the mask rather than
+ * over a filtered copy is what keeps a re-measurement allocation-free. */
 export function planeLength({ x, y }, keep) {
   const n = x.length;
   let total = 0;
@@ -155,8 +154,9 @@ export function measureAt(projected, tolerance) {
   return { keep, length: planeLength(projected, keep), kept };
 }
 
-/* The same ladder `prepare.py` writes, computed here. Used only by `scripts/check.py`,
- * to hold the two implementations against each other. */
+/* The same ladder `prepare.py` writes, computed here, so the two implementations can be
+ * held against each other. Reached only through `win.lines.ladder()`; no check calls it
+ * yet, which is the gap `shared/map/README.md` § Not checked records. */
 export function ladder(coords, tolerances) {
   const projected = project(coords);
   return tolerances.map((t) => {

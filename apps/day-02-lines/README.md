@@ -188,16 +188,16 @@ across all 72 rungs with identical surviving-point counts, and 0.50 mm is the ro
 rather than a disagreement — `prepare.LENGTH_DP` writes lengths to three decimals. That one
 is reproducible by anyone, because the fixture is committed.
 
-Over a private export of about four hundred activities the counts also matched everywhere,
-and one rung of several thousand came out millimetres apart, because `math.cos` and
-`Math.cos` differ by a last bit at some latitudes and that flips a near-threshold
-Douglas-Peucker decision. **Provisional:** that measurement predates `--trim-m`, so it
-describes a geometry the pipeline no longer produces, and the rung count and the millimetre
-figure both need re-measuring. The mechanism does not depend on the dataset.
+Over the private 397-activity export, 4,764 rungs: the counts matched everywhere, and 4,763
+of the lengths fell inside that same 0.500 mm floor. One did not — an 18,349-point, 11.1 km
+trace at the 0.5 m rung, 72.1 mm apart, 6.5e-6 relative — because `math.cos` and `Math.cos`
+differ by a last bit at some latitudes, and that flips a near-threshold Douglas-Peucker
+decision about which of two adjacent points survives.
 
-Either way the counts can be asserted exactly and the lengths cannot: a flat 2 mm bar passes
-the fixture and fails a real export, so a tolerance has to carry the 0.5 mm rounding floor
-plus a term that scales with the trace.
+So the counts can be asserted exactly, and a length tolerance has to be relative rather than
+length-scaled: a flip's size comes from local geometry, not from how long the trace is. A
+flat 2 mm bar passes the fixture and fails the real export. `shared/map/README.md` § Not
+checked carries the full numbers.
 
 Two real defects came out of measuring it rather than assuming it. Lengths were being
 written at one decimal place, which put a 3e-5 floor under any comparison; they are now

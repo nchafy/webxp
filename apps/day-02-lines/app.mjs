@@ -2,9 +2,9 @@
  *
  * Every run is drawn twice, as the watch recorded it and snapped to the OSM network. The
  * recording is longer, because jitter is indistinguishable from movement and gets counted
- * as distance covered. The slider is the argument: it simplifies one trace at a tolerance
- * the reader chooses, and the distance falls as the wobble comes out. There is no setting
- * at which the number is right — which is the point.
+ * as distance covered. The gap between the two is the argument: a run has no single length,
+ * only a length at a stated resolution, so neither figure is the answer — which is the
+ * point.
  *
  * `lines.mjs` is the day. This file is the spec and the mount/ready split, because that
  * split is the one thing about being an app rather than a page that this day has to know.

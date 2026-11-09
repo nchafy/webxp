@@ -9,11 +9,11 @@
  * happening on a 10 km run — so the page shows two measurements of one run and the gap
  * between them, rather than asserting a figure.
  *
- * A tolerance slider used to make that draggable: it simplified the selected trace live and
- * the distance fell as the wobble came out. It is gone, because it was `disabled` until a
- * run was selected and an inert control reads as a broken one. `focusLengthAt` still
- * computes the whole ladder, and `scripts/check.py` still holds it against the Python, so
- * the claim is still measured — it is just no longer a thing to drag.
+ * No control simplifies the trace. The interface states the argument with two numbers
+ * rather than one draggable one, because a tolerance control has nothing to act on until a
+ * run is selected, and an inert control reads as a broken one. The argument is still
+ * *measured*: `focusLengthAt` returns a length at any tolerance, and `scripts/check.py`
+ * drives it to assert that a coarser measurement is shorter.
  *
  * ## Why there are two resolutions
  *
@@ -42,7 +42,7 @@ import { project, simplifyMask, simplifiedCoords, planeLength, ladder } from './
 
 //: Every run, simplified. The map's backdrop.
 const ALL = 'all';
-//: The selected run, at full resolution, re-simplified live by the slider.
+//: The selected run, at full resolution.
 const FOCUS = 'focus';
 //: Every run snapped to the network.
 const MATCHED = 'matched';
@@ -301,11 +301,12 @@ const DATA_DIRS = ['private', 'data'].map(
    --------------------------------------------------------------------------- */
 
 /**
- * Build this day's three cards into the slot `lib/basemap.mjs` left for them.
+ * Build this day's three cards into the slot `shared/map/chrome.mjs` left for them.
  *
  * Built rather than written as markup for the same reason the rest of the shell is: a
  * window is created at runtime, so there is no page to put the markup in. It also stops
- * the ids being global — two map windows would have fought over `#tolerance`.
+ * the ids being global — two map windows would otherwise mint `#noise-legend` twice, and
+ * `aria-describedby` would point at the other window's legend.
  *
  * @param {HTMLElement} slot    `chrome.cards`.
  * @param {number} instance     `chrome.instance`, for the one id `label[for]` needs.
@@ -348,15 +349,10 @@ function buildCards(slot, instance) {
 
   /* The selected run.
    *
-   * This card used to carry a tolerance slider — the "measuring stick" — which simplified
-   * the chosen trace live so the reader could watch its length fall. It is gone. It was
-   * `disabled` until a run was selected, which is most of the time, and an inert control
-   * reads as a broken one; the recompute behind it was never the problem, at 0.2 ms.
-   *
-   * What the slider demonstrated is still here, in the readout: a run's length at full
-   * resolution against the same run snapped to the road network. The gap is the measurement.
-   * The ladder of lengths at a range of tolerances is still computed and still cross-checked
-   * against the Python, it is just no longer something to drag.
+   * No control here simplifies the trace. The measurement the card carries is a run's
+   * length at full resolution against the same run snapped to the road network, and the gap
+   * between them. `focusLengthAt` can still measure any tolerance, and `scripts/check.py`
+   * reads it to assert that a coarser measurement is shorter.
    */
   const stickCard = el('div', 'card', slot);
   heading(stickCard, 'Selected run');
@@ -422,7 +418,6 @@ export async function startDay({ win, chrome }) {
     //: Handles to this day's own controls, assigned once `createBaseMap` has built the slot
     //: they go in. `let` rather than `const` because every function below closes over them
     //: and runs long after the cards exist.
-    let statusEl = null;
     let readoutEl = null;
     let matchedToggle = null;
     let keyRecordedEl = null;
@@ -454,14 +449,12 @@ export async function startDay({ win, chrome }) {
     const docCache = new Map();
 
     //: `base.say` owns the status region -- it is what `createBaseMap` uses for its own
-    //: messages, and writing `statusEl.textContent` beside it was a second renderer of one
-    //: line.
+    //: messages, so writing to the element beside it would be a second renderer of one line.
     //:
     //: Writes straight to the element until the map exists. `base` is a `const` declared
-    //: further down, so an `if (base)` here before that line throws `ReferenceError` on the
-    //: temporal dead zone rather than falling through -- which made the fallback branch it
-    //: was written for unreachable twice over, since `statusEl` was also still null.
-    //: `chrome.status` is in scope from the first line and is the same element.
+    //: further down, so reading it before that line throws `ReferenceError` on the temporal
+    //: dead zone rather than falling through, which is why the `try` is here and not an
+    //: `if (base)`. `chrome.status` is in scope from the first line and is the same element.
     function setStatus(text) {
       try {
         if (base) {
@@ -533,11 +526,6 @@ export async function startDay({ win, chrome }) {
       return overview ? overview.matched : EMPTY;
     }
 
-    /* The one crossing being shown, as a line over its own run's full-resolution geometry.
-     *
-     * Needs the run loaded, which `showPass` guarantees before setting `passSpan`. Returns
-     * empty rather than throwing when it is not, because `draw` runs on every basemap change
-     * and must not care what order things happened in. */
     //: The crossings currently drawn as ghosts: `[{activity, i0, i1}]`, already loaded.
     let ghostSpans = [];
 
@@ -735,10 +723,8 @@ export async function startDay({ win, chrome }) {
      * length, because the simplification that makes the line is also what makes the number:
      * computing them separately is two chances to disagree.
      *
-     * `tol` is an argument rather than shared mutable state. It was a variable the slider
-     * wrote to, which meant `focusLengthAt` had to save it, overwrite it, read, and put it
-     * back — a getter with a side effect on the thing being drawn. With the slider gone the
-     * interface only ever wants 0, and the ladder cross-check passes what it needs. */
+     * `tol` is an argument rather than shared mutable state, so `focusLengthAt` can measure
+     * a rung without mutating what is on screen. The interface only ever wants 0. */
     function focusData(tol = 0) {
       if (!focus) return { fc: EMPTY, length: 0, kept: 0, total: 0 };
       const keep = simplifyMask(focus.projected, tol);
@@ -847,11 +833,8 @@ export async function startDay({ win, chrome }) {
       big.textContent = fmtKm(measured.length);
       readoutEl.append(big, ' ');
 
-      // The gap against the matched length, which is the measurement this day is about.
-      //
-      // It used to show the drop from simplifying, against a "full resolution" label when the
-      // slider sat at zero — which is now always, so that label named a state that cannot
-      // vary. Recorded-against-matched is the comparison the rest of the page makes.
+      //: The gap against the matched length, which is the measurement this day is about and
+      //: the comparison the rest of the page makes.
       if (d.matched_m) {
         const gap = d.recorded_m / d.matched_m - 1;
         const delta = document.createElement('span');
@@ -862,16 +845,14 @@ export async function startDay({ win, chrome }) {
 
       const sub = document.createElement('span');
       sub.className = 'sub';
-      // The point count, not "N of M": with no simplification the two are always equal, and
-      // a ratio that cannot move is furniture.
+      // The point count, not "N of M": the drawn line is never simplified, so the two are
+      // always equal and a ratio that cannot move is furniture.
       const bits = [`${measured.total.toLocaleString()} points`];
       if (d.matched_m) bits.push(`map ${fmtKm(d.matched_m)}`);
       if (d.strava_m) bits.push(`Strava ${fmtKm(d.strava_m)}`);
       sub.textContent = `${d.name} · ${bits.join(' · ')}`;
       readoutEl.append(sub);
 
-      // Always 'strava' now. The other branch named the slider's tolerance, and the line it
-      // labels is no longer simplified.
       if (keyRecordedEl) keyRecordedEl.textContent = 'strava';
     }
 
@@ -879,7 +860,9 @@ export async function startDay({ win, chrome }) {
        Drawing the selected run.
        --------------------------------------------------------------------------- */
 
-    function applyTolerance(map) {
+    //: The selected trace onto the map, and its readout, from one measurement -- so the line
+    //: and the number cannot describe different geometry.
+    function drawFocus(map) {
       const measured = focusData();
       const source = map && map.getSource(FOCUS);
       if (source) source.setData(measured.fc);
@@ -915,7 +898,7 @@ export async function startDay({ win, chrome }) {
       focus = entry;
 
       applyTraceEmphasis(map);
-      applyTolerance(map);
+      drawFocus(map);
       if (fly) {
         const box = boundsOfCoords(entry.doc.recorded);
         if (box) map.fitBounds(box, { padding: 70, duration: 700, maxZoom: 16 });
@@ -1383,7 +1366,6 @@ export async function startDay({ win, chrome }) {
       matchedToggle,
       clearButton,
     } = buildCards(chrome.cards, chrome.instance));
-    statusEl = chrome.status;
     panel = new Panel(chrome.detail);
 
     // The program owns what it started: webxp destroys the window's DOM but knows nothing
@@ -1441,9 +1423,9 @@ export async function startDay({ win, chrome }) {
           focus ? ladder(focus.doc.recorded, (focus.doc.ladder || []).map((r) => r[0])) : null,
         writtenLadder: () => (focus ? focus.doc.ladder : null),
         //: The length this run would measure at `t` metres of simplification. No control
-        //: drives it any more; it is how a check holds the browser's geometry against the
-        //: Python's, and it is the one place the coastline-paradox argument is still
-        //: measurable even though it is no longer draggable.
+        //: drives it; it is what `scripts/check.py` reads to assert that a coarser
+        //: measurement is shorter, which is the coastline-paradox argument surviving the
+        //: control that used to demonstrate it.
         focusLengthAt: (t) => {
           if (!focus) return null;
           return focusData(t).length;
@@ -1451,7 +1433,7 @@ export async function startDay({ win, chrome }) {
       };
 
       renderAggregate();
-      applyTolerance(map);
+      drawFocus(map);
 
       if (loadError) {
         setStatus(`No activity data: ${loadError.message}`);
@@ -1481,10 +1463,6 @@ export async function startDay({ win, chrome }) {
       }
 
       // The noise layer: its toggle, its legend, and the drill-down it is the entry to.
-      // handles come from buildCards
-      
-      
-
       if (noiseToggle) {
         if (!noise) {
           // Disabled rather than hidden: a control that is absent looks like a feature that
