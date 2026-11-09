@@ -1,0 +1,26 @@
+# Python packages the day 02 measurement tools need.
+#
+#     .venv/bin/pip install -r apps/day-02-lines/tools/requirements.txt
+#
+# The repository's one venv at `.venv` serves both these tools and `scripts/check.py`, and
+# the two need different packages: the harness needs `websocket-client` and nothing here.
+# Installed separately rather than listed together, so a harness run does not drag in a
+# numerical stack and a measurement run does not drag in a websocket client.
+#
+# Nothing the site itself serves needs any of this. The browser half of the geometry is
+# `geo.mjs`, which has no dependencies at all.
+
+# Every tool here imports it, directly or through `gpsnoise`. Pinned to a major version:
+# the only numpy API in use is arrays, `hypot`, `median`, `percentile`, `argsort`,
+# `searchsorted` and `corrcoef`, all stable across 1.x, and `percentile`'s default
+# interpolation is load-bearing for the figures in `make_summary.py` -- numpy 2 keeps the
+# same default, but the pin means a change there has to be a deliberate upgrade rather than
+# a silent shift in a published statistic.
+numpy>=1.24,<2
+
+# Optional, and only for reading FIT files. Strava's bulk export hands back whatever the
+# device uploaded, which for most watches is FIT rather than GPX, so an export of real
+# activities usually needs this; the committed synthetic fixture is GPX and does not.
+# `gpsnoise.read_fit` imports it inside the function, so the other readers work without it
+# and the failure names the format rather than the import.
+fitdecode>=0.10

@@ -1,0 +1,290 @@
+{
+ "what": "Aggregates over one measured Strava export. No geometry, no identifiers.",
+ "why_aggregated": "An activity trace records where someone lives and when they are not home. The export and everything built from it are gitignored, so the figures the documentation quotes would otherwise be unreproducible. These aggregates are committed in their place; nothing here narrows where anybody runs.",
+ "excluded": [
+  "no coordinates: no points, centroids, bounding boxes or cell ids",
+  "no activity ids, names or dates",
+  "no OSM way ids or street names",
+  "aggregates, with one exception: streets.ghost_sampling is five scalars about the single most-crossed street, carrying no id, name or geometry",
+  "no timestamps, including this file's own build time"
+ ],
+ "produced_by": "apps/day-02-lines/tools/make_summary.py",
+ "reproduce": "apps/day-02-lines/tools/make_summary.py <a directory prepare.py wrote>",
+ "crop": {
+  "recorded": true,
+  "trim_m": 402.336,
+  "min_end_offset_m": 200.0,
+  "dropped": 4,
+  "means": "every length here is the cropped middle of a run, not the whole run. Both figures are the crop's identity: a quarter mile of recorded path off each end, and then inward until the kept end is at least min_end_offset_m straight-line from the original end. Path distance is not displacement."
+ },
+ "ladder": {
+  "length_dp": 3,
+  "rounding_floor_m": 0.0005,
+  "tolerances_m": [
+   0.0,
+   0.5,
+   1.0,
+   2.0,
+   3.0,
+   5.0,
+   8.0,
+   12.0,
+   20.0,
+   35.0,
+   60.0,
+   100.0
+  ],
+  "rungs_per_activity": 12
+ },
+ "export": {
+  "activities": 397,
+  "unreadable": 1,
+  "matched": 397,
+  "with_a_strava_figure": 0,
+  "points_total": 1462437,
+  "per_activity_json_mb": 40.7,
+  "recorded_km": 3934.8,
+  "matched_km": 3778.8,
+  "recorded_over_matched_pct": {
+   "p5": -1.48,
+   "median": 0.82,
+   "p95": 10.33,
+   "max": 329.4,
+   "negative": 122
+  },
+  "totals_pct": {
+   "recorded_over_matched": 4.13
+  },
+  "by_sport": [
+   {
+    "sport": "Hike",
+    "n": 19,
+    "median_inflation_pct": 60.09,
+    "total_inflation_pct": 59.43
+   },
+   {
+    "sport": "Ride",
+    "n": 1,
+    "median_inflation_pct": 1.96,
+    "total_inflation_pct": 1.96
+   },
+   {
+    "sport": "Run",
+    "n": 377,
+    "median_inflation_pct": 0.67,
+    "total_inflation_pct": 0.67
+   }
+  ],
+  "median_inflation_by_spacing": [
+   {
+    "band_m": [
+     0.0,
+     1.5
+    ],
+    "n": 20,
+    "median_inflation_pct": 54.59
+   },
+   {
+    "band_m": [
+     1.5,
+     2.5
+    ],
+    "n": 8,
+    "median_inflation_pct": 2.86
+   },
+   {
+    "band_m": [
+     2.5,
+     3.0
+    ],
+    "n": 3,
+    "median_inflation_pct": 3.45
+   },
+   {
+    "band_m": [
+     3.0,
+     3.5
+    ],
+    "n": 208,
+    "median_inflation_pct": 1.09
+   },
+   {
+    "band_m": [
+     3.5,
+     4.0
+    ],
+    "n": 155,
+    "median_inflation_pct": 0.1
+   },
+   {
+    "band_m": [
+     4.0,
+     null
+    ],
+    "n": 3,
+    "median_inflation_pct": 1.2
+   }
+  ],
+  "chunk_offset": {
+   "chunk_points": 4000,
+   "activities_over_one_chunk": 68,
+   "activities": 397,
+   "streets_with_a_second_chunk_crossing": 134,
+   "streets": 351
+  },
+  "strava_figures": "none resolved; sections comparing against Strava's own distance are absent"
+ },
+ "overview": {
+  "floor_m": 5.0,
+  "overview_json_mb": 2.47,
+  "overview_points": 55373,
+  "lon_span_deg": 262.19,
+  "lat_span_deg": 26.35,
+  "home_span_deg": 1.01,
+  "home_lat_span_deg": 0.21
+ },
+ "streets": {
+  "streets": 351,
+  "inflation_pct": {
+   "above_zero": 346,
+   "above_zero_frac": 0.9858,
+   "min": -4.13,
+   "p10": 1.16,
+   "median": 2.98,
+   "p90": 6.7,
+   "max": 26.67,
+   "percentile_method": "numpy default (linear interpolation)"
+  },
+  "adjusted_pts": {
+   "p5": -2.22,
+   "median": -0.02,
+   "p95": 4.41,
+   "p95_p5_spread": 6.63
+  },
+  "noise_breaks": {
+   "edges_pct": [
+    1.0,
+    2.0,
+    3.0,
+    4.5,
+    7.0,
+    10.0
+   ],
+   "class_counts": [
+    27,
+    72,
+    77,
+    79,
+    68,
+    23,
+    5
+   ],
+   "mirrors": "NOISE_BREAKS in lines.mjs"
+  },
+  "crossings": {
+   "total": 9829,
+   "p5_pct": -0.11,
+   "median_pct": 2.78,
+   "p90_pct": 9.03
+  },
+  "ghost_sampling": {
+   "cap": 12,
+   "streets_over_cap": 167,
+   "max_crossings": 179,
+   "on_max_street_head_mean_adj_pts": 3.78,
+   "on_max_street_even_mean_adj_pts": -1.34,
+   "on_max_street_all_mean_adj_pts": -1.76,
+   "on_max_street_head_minus_all_pts": 5.54,
+   "on_max_street_even_minus_all_pts": 0.42
+  },
+  "gates": {
+   "min_traversal_m": 60.0,
+   "speed_band_ms": [
+    2.0,
+    5.0
+   ],
+   "spacing_band_m": [
+    3.0,
+    4.0
+   ],
+   "min_traversals": 6,
+   "min_activities": 3
+  },
+  "dataset": {
+   "crossings": 9829,
+   "crossings_past_the_end_of_their_run": 0,
+   "crossings_from_an_unknown_run": 0,
+   "spans_fit_their_runs": true
+  }
+ },
+ "grid": {
+  "cells": 178,
+  "cell_deg": 0.002,
+  "cell_m_approx": 222,
+  "window_m": 150.0,
+  "floor_m": 5.0,
+  "min_windows": 12,
+  "min_activities": 4,
+  "between_cell_spread_pts": {
+   "raw": 2.43,
+   "after_speed_control": 2.16,
+   "survives_frac": 0.889,
+   "definition": "p95 minus p5 of the per-cell medians, in points"
+  },
+  "speed_control": {
+   "r_before": -0.361,
+   "r_after": -0.077,
+   "variance_explained_before_frac": 0.1303,
+   "variance_explained_after_frac": 0.006,
+   "windows_in_reported_cells": 10042,
+   "median_inflation_by_speed": [
+    {
+     "band_ms": [
+      2.0,
+      2.5
+     ],
+     "n": 279,
+     "median_inflation_pct": 4.44
+    },
+    {
+     "band_ms": [
+      2.5,
+      3.0
+     ],
+     "n": 1841,
+     "median_inflation_pct": 2.8
+    },
+    {
+     "band_ms": [
+      3.0,
+      3.5
+     ],
+     "n": 5307,
+     "median_inflation_pct": 2.29
+    },
+    {
+     "band_ms": [
+      3.5,
+      4.0
+     ],
+     "n": 2456,
+     "median_inflation_pct": 1.94
+    },
+    {
+     "band_ms": [
+      4.0,
+      4.5
+     ],
+     "n": 142,
+     "median_inflation_pct": 1.54
+    }
+   ]
+  },
+  "dataset": {
+   "crossings": 10042,
+   "crossings_past_the_end_of_their_run": 0,
+   "crossings_from_an_unknown_run": 0,
+   "spans_fit_their_runs": true
+  }
+ }
+}

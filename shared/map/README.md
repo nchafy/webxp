@@ -294,10 +294,15 @@ more than the bug it was hiding.
 
 `scripts/cdp.py` is copied from the author's Show Up NYC project. It drives the system
 Chrome over the DevTools Protocol, because a check harness that installs its own browser
-is a bigger dependency than the site it checks. Its one requirement:
+is a bigger dependency than the site it checks.
+
+The one venv at the repository root serves both the harness and the day 02 measurement
+tools, and they need different packages:
 
 ```
-python3 -m venv .venv && .venv/bin/pip install websocket-client
+python3 -m venv .venv
+.venv/bin/pip install websocket-client                        # scripts/check.py
+.venv/bin/pip install -r apps/day-02-lines/tools/requirements.txt   # the day 02 tools
 ```
 
 Nothing the site itself serves needs Python, a venv, or a build step.

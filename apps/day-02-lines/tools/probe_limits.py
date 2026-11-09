@@ -2,10 +2,11 @@
 
     .venv/bin/python -I apps/day-02-lines/tools/probe_limits.py
 
-`match_trace` chunks at 1500 points, which was a guess. At that size a 1.6M-point history
-is over 1,200 requests against a volunteer-run service. If the instance accepts a much
-larger shape, the same work is a fraction of the requests, which is the difference between
-a rude job and a polite one.
+A chunk size is otherwise a guess, and a guess costs requests against a volunteer-run
+service — the difference between a rude job and a polite one, which is why the ceiling is
+worth measuring rather than assuming. `gpsnoise.MATCH_CHUNK`'s comment is the one place the
+chosen size, the measured ceiling it sits under, and the request count it saves are stated.
+Changing it there SHOULD mean re-running this probe first.
 
 Probes with a synthetic trace -- a real Valhalla route, resampled and jittered -- rather
 than with anybody's actual run, since a limit probe has no business sending real data.

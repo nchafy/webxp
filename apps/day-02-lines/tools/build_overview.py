@@ -8,14 +8,16 @@ not mean matching four thousand kilometres of running again.
 
 ## Why an overview exists
 
-A real history is too big to hand a browser whole. 401 activities at 1 Hz is 1.6M points,
-about 35 MB of JSON, and re-simplifying all of it on every frame of a slider drag is
-seconds of work per frame.
+A real history is too big to hand a browser whole: 400-odd activities at 1 Hz is over a
+million points, which `prepare.py` writes as tens of megabytes of per-activity JSON.
+`export.points_total` and `export.per_activity_json_mb` in `data/noise-summary.json` are
+the figures for a given export, and `overview.overview_json_mb` is what this file produces
+from it.
 
 So the page gets two things. This file -- every activity, simplified to a stated floor --
-is what draws the map. The full-resolution per-activity documents stay on disk and are
-fetched one at a time when the reader selects a run, which is when the slider becomes
-continuous and exact.
+is what draws the map, at a fraction of that size. The full-resolution per-activity
+documents stay on disk and are fetched one at a time when the reader selects a run, which
+is where the measurement has to be exact.
 
 The floor is labelled in the interface rather than hidden. An overview drawn at 5 m and a
 distance quoted at full resolution would be a map disagreeing with its own caption.

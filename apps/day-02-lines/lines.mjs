@@ -17,8 +17,11 @@
  *
  * ## Why there are two resolutions
  *
- * A real history is 400-odd activities and over a million points. Handing a browser all
- * of it is 35 MB. So:
+ * A real history is 400-odd activities and over a million points, which `prepare.py` writes
+ * as tens of megabytes of per-activity JSON. The figures for a given export are
+ * `export.activities`, `export.points_total` and `export.per_activity_json_mb` in
+ * `data/noise-summary.json`, which `tools/make_summary.py` writes -- not quoted here,
+ * because they are a property of one export and this comment is not. So:
  *
  * - `overview.json` holds every run simplified to a stated floor. It draws the map, and
  *   the floor is printed in the interface rather than hidden.
@@ -122,9 +125,10 @@ const SCRIM = 'rgba(20, 22, 26, 0.62)';
  *
  * This replaced a diverging blue-to-red with a grey midpoint, which was correct while the
  * mapped value was `adjusted_pts` -- a residual either side of zero, where the middle really
- * did mean "unremarkable". The mapped value is now `inflation_pct`, which is above zero for
- * 98.7% of the 395 streets measured, so a neutral midpoint would sit near the bottom of the
- * data and mean nothing.
+ * did mean "unremarkable". The mapped value is now `inflation_pct`, which is above zero on
+ * almost every street measured, so a neutral midpoint would sit near the bottom of the data
+ * and mean nothing. The fraction is `streets.inflation_pct.above_zero_frac` in
+ * `data/noise-summary.json`, which is where to check it rather than here.
  *
  * Amber also takes noise off the two hues the run lines use. Those are magenta and cyan, and
  * the old ramp's blue and red were close enough to both that a reader had to remember which
@@ -145,9 +149,20 @@ const NOISE_RAMP = ['#7d6436', '#997a37', '#b49238', '#cdab36', '#e0c342', '#eed
 //: greyscale, before anyone finds the legend, and for a reader who cannot separate the hues.
 const NOISE_WIDTHS = [1.3, 2.0, 2.6, 3.2, 3.8, 4.5, 5.2];
 
-//: Class edges in percent, from the measured distribution across 395 streets rather than
-//: from round numbers picked first: median 3.31%, p10 1.22%, p90 6.96%, max 26.59%. The
-//: resulting classes hold 28, 67, 78, 100, 82, 32 and 8 streets.
+/* Class edges in percent, set from a measured distribution rather than from round numbers
+ * picked first: roughly p10, the median and p90 of the per-street inflation, with the top
+ * two classes covering a long tail that reaches the mid-twenties.
+ *
+ * The distribution these were chosen against, and the count of streets each class holds,
+ * are `streets.inflation_pct` and `streets.noise_breaks.class_counts` in
+ * `data/noise-summary.json`, which `tools/make_summary.py` writes from the same
+ * `street-noise.json` this file draws. Deliberately not restated here: a distribution is a
+ * property of one export, a comment quoting it goes stale on the next run, and the
+ * generator reads the breaks below so the two cannot disagree about where a class starts.
+ *
+ * One thing worth knowing before comparing against a figure elsewhere: the percentiles in
+ * that file are numpy's default linear interpolation, and `method='lower'` moves p10 and
+ * p90 by about a hundredth of a point. The estimator matters more than the rounding here. */
 const NOISE_BREAKS = [1.0, 2.0, 3.0, 4.5, 7.0, 10.0];
 
 const PROP = 'inflation_pct';
@@ -181,10 +196,17 @@ const GHOST_CAP = 12;
  * (`street_segments.py` writes `sorted(..., key=-adjusted_pts)`), so taking the first
  * `GHOST_CAP` drew the worst twelve and the bundle's width was the width of the tail.
  *
- * Measured on the 401-activity export: 193 of 395 streets carry more than twelve crossings,
- * and on the worst (197 crossings) the drawn twelve averaged +20.76 adjusted points against
- * +4.84 across all of them — the overlay overstated that street's noise by 4.3x, which is
- * the one number on the page a reader is invited to judge by eye.
+ * Roughly half the streets carry more than twelve crossings, so this is the common case and
+ * not an edge one. `streets.ghost_sampling` in `data/noise-summary.json` measures the bias
+ * directly: on the most-crossed street it reports the mean adjusted points of the first
+ * twelve, of an even sample of twelve, and of all of them.
+ *
+ * On the measured export the head of the list ran **5.5 points** above that street's own
+ * average where the even sample sits within half a point of it — and the bundle's width is
+ * the one thing on the page a reader is invited to judge by eye, so a biased sample is a
+ * wrong answer delivered visually. Reported as a difference rather than a ratio: the value
+ * is a speed residual either side of zero, and a ratio of two means across zero carries a
+ * sign rather than a magnitude.
  *
  * Evenly spaced over the sorted list is a quantile sample: it keeps both extremes and the
  * middle, so the bundle spans what the street actually did. Deterministic, so the same
@@ -242,9 +264,10 @@ const LADDER_TOLERANCES = [0, 0.5, 1, 2, 3, 5, 8, 12, 20, 35, 60, 100];
 /* Where the day opens. A stated choice, not a derived one.
  *
  * It used to fit the camera to `overview.home`, the densest cluster `build_overview.py`
- * computes — and that opened on empty hillside. The box spans a degree of longitude,
+ * computes — and that opened on empty hillside. That box can span a degree of longitude,
  * reaching from a city to mountains an hour east of it, so its midpoint is in neither: the
  * runs were two tight knots at opposite ends of a frame centred on the gap between them.
+ * `overview.home_span_deg` in `data/noise-summary.json` is the width for a given export.
  *
  * A history with runs in several places has no single correct opening view, so deriving one
  * produces a confident wrong answer. New York is where this project's committed synthetic
@@ -568,11 +591,13 @@ export async function startDay({ win, chrome }) {
 
       // The segments where the reader is already looking, not a fixed cluster.
       //
-      // Fitting *all* of them spans every city the runner has ever visited — here 262 degrees
-      // of longitude — so the camera goes continental and every segment is sub-pixel. The
-      // previous rule was `overview.home`, which meant pressing this in New York flew to
-      // Seattle. Asking the map what is on screen keeps the press local, and it needs no
-      // stored idea of where home is.
+      // Fitting *all* of them spans every city the runner has ever visited, which on a
+      // history crossing the Pacific is most of a hemisphere of longitude — so the camera
+      // goes continental and every segment is sub-pixel. `overview.lon_span_deg` in
+      // `data/noise-summary.json` is that width for a given export. The previous rule was
+      // `overview.home`, which meant pressing this in New York flew to Seattle. Asking the
+      // map what is on screen keeps the press local, and it needs no stored idea of where
+      // home is.
       //
       // LineString, so `coordinates` is already the list of positions. It was `[[ring]]` when
       // these were squares, and the leftover `[0]` indexing fed bare numbers to a destructure

@@ -29,8 +29,9 @@ import gpsnoise as gn  # noqa: E402
 
 FAILURES: list[str] = []
 
-# Two legs in Manhattan and one in Brooklyn: a street grid, a park path, and a stretch
-# of waterfront. Different enough that a matcher working on only one of them shows up.
+# Two legs in Manhattan and one in Brooklyn: a street grid and two park path networks.
+# Different enough that a matcher working on only one kind of geometry shows up -- a grid
+# is densely noded and well mapped, a park path is neither.
 LEGS = [
     ("Upper West Side grid", (40.7681, -73.9819), (40.7731, -73.9712)),
     ("Central Park paths", (40.7686, -73.9742), (40.7812, -73.9665)),

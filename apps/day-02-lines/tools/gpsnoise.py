@@ -154,13 +154,14 @@ def project(lat: np.ndarray, lon: np.ndarray) -> tuple[np.ndarray, np.ndarray, d
     # One libm call is still trusted, and it does not hold. `math.cos` and `Math.cos`
     # disagree by one ulp at some latitudes -- at 40.664366 N, 0x3fe845f5271c98a0 against
     # ...a1 -- which carries into `kx` and flips the occasional near-threshold
-    # Douglas-Peucker decision. Rare: on a private export of about four hundred activities
-    # one rung of several thousand kept a neighbouring point instead, which moved that rung's
-    # length by millimetres while every surviving-point *count* still matched exactly. That
-    # count and that millimetre figure predate `--trim-m` and are provisional; the mechanism
-    # does not depend on the dataset. There is no fix on this side either way, so a check
-    # comparing the two implementations has to budget for it rather than assume bitwise
-    # agreement. `shared/map/README.md` § Not checked carries what was measured.
+    # Douglas-Peucker decision. Rare and not proportional to anything: on a 397-activity
+    # export, 1 rung of 4,764 kept a neighbouring point instead, worth 72 mm on an 11.1 km
+    # trace, while every surviving-point *count* still matched exactly. The size comes from
+    # local geometry rather than from the trace length -- the same flip was 8.5 mm on a
+    # longer trace before the crop. There is no fix on this side, so a check comparing the
+    # two implementations must assert the counts exactly and bound the lengths relatively
+    # rather than assume bitwise agreement. `shared/map/README.md` § Not checked has the
+    # numbers.
     ky = (math.pi / 180.0) * m_rad
     kx = (math.pi / 180.0) * n_rad * math.cos(phi)
     y = (lat - lat0) * ky

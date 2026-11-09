@@ -348,13 +348,22 @@ Two defences, in order:
    band, speed still explains of the order of a tenth of the variance. So each window is
    compared against the median inflation of other windows *at the same speed* — equal-count
    bins and a median, non-parametric because the relationship is curved — and what gets
-   mapped is the residual. After that, under one percent is left.
-   `grid.speed_control` in `noise-summary.json` carries both figures and the bin count,
-   which follows the number of windows rather than being fixed.
+   mapped is the residual. `grid.speed_control` in `noise-summary.json` carries both figures.
+   The number of bins follows the number of windows rather than being fixed; the script
+   prints it and the summary does not record it.
 
 The script prints the variance explained before and after, and warns if over 1% remains.
-Judging it on variance rather than on `r` is deliberate: an `r` of −0.065 sounds like a
-leftover relationship and is four parts in a thousand.
+Judging it on variance rather than on `r` is deliberate: an `r` of −0.077 sounds like a
+leftover relationship and is six parts in a thousand.
+
+**The two pipelines do not come out the same, and the street one does not clear its own
+bar.** On the measured export the grid goes from 13.0% of variance explained by speed to
+**0.6%**, which passes. The street segments go from 17.4% to **1.4%**, which does not:
+`street_segments.py` warns at `abs(r_after) > 0.1` and its residual `r` is −0.119, so the
+warning fires. A street traversal is a longer and more variable unit than a 150 m window —
+`MIN_TRAVERSAL_M` is 60 m with no upper bound — so one equal-count binning of speed leaves
+more behind. The honest reading is that the grid's spatial pattern is speed-controlled and
+the street overlay's is only mostly speed-controlled. Do not quote one figure for both.
 
 ### What survived
 

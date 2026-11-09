@@ -6,8 +6,9 @@ Reads every activity, reports point counts, sample spacing and the bounding box,
 prices the map matching in requests. Nothing is written and nothing is fetched.
 
 The reason this exists ahead of `prepare.py`: map matching a whole history is thousands of
-requests, and `docs/gps-noise.md` says not to point that at the FOSSGIS volunteers' public
-instance. Knowing the number first is what makes that a decision rather than a discovery.
+requests, and `apps/day-02-lines/README.md` § Privacy and licensing says not to point that
+at the FOSSGIS volunteers' public instance. Knowing the number first is what makes that a
+decision rather than a discovery.
 """
 
 from __future__ import annotations
