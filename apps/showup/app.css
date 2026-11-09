@@ -1,0 +1,70 @@
+/* The Show Up NYC folder.
+ *
+ * Every rule is scoped under `.app-showup`, which webxp puts on this app's window body. An
+ * unscoped rule here would reach into every other app's windows — including the four this
+ * folder opens.
+ *
+ * Colours come from the theme's tokens rather than from values of their own, so the folder
+ * follows the desktop into dark mode without knowing that dark mode exists.
+ */
+
+.app-showup .folder-root { padding: .2rem; }
+
+.app-showup .folder-lede {
+  margin: 0 0 .7rem;
+  color: var(--muted);
+}
+
+.app-showup .folder-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: .3rem;
+}
+
+/* The row is the whole target: 32px of icon plus two lines of text is comfortably past the
+   24px SC 2.5.8 floor in both directions, and a reader aiming at the name should not be able
+   to miss by hitting the gap beside it. */
+.app-showup .folder-open {
+  display: flex;
+  width: 100%;
+  gap: .6rem;
+  align-items: flex-start;
+  padding: .5rem;
+  text-align: left;
+  /* Not a control: a folder's contents are rows, and the beveled gradient `theme.css` gives
+     a button would make four of them look like a toolbar. The hover and focus states below
+     are what say it is activatable. */
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 0;
+  box-shadow: none;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+/* XP's selected-item blue, which is the same pair the Start menu and the suggestion list
+   use. White on `--title-a` measures 14.25:1. */
+.app-showup .folder-open:hover,
+.app-showup .folder-open:focus-visible {
+  background: var(--title-a);
+  color: #fff;
+  border-color: var(--title-a);
+}
+.app-showup .folder-open:hover .folder-what,
+.app-showup .folder-open:focus-visible .folder-what { color: #dfe8f5; }
+
+.app-showup .folder-art { flex: 0 0 32px; }
+
+.app-showup .folder-text { display: flex; flex-direction: column; gap: .1rem; min-width: 0; }
+.app-showup .folder-name { font-weight: 700; }
+.app-showup .folder-what { font-size: 11px; color: var(--muted); }
+
+/* The window, not the screen. A 300px-wide window on a 1600px desktop has a 300px window's
+   problem, and `@media` cannot see it — `.window-body` is a container named `window`. */
+@container window (max-width: 22rem) {
+  .app-showup .folder-what { display: none; }
+  .app-showup .folder-open { align-items: center; }
+}

@@ -1,0 +1,23 @@
+/* The Readme app. Scoped under `.app-showup-readme`, which webxp puts on this window's body.
+ *
+ * Almost everything is `sheet` and `group` from the theme, so there is very little here: only
+ * the prose measure and the one thing a widget does not express.
+ */
+
+.app-showup-readme .readme-title { margin: 0 0 .4rem; font-size: 1.1rem; }
+
+/* A line length, not a width: past about 75 characters the eye loses the return sweep, and a
+   maximised window is far wider than that. */
+.app-showup-readme .readme-line { margin: 0 0 .7rem; max-width: 42rem; }
+
+.app-showup-readme .readme-freshness { font-weight: 700; }
+
+/* A source past its own max age. The fill is the warning pair from `showup.css`.
+   The fill is not the signal: this branch names the source and states its declared window,
+   which the fresh branch does not, so the text alone distinguishes the two (SC 1.4.1). It
+   said so here before that was true — the two branches then differed only by this fill. */
+.app-showup-readme .readme-freshness.is-stale {
+  background: var(--urgent-bg);
+  color: var(--urgent-ink);
+  padding: .1rem .3rem;
+}

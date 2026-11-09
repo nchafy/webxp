@@ -1,0 +1,111 @@
+/* The Map app.
+ *
+ * Every rule is scoped under `.app-showup-map`, which webxp puts on this window's body.
+ *
+ * The specificity warning in `docs/apps.md` applies here and is why the canvas rule carries
+ * three classes. The original page relied on `.window-body > .map` outranking MapLibre's own
+ * `.maplibregl-map`, which sets `position: relative`; scoping both under one app class made
+ * them equal, source order decided it, and the container collapsed to 0px high while every
+ * flag read healthy. The map's own stylesheet is not shipped here, but MapLibre sets that
+ * rule from its module too, so the canvas is pinned with enough specificity to win.
+ */
+
+.app-showup-map .map-root {
+  position: relative;
+  /* The window's client area, not the viewport: `100vh` was the page's unit and is wrong for
+     a window that can be any height. */
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.app-showup-map .map-root > .map-canvas {
+  position: absolute;
+  inset: 0;
+  /* Shows during a style load instead of a white flash. */
+  background: #e8e0d8;
+}
+
+/* Floating chrome. The container ignores the pointer so drags reach the canvas; each card
+   takes it back. */
+.app-showup-map .map-cards {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  padding: .5rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: .5rem;
+  overflow: hidden;
+}
+.app-showup-map .map-cards > * { pointer-events: auto; }
+
+.app-showup-map .facts-card[hidden] { display: none; }
+.app-showup-map .facts-card { max-width: min(24rem, calc(100% - 1rem)); }
+
+/* A map control belongs on the map, not in a card. The glyphs are symbols, so each button
+   carries an aria-label — "+" is not a name. */
+.app-showup-map .map-zoom {
+  position: absolute;
+  left: .5rem;
+  bottom: .5rem;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+/* A text button's line box is taller than the glyph, so centring the box does not centre what
+   is drawn. Grid places the glyph itself. */
+.app-showup-map .map-zoom button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  line-height: 1;
+}
+
+/* Attribution. Every basemap source requires it, so this is a licence term and nothing is
+   allowed to cover it: it sits above the cards' stacking context and the panel has none. */
+.app-showup-map .map-attrib {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  z-index: 4;
+  margin: 0;
+  padding: .1rem .4rem;
+  max-width: min(34rem, 70%);
+  font-size: 10px;
+  line-height: 1.5;
+  background: var(--attrib-bg);
+  color: var(--ink);
+}
+.app-showup-map .map-attrib a { color: var(--accent); }
+
+.app-showup-map .map-status {
+  margin: 0;
+  padding: .15rem .45rem;
+  max-width: min(26rem, calc(100% - 1.5rem));
+  font-size: 11px;
+  background: var(--attrib-bg);
+  border: 1px solid var(--rule);
+}
+.app-showup-map .map-status:empty { display: none; }
+
+/* MapLibre puts `tabindex="0"` on its canvas, so a keyboard reader lands on the map and can
+   pan it with the arrow keys. Without this they land on it and see nothing. The offset is
+   negative because the ring would otherwise be clipped by the container's edge. */
+.app-showup-map .maplibregl-canvas:focus,
+.app-showup-map .maplibregl-canvas:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: -3px;
+}
+
+/* The window, not the screen: a 320px-wide window on a 1600px desktop has a phone's problem
+   and `@media` cannot see it. */
+@container window (max-width: 26rem) {
+  .app-showup-map .map-cards { padding: .35rem; gap: .35rem; }
+  .app-showup-map .facts-card { max-width: calc(100% - .7rem); }
+}
