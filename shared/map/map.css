@@ -10,16 +10,6 @@
  * link cache on the resolved href, so thirty-one apps asking for this file link it once.
  */
 
-/* The base map's own styles.
- *
- * Ported from the original project's page stylesheet. Every rule is scoped under
- * `.app-basemap`, which the loader puts on this app's window body — including MapLibre's own
- * rules, because a bare `.maplibregl-canvas` would reach into any other app that ever draws
- * a map.
- *
- * The other half of the port: rules written against `body` and `100vh` became rules against
- * this app's root and `100%`. A window is not a viewport.
- */
 /* A column: the map area, then the credit. `chrome.mjs` carries why the credit is a row of
    this column and not a layer over the canvas. */
 .map-root {
@@ -111,7 +101,6 @@
    basemap switcher. */
 .map-root .tilt-row { align-items: center; gap: .45rem; margin-top: .4rem; }
 
-/* Zoom buttons, bottom-left over the canvas: a map control belongs on the map. */
 /* Bottom-right, opposite the control column.
  *
  * It was bottom-left, which is the same corner the overlay column grows into: day 02's four
@@ -162,8 +151,6 @@
 
 .map-root .map-tilt[hidden] { display: none; }
 
-/* Attribution. Every source in `basemap.mjs` requires it, so this is a licence term and not
-   a nicety: nothing is allowed to cover it. */
 /* The status bar: a row of `.map-root`'s column and a sibling of `.map-area`, so it sits
    outside every stacking context the map builds. `chrome.mjs` carries why both panes are here
    rather than over the canvas. `flex: 0 0 auto` so a tall map cannot squeeze it away.
@@ -193,6 +180,9 @@
   color: var(--ink);
 }
 
+/* Attribution. Every source in `basemap.mjs` requires it, so this is a licence term and not a
+   nicety: nothing is allowed to cover it. That is what `.detail`'s `overflow: hidden` below is
+   for, and the reason the bar's panes wrap rather than truncate. */
 .map-root .map-attrib {
   flex: 0 1 auto;
   margin: 0;
@@ -201,8 +191,6 @@
   text-align: right;
   color: var(--ink);
 }
-
-.map-root .map-attrib a { color: var(--accent); }
 
 /* ---------------------------------------------------------------------------
    The drill-down panel. Docked right when there is room, a bottom sheet when there is not.
@@ -305,10 +293,15 @@
 
 /* ---------------------------------------------------------------------------
    MapLibre's own stylesheet, reduced to the rules that matter.
-   Copied from `maplibre-gl.css` (BSD-3-Clause; `vendor/LICENSE.txt` ships beside it). This
-   app draws its own zoom buttons and renders no MapLibre control, so the rest of the 10 KB
-   file matches nothing here. The touch-action rules are kept: dropping them breaks pinch
-   zoom, which no desktop check would catch.
+   Copied from `maplibre-gl.css` (BSD-3-Clause; `vendor/LICENSE.txt` ships beside it).
+   `chrome.mjs` draws the zoom buttons and the compass, and nothing calls `addControl`, so
+   the rest of the 10 KB file matches nothing here. The touch-action rules are kept: dropping
+   them breaks pinch zoom, which no desktop check would catch.
+
+   The four `maplibregl-ctrl-*` corner containers are the exception that does match and is
+   still not kept. MapLibre creates all four divs whatever you ask for, and with
+   `attributionControl: false` in `basemap.mjs` and no control added they stay empty, so
+   positioning and z-indexing them positions nothing.
    --------------------------------------------------------------------------- */
 .map-root .maplibregl-map { overflow: hidden; position: relative; -webkit-tap-highlight-color: rgb(0 0 0 / 0); }
 
@@ -326,8 +319,3 @@
 
 .map-root .maplibregl-canvas-container.maplibregl-touch-zoom-rotate.maplibregl-touch-drag-pan,
 .map-root .maplibregl-canvas-container.maplibregl-touch-zoom-rotate.maplibregl-touch-drag-pan .maplibregl-canvas { touch-action: none; }
-
-.map-root .maplibregl-ctrl-bottom-left,
-.map-root .maplibregl-ctrl-bottom-right,
-.map-root .maplibregl-ctrl-top-left,
-.map-root .maplibregl-ctrl-top-right { position: absolute; pointer-events: none; z-index: 2; }

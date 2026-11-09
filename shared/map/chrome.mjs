@@ -27,7 +27,6 @@
  *         .overlays         inset over the map; control cards stack here
  *           .card           the basemap switcher and Tilt
  *           .overlay-cards  where an app appends its own
- *           .map-status     a live region, under the cards so it cannot cover one
  *         .map-zoom         zoom pair and compass, bottom-right over the canvas
  *         .detail           the drill-down panel, docked right, hidden until used
  *       .map-bar            the status bar — a row of the column, NOT a layer over the map
@@ -128,7 +127,7 @@ function compass() {
  *        leaving it is six nodes.
  * @returns {{root: HTMLElement, area: HTMLElement, overlays: HTMLElement,
  *            cards: HTMLElement, card: HTMLElement, status: HTMLElement,
- *            detail: HTMLElement|null, instance: number}}
+ *            bar: HTMLElement, detail: HTMLElement|null, instance: number}}
  *          `instance` is a serial for this subtree. An app that needs an id — `label[for]`
  *          and `aria-describedby` take one — must suffix it, because two windows of one app
  *          would otherwise mint the same id twice and a label would point at the other
