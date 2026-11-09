@@ -58,7 +58,8 @@ const OPENFREEMAP = 'https://tiles.openfreemap.org/styles/liberty';
 //: Leaflet and MapLibre provider lists, but Esri's terms govern ArcGIS Online basemaps and
 //: generally contemplate an account for application use
 //: (https://www.esri.com/en-us/legal/terms/full-master-agreement). Nobody here has confirmed
-//: this use is licensed, so it is documented rather than assumed: docs/basemap.md §Licensing.
+//: this use is licensed, so it is documented rather than assumed: shared/map/README.md
+//: §Licensing. The file that comment used to cite, docs/basemap.md, does not exist here.
 //: Attribution to Esri is required and is set on the source.
 const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services';
 

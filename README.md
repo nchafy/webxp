@@ -151,6 +151,23 @@ directory-only and a symlink is a blob. `.gitignore` now carries both forms.
 
 Also avoid `git push --mirror`, which would carry `refs/stash`.
 
+## Licence
+
+MIT, in `LICENSE`, for this project's own code.
+
+Third-party work keeps its own terms and they are listed there: MapLibre GL JS v6.15.0 is
+redistributed under BSD-3-Clause with its notice beside it in `shared/map/vendor/`, and the
+map tiles are fetched at runtime rather than redistributed — OpenStreetMap (ODbL),
+OpenFreeMap, OpenTopoMap (CC-BY-SA, non-commercial only) and Esri imagery. Credits render in
+the interface and `scripts/check.py` asserts nothing covers them.
+
+One term is openly unresolved: **nobody here has confirmed the Esri imagery use is
+licensed.** `shared/map/README.md` §Licensing says so rather than assuming, and the
+`satellite` preset is the only thing that depends on it.
+
+Windows XP, Luna, Bliss and Clippy are Microsoft's. This is an homage containing no Microsoft
+files — the wallpaper is CSS gradients, the assistant is hand-drawn SVG.
+
 ## Read next
 
 `docs/review.md` has the findings raised against this extraction, each with its failure
