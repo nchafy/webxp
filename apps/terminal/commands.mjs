@@ -1,7 +1,11 @@
 /* The commands. One table, one entry per command, each entry a `run(context)`.
  *
  * A command reads `context.stdin`, writes with `context.write`, reports with `context.warn`
- * and returns an exit status. It never touches the DOM and never knows whether its output is
+ * and returns an exit status. A command that reads a *file's* contents also declares
+ * `reads: 'operands'` or `reads: 'tree'`, which is what makes the shell fetch mounted files
+ * before it runs: `/usr/src/webxp` is the real repository and its bodies arrive over the
+ * network. Declared rather than discovered, so `ls` and `find` — which need only the sizes
+ * and dates the index already carries — fetch nothing. It never touches the DOM and never knows whether its output is
  * going to the pane, into a pipe or into a file — which is what makes `ls -l > listing.txt`
  * work without `ls` knowing that redirection exists.
  *
@@ -417,6 +421,7 @@ export const COMMANDS = {
 
   file: {
     group: 'navigate',
+    reads: 'operands',
     usage: 'file path...',
     summary: 'what a name holds',
     run(ctx) {
@@ -512,6 +517,14 @@ export const COMMANDS = {
         + `${size(stats.total - stats.used).padStart(10)}  ${String(percent).padStart(3)}%  /`,
       );
       ctx.line(`${stats.dirs} directories, ${stats.files} files, ${stats.links} symlinks, ${stats.inodes} inodes`);
+      // Named, because otherwise 136 files in a filesystem using 2 KB reads as a bug. The
+      // mounted ones are the repository: read-only, fetched on demand, and not counted
+      // against the quota because they are never saved.
+      const { mounted } = await import('../../shared/fs/fs.mjs');
+      if (mounted.error) ctx.line(`mount: unavailable — ${mounted.error}`);
+      else if (mounted.root) {
+        ctx.line(`mount: ${mounted.files} read-only files at ${mounted.root}, fetched on first read`);
+      }
       // The persistence state belongs with the free space: both answer "will this still be
       // here tomorrow". Imported here rather than at the top so the command table stays
       // loadable without a mount.
@@ -529,6 +542,7 @@ export const COMMANDS = {
 
   cat: {
     group: 'read',
+    reads: 'operands',
     usage: 'cat [-n] [file...]',
     summary: 'print a file; no file reads the pipe',
     run(ctx) {
@@ -551,6 +565,7 @@ export const COMMANDS = {
 
   head: {
     group: 'read',
+    reads: 'operands',
     usage: 'head [-n lines] [file...]',
     summary: 'the first lines',
     run(ctx) {
@@ -567,6 +582,7 @@ export const COMMANDS = {
 
   tail: {
     group: 'read',
+    reads: 'operands',
     usage: 'tail [-n lines] [file...]',
     summary: 'the last lines',
     run(ctx) {
@@ -584,6 +600,7 @@ export const COMMANDS = {
 
   wc: {
     group: 'read',
+    reads: 'operands',
     usage: 'wc [-l] [-w] [-c] [file...]',
     summary: 'count lines, words, characters',
     run(ctx) {
@@ -614,6 +631,7 @@ export const COMMANDS = {
 
   grep: {
     group: 'read',
+    reads: 'tree',
     usage: 'grep [-i] [-n] [-v] [-c] [-l] [-r] pattern [file...]',
     summary: 'lines matching a pattern; the pattern is a regular expression',
     run(ctx) {
@@ -692,6 +710,7 @@ export const COMMANDS = {
 
   sort: {
     group: 'read',
+    reads: 'operands',
     usage: 'sort [-r] [-n] [-u] [file...]',
     summary: 'sort lines',
     run(ctx) {
@@ -711,6 +730,7 @@ export const COMMANDS = {
 
   uniq: {
     group: 'read',
+    reads: 'operands',
     usage: 'uniq [-c] [file]',
     summary: 'collapse repeated adjacent lines',
     run(ctx) {
@@ -936,6 +956,7 @@ export const COMMANDS = {
 
   cp: {
     group: 'write',
+    reads: 'tree',
     usage: 'cp [-r] source... dest',
     summary: 'copy',
     run(ctx) {
@@ -1304,6 +1325,7 @@ export const COMMANDS = {
 
   open: {
     group: 'session',
+    reads: 'operands',
     usage: 'open path',
     summary: 'open a file in Notepad, or a directory in a new terminal',
     async run(ctx) {

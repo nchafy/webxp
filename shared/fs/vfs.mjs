@@ -68,12 +68,21 @@ const MESSAGES = {
   ENOSPC: 'No space left on device',
   ENAMETOOLONG: 'File name too long',
   EBUSY: 'Device or resource busy',
+  EFBIG: 'File too large',
+  EAGAIN: 'Resource temporarily unavailable',
 };
 
-/** A refusal from the filesystem, carrying the code a caller can branch on. */
+/**
+ * A refusal from the filesystem, carrying the code a caller can branch on.
+ *
+ * `detail` replaces the code's standard wording for the cases where the code is right and
+ * the sentence is not: a mounted `.png` is `EINVAL` because it is not a thing this
+ * filesystem can hold, and "Invalid argument" would send the reader looking for a typo.
+ */
 export class FsError extends Error {
-  constructor(code, path = '') {
-    super(path ? `${path}: ${MESSAGES[code] || code}` : (MESSAGES[code] || code));
+  constructor(code, path = '', detail = '') {
+    const reason = detail || MESSAGES[code] || code;
+    super(path ? `${path}: ${reason}` : reason);
     this.name = 'FsError';
     this.code = code;
     this.path = path;
@@ -385,10 +394,15 @@ export class VFS {
       mtime: inode.mtime,
       ctime: inode.ctime,
       atime: inode.atime,
+      // A mounted file knows its size before it has its contents, which is the whole point
+      // of the index: `ls -l` and `du` are answered without fetching anything.
       size: inode.type === DIR
         ? inode.entries.size
-        : inode.type === LINK ? inode.target.length : inode.data.length,
+        : inode.type === LINK
+          ? inode.target.length
+          : inode.data === null ? inode.source.size : inode.data.length,
     };
+    if (inode.source) info.mounted = true;
     if (inode.type === LINK) info.target = inode.target;
     return info;
   }
@@ -419,8 +433,36 @@ export class VFS {
     const { inode } = this.#existing(path, options);
     if (inode.type === DIR) throw new FsError('EISDIR', path);
     this.#need(inode, R, path);
+    if (inode.data === null) this.#refuseUnhydrated(inode, path);
     inode.atime = Date.now();
     return inode.data;
+  }
+
+  /**
+   * Why a mounted file has no contents yet — one of three different answers.
+   *
+   * Kept out of `readFile` because the three are not variations: two are permanent facts
+   * about the file and the third is a missing step in the caller. A single "cannot read"
+   * would make the caller's bug look like the file's.
+   */
+  #refuseUnhydrated(inode, path) {
+    if (!inode.source.text) {
+      throw new FsError('EINVAL', path, 'Not a text file — this filesystem holds text');
+    }
+    if (inode.source.size > MAX_FILE_SIZE) {
+      throw new FsError(
+        'EFBIG',
+        path,
+        `File too large to read here — ${inode.source.size} characters, the limit is ${MAX_FILE_SIZE}`,
+      );
+    }
+    // The caller reached a mounted file without fetching it. This is a defect in the
+    // caller, not a state a reader should ever see, so it names the fix.
+    throw new FsError(
+      'EAGAIN',
+      path,
+      'Mounted but not fetched yet — the caller must await hydrate() first',
+    );
   }
 
   readlink(path, options = {}) {
@@ -721,6 +763,116 @@ export class VFS {
     inode.ctime = now;
   }
 
+  /* --------------------------- mounting real files --------------------------- */
+
+  /**
+   * Graft an index of real files onto the tree as read-only names with no contents yet.
+   *
+   * This is what makes `/usr/src/webxp` the repository rather than a story about it. A
+   * browser cannot list a directory over static HTTP, so the index — written by
+   * `scripts/mount.py` — carries the paths and sizes, and each body is fetched the first
+   * time something reads it. `ls`, `find`, `stat` and `du` need only the metadata and never
+   * fetch anything.
+   *
+   * Mounted names are read-only: files `444`, directories `555`. Nothing special enforces
+   * it — the mode bits already do, and a write therefore fails with `EACCES` like any other
+   * refusal. That is the honest answer, because the browser genuinely cannot write to the
+   * server.
+   *
+   * @param {string} at      Where to graft it, e.g. `/usr/src/webxp`.
+   * @param {{files: [string, number, number, number][]}} index
+   *        Rows of `[path, bytes, mtimeSeconds, isText]`, relative to `at`.
+   * @param {(path: string) => string} url  The address to fetch one row's contents from.
+   * @returns {number} How many files were grafted.
+   */
+  mountIndex(at, index, url) {
+    if (!index || !Array.isArray(index.files)) {
+      throw new FsError('EINVAL', at, 'mount index has no file list');
+    }
+    let grafted = 0;
+    this.batch('mount', () => {
+      this.#mountDir(at);
+      for (const row of index.files) {
+        const [relative, size, mtimeSeconds, isText] = row;
+        if (typeof relative !== 'string' || !Number.isInteger(size)) {
+          throw new FsError('EINVAL', at, `mount index has a bad row: ${JSON.stringify(row)}`);
+        }
+        const full = `${at}/${relative}`;
+        const dir = this.#mountDir(dirname(full));
+        const inode = this.#create(FILE, { mode: 0o444 });
+        // Seconds in the index, milliseconds here. The index is written by a Python script
+        // and read by JavaScript, and the two disagree about the unit.
+        inode.mtime = mtimeSeconds * 1000;
+        inode.ctime = inode.mtime;
+        inode.data = null;
+        inode.source = { url: url(relative), size, text: isText === 1 };
+        dir.entries.set(basename(full), inode.ino);
+        grafted += 1;
+      }
+    });
+    return grafted;
+  }
+
+  /** The directory at a path, creating it and its parents as mounted if need be. */
+  #mountDir(path) {
+    const parts = splitPath(path);
+    let dirIno = this.rootIno;
+    for (const part of parts) {
+      const dir = this.#inode(dirIno);
+      const existing = dir.entries.get(part);
+      if (existing !== undefined) {
+        const child = this.#inode(existing);
+        if (child.type !== DIR) throw new FsError('ENOTDIR', path);
+        dirIno = existing;
+        continue;
+      }
+      const made = this.#create(DIR, { mode: 0o555 });
+      made.parent = dirIno;
+      made.mounted = true;
+      dir.entries.set(part, made.ino);
+      dir.nlink += 1;
+      dirIno = made.ino;
+    }
+    return this.#inode(dirIno);
+  }
+
+  /**
+   * Which of these paths still need fetching, with the address to fetch each from.
+   *
+   * The filesystem does no I/O — that is `fs.mjs`'s job, because it is the module that
+   * already owns a network and a `localStorage`. This is the decision half: computation
+   * here, execution there.
+   *
+   * @returns {{path: string, url: string}[]}
+   */
+  pending(paths, { cwd = '/' } = {}) {
+    const need = [];
+    for (const path of paths) {
+      let inode;
+      try {
+        ({ inode } = this.#existing(path, { cwd }));
+      } catch {
+        // A path that does not resolve is not a fetch problem. Whatever reads it next will
+        // report the real reason.
+        continue;
+      }
+      if (inode.type !== FILE || inode.data !== null || !inode.source) continue;
+      if (!inode.source.text || inode.source.size > MAX_FILE_SIZE) continue;
+      need.push({ path, url: inode.source.url });
+    }
+    return need;
+  }
+
+  /** Put a fetched body in place. */
+  fill(path, text, { cwd = '/' } = {}) {
+    const { inode } = this.#existing(path, { cwd });
+    if (inode.type !== FILE || !inode.source) throw new FsError('EINVAL', path, 'not a mounted file');
+    inode.data = String(text);
+    // No change event: the contents were always this, and a watcher that saved on every
+    // `cat` of a mounted file would serialise the repository into `localStorage` one file at
+    // a time.
+  }
+
   /**
    * Empty the filesystem back to a bare root, in place.
    *
@@ -788,9 +940,18 @@ export class VFS {
 
   /* --------------------------- accounting --------------------------- */
 
+  /**
+   * How much of the quota the user's own files take.
+   *
+   * Mounted files are excluded, hydrated or not. The quota exists because the tree is saved
+   * to `localStorage`, mounted files are never saved — they are refetched — and counting
+   * them would mean that reading a few large sources quietly took away the space to write
+   * a note.
+   */
   usedBytes() {
     let total = 0;
     for (const inode of this.inodes.values()) {
+      if (inode.source || inode.mounted) continue;
       if (inode.type === FILE) total += inode.data.length;
       else if (inode.type === LINK) total += inode.target.length;
     }
@@ -802,7 +963,9 @@ export class VFS {
     let files = 0;
     let dirs = 0;
     let links = 0;
+    let mounted = 0;
     for (const inode of this.inodes.values()) {
+      if (inode.source || inode.mounted) mounted += 1;
       if (inode.type === DIR) dirs += 1;
       else if (inode.type === LINK) links += 1;
       else files += 1;
@@ -811,6 +974,9 @@ export class VFS {
       files,
       dirs,
       links,
+      // Counted separately because they are not the user's and do not use the quota: "126
+      // of these files are the repository" is the fact a reader needs to read the rest.
+      mounted,
       inodes: this.inodes.size,
       used: this.usedBytes(),
       total: MAX_TOTAL_SIZE,
@@ -819,12 +985,27 @@ export class VFS {
 
   /* --------------------------- persistence --------------------------- */
 
-  /** A plain object `JSON.stringify` can take. Inode numbers are the whole structure. */
+  /**
+   * A plain object `JSON.stringify` can take. Inode numbers are the whole structure.
+   *
+   * **Mounted names are left out, and so are the entries pointing at them.** They are the
+   * repository: saving them would put a copy of the project in `localStorage` that goes
+   * stale the moment a file changes on disk, and the copy would win on the next reload. They
+   * are re-grafted from the index at every mount, which is why dropping them is safe and
+   * keeping them would not be.
+   *
+   * Dropping the parent entries as well as the inodes is not optional: an entry pointing at
+   * an inode that was not written is exactly the corruption `parse` refuses to load.
+   */
   serialize() {
+    const skipped = new Set();
+    for (const inode of this.inodes.values()) {
+      if (inode.source || inode.mounted) skipped.add(inode.ino);
+    }
     return {
       version: FORMAT_VERSION,
       nextIno: this.nextIno,
-      inodes: [...this.inodes.values()].map((inode) => {
+      inodes: [...this.inodes.values()].filter((inode) => !skipped.has(inode.ino)).map((inode) => {
         const row = {
           ino: inode.ino,
           type: inode.type,
@@ -838,7 +1019,14 @@ export class VFS {
         };
         if (inode.type === DIR) {
           row.parent = inode.parent;
-          row.entries = [...inode.entries.entries()];
+          row.entries = [...inode.entries.entries()].filter(([, ino]) => !skipped.has(ino));
+          // Recomputed from the entries that survived, never carried over. A directory's
+          // link count is its own name plus one `..` per subdirectory, so a parent of the
+          // mount — `/usr` holds `src` — would otherwise be saved with a count that includes
+          // a child that was not saved, and gain another on every reload.
+          row.nlink = 2 + row.entries.filter(
+            ([, ino]) => this.inodes.get(ino).type === DIR,
+          ).length;
         } else if (inode.type === LINK) {
           row.target = inode.target;
         } else {

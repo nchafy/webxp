@@ -280,6 +280,16 @@ export class Shell {
         return 127;
       }
 
+      // Mounted files have no contents until something fetches them, and the command table
+      // declares which commands need contents rather than each command discovering it.
+      // `grep -rn x /usr/src/webxp` has to pull a tree; `ls -l` and `find` never fetch
+      // anything, because the index already carries every size and date they print.
+      if (command.reads === 'operands' || command.reads === 'tree') {
+        const wanted = command.reads === 'tree' ? this.#subtrees(words.slice(1)) : words.slice(1);
+        const { hydrate } = await import('../../shared/fs/fs.mjs');
+        await hydrate(this.fs, wanted, { cwd: this.cwd });
+      }
+
       if (stage.in !== null) {
         try {
           stdin = this.fs.readFile(expandTilde(stage.in), { cwd: this.cwd });
@@ -363,6 +373,33 @@ export class Shell {
       }
     }
     return status;
+  }
+
+  /**
+   * Every file under these paths, for a command that reads a whole tree.
+   *
+   * A word that is not a directory comes back as itself, so `grep -r pattern file` still
+   * works and an option like `-n` resolves to nothing and is harmless. The filesystem
+   * decides which of these actually need fetching.
+   */
+  #subtrees(words) {
+    const paths = [];
+    for (const word of words) {
+      let stat;
+      try {
+        stat = this.fs.stat(word, { cwd: this.cwd });
+      } catch {
+        continue;
+      }
+      if (stat.type !== 'dir') {
+        paths.push(word);
+        continue;
+      }
+      for (const entry of this.fs.walk(word, { cwd: this.cwd })) {
+        if (!entry.error && entry.stat.type === 'file') paths.push(entry.path);
+      }
+    }
+    return paths;
   }
 
   /**

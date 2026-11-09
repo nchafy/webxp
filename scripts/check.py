@@ -4334,6 +4334,59 @@ def check_manifest_current(page) -> list[str]:
     return []
 
 
+def check_mount_index(page) -> list[str]:
+    """The index agrees with the tracked files, and lists nothing it must not.
+
+    Two separate claims. The first is the stale-generated-file problem `manifest is current`
+    already guards for `apps/`. The second is a privacy rule: `.gitignore` excludes
+    `apps/day-*/private/` because it holds real Strava traces, and an index built by walking
+    the working tree would mount them into a filesystem with a browsable `ls`. That
+    directory is absent from some worktrees and present in others, so the walk produces a
+    clean index on one machine and publishes the traces from another — and the clean run is
+    the one you would trust. Asserted against the index rather than against the generator's
+    intent, because the index is what ships.
+    """
+    bad = []
+    result = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "mount.py"), "--check"],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+    if result.returncode != 0:
+        bad.append(
+            "mount index: scripts/mount.py --check failed — "
+            + (result.stderr.strip() or result.stdout.strip()).replace("\n", " | ")
+        )
+
+    index_path = REPO_ROOT / "shared" / "fs" / "mount.json"
+    if not index_path.is_file():
+        return bad + ["mount index: shared/fs/mount.json does not exist"]
+    index = json.loads(index_path.read_text())
+    rows = index.get("files") or []
+    if not rows:
+        return bad + ["mount index: no files listed, so nothing below is being tested"]
+
+    for row in rows:
+        if "/private/" in row[0] or row[0].endswith("/private"):
+            bad.append(f"mount index: lists {row[0]} — ignored private data must never be indexed")
+
+    # And every indexed path is tracked. A path git does not know is a path `.gitignore` was
+    # not consulted about.
+    tracked = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "ls-files", "-z"],
+        capture_output=True, check=False,
+    )
+    if tracked.returncode != 0:
+        bad.append("mount index: could not ask git what is tracked")
+    else:
+        known = {name for name in tracked.stdout.decode().split("\0") if name}
+        for row in rows:
+            if row[0] not in known:
+                bad.append(f"mount index: lists {row[0]}, which git does not track")
+    return bad
+
+
 def check_scaffold(page) -> list[str]:
     """Adding a folder adds an app: scaffold, reload, and it is there and it launches.
 
@@ -4757,6 +4810,83 @@ FS_ASSERTIONS = """(async () => {
 })()"""
 
 
+#: The mount, asked of the filesystem the apps are actually holding.
+#:
+#: Reached through the terminal's own session rather than through a fresh `VFS`, because the
+#: claim is about the mount that `fs.mjs` grafted at boot — a table that built its own tree
+#: would be asserting about a mount it had just made itself.
+MOUNT_ASSERTIONS = """(async () => {
+  const bad = [];
+  const term = window.webxp.windows.find((w) => w.programId === 'terminal');
+  if (!term || !term.app || !term.app.shell) {
+    // A missing precondition is a failure, not a skip: `docs/review.md` rule 1.
+    return ['no terminal session to ask — nothing was tested'];
+  }
+  const fs = term.app.shell.fs;
+  const { mounted } = await import('/shared/fs/fs.mjs');
+  const index = await (await fetch('/shared/fs/mount.json')).json();
+
+  const want = (label, got, expected) => {
+    if (got !== expected) {
+      bad.push(label + ': got ' + JSON.stringify(got) + ', want ' + JSON.stringify(expected));
+    }
+  };
+
+  if (mounted.error) bad.push('the mount reported: ' + mounted.error);
+  want('every indexed file was grafted', mounted.files, index.files.length);
+  want('the mount root is where the index says', mounted.root, index.root);
+
+  // Sizes come from the index, so `ls -l` and `du` are answered without a fetch. Checked
+  // against the index's own row rather than a number written here, so the check cannot go
+  // stale when a file changes.
+  const row = index.files.find((each) => each[0] === 'src/window.mjs');
+  if (!row) bad.push('the index does not list src/window.mjs, which this check is about');
+  else {
+    const path = index.root + '/src/window.mjs';
+    want('size without fetching', fs.lstat(path).size, row[1]);
+    want('read-only', fs.lstat(path).modeString, '-r--r--r--');
+    want('marked as mounted', fs.lstat(path).mounted, true);
+    // The proof that metadata costs nothing: after reading the size, the body is still
+    // outstanding. If `lstat` had fetched it, there would be nothing pending.
+    want('metadata did not hydrate it', fs.pending([path]).length, 1);
+    try {
+      fs.readFile(path);
+      bad.push('an unfetched mounted file read as if it had contents');
+    } catch (error) {
+      want('and reading it says why', error.code, 'EAGAIN');
+    }
+  }
+
+  // The repository must not be saved into localStorage: it would go stale against the disk
+  // and win on the next reload.
+  const saved = JSON.stringify(fs.serialize());
+  want('the mount is absent from what is saved', saved.includes('/usr/src'), false);
+  want('and so are its files', saved.includes('window.mjs'), false);
+  const stored = window.localStorage.getItem('webxp.fs.v1');
+  if (stored && stored.includes('maplibre')) {
+    bad.push('the stored tree contains the repository');
+  }
+
+  // Nothing ignored is reachable. The same claim the index check makes on disk, made again
+  // from inside the filesystem, because this is where it would do harm.
+  for (const entry of fs.walk(index.root)) {
+    if (entry.path.includes('/private')) bad.push('reachable in the mount: ' + entry.path);
+  }
+  return bad;
+})()"""
+
+
+def check_mount(page) -> list[str]:
+    """The grafted repository, asked of the filesystem the apps hold."""
+    try:
+        found = page.evaluate(MOUNT_ASSERTIONS, await_promise=True)
+    except CDPError as error:
+        return [f"mount: the assertion table could not run — {error}"]
+    if not isinstance(found, list):
+        return [f"mount: the assertion table did not run — {found!r}"]
+    return [f"mount: {message}" for message in found]
+
+
 def fs_reset(page) -> None:
     """Clear the stored filesystem and reload, so the tree is the seed and not last run's.
 
@@ -5066,6 +5196,22 @@ TERM_LINES = (
     ('cd /tmp', [], []),
     ('cd -', ['/home/user'], ['OLDPWD not set']),
     ('pwd', ['/home/user'], ['/tmp']),
+    # The mount, through the pane. `/usr/src/webxp` is the repository: these rows read the
+    # project's own source out of the filesystem it ships in.
+    ("ls /usr/src/webxp", ["src", "apps", "shared", "docs"], []),
+    ("head -n 1 /usr/src/webxp/src/icons.mjs", ["The icon set, drawn rather than fetched"], []),
+    ("grep -c . /usr/src/webxp/.gitignore", [], ["No such file"]),
+    ("grep -rln MAX_FILE_SIZE /usr/src/webxp/shared", ["vfs.mjs"], []),
+    ("find /usr/src/webxp/src -name '*.css'", ["theme.css", "window.css"], []),
+    # Read-only, and refused by the mode bits rather than by a special case.
+    ("echo x > /usr/src/webxp/src/window.mjs", ["Permission denied"], []),
+    ("rm /usr/src/webxp/README.md", ["Permission denied"], []),
+    # Two files it can describe and cannot read, each saying which of the two reasons applies.
+    ("cat /usr/src/webxp/shared/map/vendor/maplibre-gl.mjs", ["File too large"], ["sourceMappingURL"]),
+    ("cat /usr/src/webxp/apps/day-02-lines/fixture/activities/202610200000.gpx.gz",
+     ["Not a text file"], []),
+    # The privacy rule, from the prompt: ignored data is not in the filesystem at all.
+    ("find /usr/src/webxp -name private", [], ["private"]),
     ("help", ["Where you are", "Reading", "Writing"], []),
     ("whoami", ["user"], []),
     ("df", ["webxp-vfs", "persistence:"], []),
@@ -5546,6 +5692,7 @@ INVERTIBLE_NAMES = ("drag", "re-entrant gesture", "terminal")
 
 CHECKS = (
     ("manifest is current", check_manifest_current),
+    ("mount index is current", check_mount_index),
     ("boot", check_boot),
     ("launch all", check_launch_all),
     ("app loading", check_app_loading),
@@ -5603,6 +5750,8 @@ CHECKS = (
     # earlier checks opened.
     ("filesystem", check_filesystem),
     ("terminal", check_terminal),
+    # After `terminal`, because it asks the session that check opens.
+    ("mount", check_mount),
     ("open across apps", check_open_across_apps),
     ("launch arguments", check_launch_arguments),
     ("filesystem persists", check_fs_persistence),

@@ -61,6 +61,15 @@ export function openFileSystem() {
   return pending;
 }
 
+//: Where the repository's own files are grafted, and where the index that describes them
+//: lives. Both are resolved against this module rather than against the page, so the mount
+//: survives the site being served from a subdirectory.
+const INDEX_URL = new URL('./mount.json', import.meta.url);
+const REPO_URL = new URL('../../', import.meta.url);
+
+/** How many files the mount grafted, and what went wrong if it did not. */
+export const mounted = { root: null, files: 0, error: null };
+
 async function mount() {
   const [{ VFS, FORMAT_VERSION }, { buildSeed }] = await Promise.all([
     import('./vfs.mjs'),
@@ -93,8 +102,77 @@ async function mount() {
     persistence.source = 'seed';
   }
 
+  // After the tree is in place, never before: the mount is re-grafted on every boot and is
+  // deliberately absent from what was saved, so grafting first would mean restoring over it.
+  await graftRepository(fs);
   attachSaving(fs);
   return fs;
+}
+
+/**
+ * Graft the repository's own files into the tree, read-only.
+ *
+ * A failure here is reported and survived. The desktop is usable without `/usr/src` — the
+ * terminal, the home directory and everything the user wrote are all still there — so a
+ * missing or unparseable index must not be the difference between a desktop and no desktop.
+ * `df` says when it happened.
+ */
+async function graftRepository(fs) {
+  let index;
+  try {
+    const response = await fetch(INDEX_URL);
+    if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+    index = await response.json();
+  } catch (error) {
+    mounted.error = `index unreadable: ${error.message}`;
+    console.error(
+      `webxp: could not read ${INDEX_URL.pathname} — /usr/src will be missing. `
+      + 'Run scripts/mount.py to write it.',
+      error,
+    );
+    return;
+  }
+  try {
+    mounted.files = fs.mountIndex(
+      index.root,
+      index,
+      (relative) => new URL(relative, REPO_URL).href,
+    );
+    mounted.root = index.root;
+  } catch (error) {
+    mounted.error = `index unusable: ${error.message}`;
+    console.error('webxp: the mount index did not graft', error);
+  }
+}
+
+/**
+ * Fetch the bodies of any mounted files among these paths.
+ *
+ * Called by whatever is about to read them — the shell before it runs a command that reads
+ * contents, Notepad before it shows a file. The filesystem decides which paths still need
+ * fetching; this does the fetching, because `vfs.mjs` does no I/O.
+ *
+ * A fetch that fails is reported and the file is left unhydrated, so the read that follows
+ * fails with the filesystem's own message rather than with an empty file. Silence here would
+ * turn a 404 into a file that looks empty.
+ *
+ * @returns {Promise<number>} How many were fetched.
+ */
+export async function hydrate(fs, paths, { cwd = '/' } = {}) {
+  const need = fs.pending([].concat(paths), { cwd });
+  if (!need.length) return 0;
+  let filled = 0;
+  await Promise.all(need.map(async ({ path, url }) => {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+      fs.fill(path, await response.text(), { cwd });
+      filled += 1;
+    } catch (error) {
+      console.error(`webxp: could not fetch ${url} for ${path}`, error);
+    }
+  }));
+  return filled;
 }
 
 function readStorage() {
@@ -165,6 +243,9 @@ export async function resetFileSystem() {
     fs.reset();
     buildSeed(fs);
   });
+  // The repository is not the user's to discard, and `format` wiped it along with everything
+  // else. Re-grafted here rather than left missing until the next reload.
+  await graftRepository(fs);
   persistence.source = 'seed';
   persistence.error = null;
   save(fs);
