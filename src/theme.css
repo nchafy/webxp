@@ -25,8 +25,21 @@
   --start-b: #2f7a00;
   --desktop: #3a6ea5;
 
+  /* The holding colour: what a client area shows while its content mounts, so a slow load
+     reads as an empty window rather than as a white flash. One value, because a map window
+     mid-load shows the window's own holding colour and the map container's at the same time
+     and any difference between them is a seam. */
+  --holding: #e9e6da;
+  /* The border of anything wearing the title-bar gradient. Darker than --title-a, so the
+     gradient's own dark stop still reads against it. */
+  --title-border: #0a1a4a;
+  /* The rule under a title bar, focused or docked. */
+  --title-rule: #06143c;
+
   --taskbar-h: 30px;
   --titlebar-h: 28px;
+  /* XP's control height, and the reason a button and a field on the same row line up. */
+  --control-h: 23px;
 
   /* Luna's zoom. XP animated a window opening, minimising and maximising at roughly this
      speed; longer reads as a web transition rather than as a shell. */
@@ -122,7 +135,7 @@ input[type="text"], input[type="search"], input[type="number"], select, textarea
 .segment { display: flex; flex-wrap: wrap; gap: 3px; }
 .segment button[aria-pressed="true"] {
   background: linear-gradient(to bottom, var(--title-b), var(--title-a));
-  border-color: #0a1a4a;
+  border-color: var(--title-border);
   color: #fff;
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 35%);
 }

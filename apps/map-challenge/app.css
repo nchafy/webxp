@@ -21,8 +21,9 @@
   display: grid;
   /* Fills the width with whole tiles and reflows on resize. `auto-fill` rather than
      `auto-fit`, so eight icons in a wide window stay the width of eight icons instead of
-     stretching to fill the row. */
-  grid-template-columns: repeat(auto-fill, 5.5rem);
+     stretching to fill the row. The column is the tile's own width, from `src/shell.css`:
+     a column any other width puts every tile off the grid. */
+  grid-template-columns: repeat(auto-fill, var(--icon-tile-w));
   align-content: start;
   gap: .35rem;
   margin: 0;

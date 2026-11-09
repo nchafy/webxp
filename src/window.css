@@ -59,7 +59,7 @@
   /* Four stops, not two: Luna's bar lightens sharply just under the top edge and then
      ramps slowly back down, which a linear two-stop gradient does not reproduce. */
   background: linear-gradient(to bottom, #0a246a 0%, #3f6fb5 8%, #2b5797 42%, #0a246a 100%);
-  border-bottom: 1px solid #06143c;
+  border-bottom: 1px solid var(--title-rule);
   border-radius: 6px 6px 0 0;
   flex: 0 0 auto;
   cursor: default;
@@ -116,7 +116,7 @@
   min-height: 0;
   font: 700 11px/1 Tahoma, Verdana, sans-serif;
   color: #fff;
-  border: 1px solid #0a1a4a;
+  border: 1px solid var(--title-border);
   border-radius: 3px;
   /* Luna's lit top stop was #6a9ad8, which carries the white glyph at 2.90:1 and fails
      SC 1.4.3. These three measure 4.82:1, 6.87:1 and better, so the bevel still reads

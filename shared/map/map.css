@@ -60,11 +60,13 @@
  * So: three classes, which beats MapLibre's two on specificity and needs no help from source
  * order. If you touch this selector, count the classes.
  *
- * The holding colour shows during a style load instead of a white flash. */
+ * The holding colour shows during a style load instead of a white flash. The same token the
+ * window body uses, because during a mount both are visible at once and two near-identical
+ * bisques read as a seam across the client area. */
 .map-root .map-area > .map {
   position: absolute;
   inset: 0;
-  background: #e8e0d8;
+  background: var(--holding);
 }
 
 /* Floating chrome. The container ignores the pointer so clicks reach the canvas; each child
@@ -248,7 +250,7 @@
   /* Flat, not a gradient: a gradient across a 28 px bar bands visibly and reads as an
      artifact rather than as chrome. */
   background: var(--title-a);
-  border-bottom: 1px solid #06143c;
+  border-bottom: 1px solid var(--title-rule);
 }
 
 .map-root .detail-head h2 {

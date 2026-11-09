@@ -1,6 +1,13 @@
 /* The shell around the windows: the desktop surface, its icons, the taskbar, and the Start
    menu. */
 
+/* Declared here rather than in `theme.css`, which holds nothing above the control level: this
+   is a layout quantity. The tile's own width and the width of a folder window's grid columns
+   are the same number by necessity — a column narrower or wider than a tile puts the tiles off
+   the grid — and the folder window is a dynamically loaded app with its own stylesheet, so the
+   two cannot be hand-synced. `apps/map-challenge/app.css` reads it. */
+:root { --icon-tile-w: 5.5rem; }
+
 /* ---------------------------------------------------------------------------
    The desktop. Everything above the taskbar, and the positioning context every window's
    geometry is measured against.
@@ -88,6 +95,7 @@
   left: .5rem;
   display: grid;
   grid-auto-flow: column;
+  /* A row height, not `--icon-tile-w`: the same number, a different quantity. */
   grid-template-rows: repeat(auto-fill, 5.5rem);
   gap: .25rem;
   max-height: calc(100% - 1rem);
@@ -105,7 +113,7 @@
   justify-items: center;
   align-content: start;
   gap: .3rem;
-  width: 5.5rem;
+  width: var(--icon-tile-w);
   padding: .35rem .2rem;
   /* The desktop icon is the one place XP used no button chrome at all. */
   background: none;
