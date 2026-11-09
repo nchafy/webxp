@@ -105,6 +105,16 @@ IGNORED: tuple[str, ...] = (
     "Failed to load resource: the server responded with a status of 404",
     # A tile request still in flight when the camera moves on.
     "AbortError",
+    # Esri's imagery runs out before its own declared maximum. `BASEMAPS.satellite` says
+    # `maxZoom: 19` and the service does serve 19 in most places, but where it has no tile at
+    # that level it answers with an error page carrying no `Access-Control-Allow-Origin`, so
+    # the browser reports CORS and `net::ERR_FAILED` rather than a status. Same condition as
+    # the 404 above, surfacing differently because of the missing header.
+    #
+    # Keyed to the host on purpose. "CORS policy" or "ERR_FAILED" alone would hide a
+    # same-origin module or a local fetch failing, which is the class of defect this sweep
+    # exists to catch.
+    "server.arcgisonline.com",
 )
 
 
