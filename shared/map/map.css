@@ -147,8 +147,14 @@
 
 /* The compass sits a little apart and a little larger than the zoom pair: it answers "which
    way is up", not "how close am I", and at 28px the needle was too small to read an angle
-   off at a glance. 40px, which is also a comfortable tap target. */
-.map-root .map-compass {
+   off at a glance. 40px, which is also a comfortable tap target.
+
+   `.map-zoom` is in the selector to outrank the rule above it. Count the classes: that one
+   is two classes and a type, this one was two classes, so `width: 28px` won and the compass
+   was drawn at 28px with a 34px rose inside it — overflowing its own button by three pixels
+   a side and sitting four pixels down and right of centre, because grid centring cannot
+   centre an item larger than its box. Measured with `scripts/inspect_compass.py`. */
+.map-root .map-zoom .map-compass {
   width: 40px;
   height: 40px;
   margin-top: 6px;

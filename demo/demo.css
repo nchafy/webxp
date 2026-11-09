@@ -20,3 +20,60 @@
 }
 .noscript h1 { margin: 0 0 .5rem; font-size: 15px; }
 .noscript p { margin: .4rem 0 0; }
+
+/* ---------------------------------------------------------------------------
+   Clippy. Bottom-right, above the taskbar, over the wallpaper but under every window — an
+   assistant who covers your work is the failing he is remembered for.
+   --------------------------------------------------------------------------- */
+
+.clippy {
+  position: absolute;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 5;
+  display: flex;
+  align-items: flex-end;
+  gap: .4rem;
+}
+
+.clippy-body { flex: 0 0 auto; filter: drop-shadow(2px 3px 4px rgb(0 0 0 / 40%)); }
+
+/* The bubble sits to his left, so he stays between it and the corner. */
+.clippy-bubble {
+  position: relative;
+  max-width: 17rem;
+  /* Luna's tooltip yellow, which is what an Office assistant spoke in. */
+  background: #ffffe1;
+  border: 1px solid #000;
+  box-shadow: 3px 3px 7px rgb(0 0 0 / 35%);
+}
+
+/* The tail: two triangles, the dark one a pixel further out, which is how a 1px border is
+   faked on a shape CSS will not border. */
+.clippy-bubble::after,
+.clippy-bubble::before {
+  content: "";
+  position: absolute;
+  right: -9px;
+  bottom: 14px;
+  width: 0;
+  height: 0;
+  border: 5px solid transparent;
+  border-left-color: #ffffe1;
+}
+.clippy-bubble::before { right: -10px; border-left-color: #000; }
+
+.clippy-says { margin: 0 0 .5rem; font-size: 12px; line-height: 1.45; color: var(--ink); }
+
+.clippy-buttons { display: flex; flex-wrap: wrap; gap: .3rem; }
+.clippy-buttons button { font-size: 11px; }
+
+@media (prefers-reduced-motion: no-preference) {
+  /* He arrives rather than appearing. One pass, no idle loop: the point is that he stops
+     moving once he has said his line. */
+  .clippy { animation: clippy-in 240ms cubic-bezier(.2, .7, .4, 1) both; }
+  @keyframes clippy-in {
+    from { opacity: 0; transform: translate(10px, 14px) scale(.92); }
+    to { opacity: 1; transform: none; }
+  }
+}

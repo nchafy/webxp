@@ -8,6 +8,7 @@
 import { Desktop } from '../src/webxp.mjs';
 import { loadApps } from '../src/apps.mjs';
 import { APPS } from '../apps/manifest.mjs';
+import { mountClippy } from './clippy.mjs';
 
 const desktop = new Desktop({
   root: document.getElementById('webxp'),
@@ -29,3 +30,11 @@ const { loaded, broken } = await loadApps(desktop, APPS);
 window.webxpApps = { loaded, broken };
 
 await desktop.autostart();
+
+// Clippy, in place of the Read me opening itself. Offering help and taking no for an answer
+// is the same thought as an autostarting window, minus the part where it takes the desktop
+// before you have asked for anything.
+mountClippy({
+  root: desktop.surface,
+  onAccept: () => desktop.launch('readme'),
+});

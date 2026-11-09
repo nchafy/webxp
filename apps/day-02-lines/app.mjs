@@ -21,7 +21,7 @@
 export default {
   id: 'day-02-lines',
   name: 'Day 02 — Lines',
-  icon: 'document',
+  filetype: 'map',
   singleton: true,
   // No desktop icon: the thirty days live in the 30DaysOfMaps folder, which is the one icon
   // on the desktop. `apps/map-challenge/` draws them.
@@ -51,7 +51,6 @@ export default {
     ]);
     const chrome = buildMapChrome({
       basemaps: BASEMAPS,
-      hint: 'Click a run to measure it. The slider simplifies the one you pick.',
     });
     // The map's own status line carries progress from here on; `lines.mjs` writes the first
     // word into it before the first fetch.

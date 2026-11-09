@@ -13,6 +13,12 @@ screenshots/
 # `data/` publishes real traces; it prints its destination so that is a decision rather than
 # an accident.
 apps/day-*/private/
+# Without a second pattern lacking the trailing slash, a *symlink* named `private` is not
+# ignored — git treats the slash as "directory only" and a symlink is a blob. One got
+# committed that way (92bc9fe, removed in the commit that added this line): a worktree needs
+# the real data to run the day 02 checks, linking it in is the obvious way to get it, and the
+# link sailed straight past the rule meant to stop exactly that.
+apps/day-*/private
 strava/
 strava-export/
 strava_export*/

@@ -23,10 +23,50 @@
 
 /* Luna's Bliss, without the photograph: a sky that lightens to the horizon over a green
    rise. A 2 MB hillside is not worth a round trip to look at behind a window. */
+/* Bliss, drawn rather than photographed.
+ *
+ * The real thing is a Microsoft-owned photograph by Charles O'Rear and is not committed here:
+ * shipping it would put someone else's licensed image in the repository. This is an
+ * approximation, and is labelled as one.
+ *
+ * Five layers, back to front, all of them gradients so there is no image request:
+ *
+ *   clouds   three soft cumulus, lit from the left, thinning toward the horizon
+ *   haze     a pale band where the sky meets the hill, which is what sells the distance
+ *   hill     one broad green curve, crest left of centre
+ *   shade    the hill's own shadow on its right-hand fall
+ *   sky      deep blue overhead to near-white at the horizon
+ *
+ * The crest sits left of centre and the sky is deepest at the top because that is the
+ * photograph's composition; a symmetric hill under an even sky reads as a logo instead. */
 .desktop.wall-bliss {
   background-image:
-    radial-gradient(120% 80% at 50% 118%, #7cb342 0 28%, #4e8f2f 42%, transparent 62%),
-    linear-gradient(to bottom, #1d4f8c 0%, #3a7cc0 45%, #86b8e0 78%, #cfe3f2 100%);
+    /* Cumulus. Small, uneven and low-contrast: the photograph's clouds are scattered wisps,
+       and anything big and symmetrical reads as a sticker rather than as weather. Each stop
+       runs out well before its own radius so no edge is hard. */
+    radial-gradient(8% 3.4% at 20% 20%, rgb(255 255 255 / 62%), rgb(255 255 255 / 0%) 72%),
+    radial-gradient(5% 2.4% at 25.5% 17.5%, rgb(255 255 255 / 52%), rgb(255 255 255 / 0%) 70%),
+    radial-gradient(6% 2.6% at 15.5% 22.5%, rgb(255 255 255 / 44%), rgb(255 255 255 / 0%) 72%),
+    radial-gradient(9% 3% at 66% 14%, rgb(255 255 255 / 46%), rgb(255 255 255 / 0%) 74%),
+    radial-gradient(5.5% 2.2% at 72% 17%, rgb(255 255 255 / 36%), rgb(255 255 255 / 0%) 72%),
+    radial-gradient(11% 2.8% at 45% 31%, rgb(255 255 255 / 24%), rgb(255 255 255 / 0%) 78%),
+    /* The horizon haze, where the grass meets the sky. Narrow and faint: it is the join, not
+       a band of its own. */
+    linear-gradient(to bottom, rgb(255 255 255 / 0%) 60%, rgb(232 244 250 / 46%) 66%, rgb(255 255 255 / 0%) 71%),
+    /* The hill's shadowed right-hand fall, which is what gives the crest a direction. */
+    radial-gradient(70% 34% at 16% 112%, rgb(0 0 0 / 0%) 46%, rgb(26 58 20 / 22%) 72%, rgb(0 0 0 / 0%) 90%),
+    /* The hill. One broad curve, crest left of centre at roughly two thirds down. The ellipse
+       is far wider than the viewport so its edge reads as a gentle rise rather than as the
+       top of a circle.
+       Lightest at the *edge*, which is the crest: the sun is on the top of the hill, and the
+       grass deepens toward the foreground. Running it the other way — pale at the centre,
+       which is the bottom of the screen — washed the foreground out and left the crest dark
+       against a pale horizon, the exact inverse of the photograph. */
+    radial-gradient(150% 42% at 30% 108%,
+      #58962e 0 24%, #68a736 40%, #79b840 56%, #8cc84c 70%, transparent 79%),
+    /* The sky. */
+    linear-gradient(to bottom, #1b4f93 0%, #2f74bd 30%, #63a0d6 52%, #a9cfe8 66%, #e9f4fb 74%, #e9f4fb 100%);
+  background-repeat: no-repeat;
 }
 
 /* What XP showed with no wallpaper set. */

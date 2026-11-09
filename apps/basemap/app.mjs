@@ -57,7 +57,7 @@ async function build() {
 export default {
   id: 'basemap',
   name: 'Base map',
-  icon: 'globe',
+  filetype: 'map',
   singleton: true,
   onDesktop: true,
   width: 760,

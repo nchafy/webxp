@@ -13,7 +13,7 @@
 export default {
   id: 'webview',
   name: 'Webview',
-  icon: 'globe',
+  filetype: 'web',
   singleton: true,
   onDesktop: true,
   width: 560,

@@ -176,10 +176,7 @@ export function buildMapChrome(opts = {}) {
     const tiltButton = el('button', 'map-tilt', 'Tilt');
     tiltButton.type = 'button';
     tiltButton.setAttribute('aria-pressed', 'false');
-    tiltRow.append(
-      tiltButton,
-      el('span', 'tilt-note', '3D buildings show from an angle, past zoom 14.')
-    );
+    tiltRow.append(tiltButton);
     card.append(tiltRow);
   }
 

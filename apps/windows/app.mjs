@@ -16,7 +16,7 @@ const STATES = { normal: 'normal', min: 'minimised', max: 'maximised' };
 export default {
   id: 'windows',
   name: 'Window list',
-  icon: 'folder',
+  filetype: 'folder',
   singleton: true,
   onDesktop: true,
   width: 420,
