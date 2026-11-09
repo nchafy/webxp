@@ -4439,10 +4439,11 @@ def check_routes(page) -> list[str]:
     def open_link(hash_: str) -> None:
         page.evaluate("window.location.hash = %s" % json.dumps(hash_))
         page.call("Page.reload", ignoreCache=True)
-        time.sleep(1.0)
-        wait_for_apps(page)
-        # Past the route's own launch, which `boot.mjs` awaits after the apps are registered.
-        time.sleep(0.7)
+        time.sleep(0.8)
+        wait_for_route(page)
+        # The window the route launched is awaited inside `restore`, but its mount and the
+        # loading floor are not.
+        time.sleep(0.6)
 
     for hash_, program, expect in (
         ("#/explorer/usr/src/webxp/src", "explorer", "/usr/src/webxp/src"),
@@ -4484,8 +4485,8 @@ def check_routes(page) -> list[str]:
     # And the other direction: a window publishes a link to itself as it moves.
     page.evaluate("window.history.replaceState(null, '', window.location.pathname)")
     page.call("Page.reload", ignoreCache=True)
-    time.sleep(1.0)
-    wait_for_apps(page)
+    time.sleep(0.8)
+    wait_for_route(page)
     console_errors(page)
     shell = terminal_session(page)
     term_run(page, "cd /usr/src/webxp/docs", shell)
@@ -5241,6 +5242,26 @@ TERM_PARTS = """(() => {
            prompt: win.el.querySelector('.term-prompt').textContent,
            x: r.left + r.width / 2, y: r.top + r.height / 2, count: wins.length };
 })()"""
+
+
+def wait_for_route(page, timeout: float = 8.0) -> None:
+    """Block until `boot.mjs` has resolved the route, which may be `null`.
+
+    `wait_for_apps` is not enough and the difference is subtle: `window.webxpApps` is
+    published several awaits before `window.webxpRoute` — the router import, the `/pages`
+    registration and `restore()` all come after it. A check that read `webxpRoute` on the
+    strength of `webxpApps` got `undefined`, which `JSON.stringify` omits, so the value
+    arrived as a missing key and surfaced as a `KeyError` three hundred lines from the cause.
+
+    `in` rather than a truth test, because `null` is the right answer for a URL with no hash
+    and has to be distinguishable from "not yet".
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if page.evaluate("'webxpRoute' in window"):
+            return
+        time.sleep(0.1)
+    raise CDPError("demo/boot.mjs never published window.webxpRoute — it did not finish")
 
 
 def wait_for_apps(page, timeout: float = 8.0) -> None:

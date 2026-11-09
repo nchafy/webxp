@@ -122,3 +122,11 @@ neither. Decision in the host page, timing in the filesystem — the same split 
 - `/pages` lists what is routable, `cat` prints a link, the link it advertises is the link
   that works — read out of the file and opened, rather than compared to a string written
   twice — and every write to it is refused.
+
+The checks read `window.webxpRoutes` rather than importing this module. Not because an import
+would give them a second instance: one URL in one realm is one module, and a mutation through
+either import is visible to both — measured, with a command injected through a page-script
+import turning up in the live `help` listing. The reasons are that an `import()` from a page
+script is flaky against a single-threaded `http.server`, and that re-spelling a specifier can
+resolve a different URL, which is the only way to actually end up with a second copy. An
+iframe or a worker is a different realm and does get its own; `apps/webview/` is one.

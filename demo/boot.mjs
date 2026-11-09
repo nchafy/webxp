@@ -42,10 +42,15 @@ await desktop.autostart();
 // window manager's. `src/` stays testable without a URL or a filesystem.
 const routes = await import('../shared/routes/routes.mjs');
 // Published for the devtools console and for `scripts/check.py`, the same way `window.webxp`
-// and `window.webxpApps` are. A check that imported its own copy would be asserting about a
-// second module instance rather than the one the desktop is using — and an `import()` from a
-// page script turned out to be flaky against a single-threaded `http.server`, which is a
-// reason to use the page's own object rather than a reason to retry.
+// and `window.webxpApps` are.
+//
+// Not because an import would give a check its own copy — it would not. ES modules dedupe by
+// resolved URL within a realm, so `await import('/shared/routes/routes.mjs')` from a page
+// script hands back this very object; measured, including a mutation made through one import
+// being visible through the other. The reasons are narrower and both practical: an `import()`
+// from a page script proved flaky against a single-threaded `http.server`, and a check that
+// re-spells the specifier can resolve a *different* URL, which is the one way to genuinely
+// end up somewhere else. Reading what the page published removes the spelling from the check.
 window.webxpRoutes = routes;
 
 // `/pages` — what is routable, as a directory you can `ls`.
