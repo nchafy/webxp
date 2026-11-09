@@ -96,6 +96,13 @@ const SHAPES = {
     ['path', { d: 'M8 7v5', stroke: C.blue, 'stroke-width': 2 }],
   ],
 
+  /** A console: a dark screen with a prompt on it. */
+  terminal: [
+    ['rect', { x: 1.5, y: 2.5, width: 13, height: 11, rx: 1, fill: '#0c0c0c', stroke: C.ink }],
+    ['path', { d: 'M4 6.2l2 1.8-2 1.8', stroke: C.green, 'stroke-width': 1.4 }],
+    ['path', { d: 'M7.5 10.5h4.5', stroke: C.green, 'stroke-width': 1.2 }],
+  ],
+
   /** A check, for anything that reports a result. */
   check: [
     ['circle', { cx: 8, cy: 8, r: 6.5, fill: C.paper, stroke: C.green }],

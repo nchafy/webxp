@@ -1,0 +1,113 @@
+/* Terminal's own styles, scoped under `.app-terminal`, which the loader puts on this app's
+ * window body. A bare `.term-log` would reach into every other app's windows.
+ *
+ * The pane is black on purpose, and it is the one surface in this desktop that is not Luna's
+ * bisque: a terminal that looked like a dialog would read as a text field. Every ratio in
+ * this file is against the pane's `#0c0c0c` and is printed by `scripts/check.py`'s
+ * `terminal contrast` check, which reads them off `getComputedStyle` rather than off these
+ * comments.
+ */
+
+/* Two classes, deliberately. `.window-body` in `src/window.css` is one class, so a single
+   `.app-terminal` would tie it and win on source order alone — the specificity trap
+   `docs/apps.md` describes, which has already cost this project a collapsed map container.
+   Count the classes before touching this selector. */
+.window-body.app-terminal {
+  /* The window body is the whole pane: no sheet, no page, no margin. */
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0;
+  background: #0c0c0c;
+  /* The scrollback scrolls, not the client area. Two scrollbars for one run of text is the
+     symptom when this is left at the frame's `overflow: auto`. */
+  overflow: hidden;
+}
+
+.app-terminal .term {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  font: 13px/1.35 "Lucida Console", Monaco, monospace;
+  color: #e8e8e8;
+}
+
+.app-terminal .term-log {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: .35rem .5rem 0;
+  /* The scrollback is one run of text, so a command's own newlines are its layout and a
+     wrapped line keeps its indent. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.app-terminal .term-echo {
+  /* What was typed, kept distinguishable from what was printed. Pure white measures
+     19.6:1 on the pane and only 1.2:1 against the #e8e8e8 of output, so the echo is a
+     difference in weight rather than in legibility — which is all it should be. */
+  color: #fff;
+}
+
+.app-terminal .term-error {
+  /* 8.6:1. Luna's own error red (#cc0000) measures 3.3:1 on this pane and fails AA, so
+     the console red is lifted rather than quoted. */
+  color: #ff8a80;
+}
+
+.app-terminal .term-note {
+  /* 9.2:1: dimmer than output, still well clear of AA for body text. */
+  color: #9fb4c7;
+}
+
+.app-terminal .term-line {
+  display: flex;
+  align-items: baseline;
+  gap: .25rem;
+  padding: 0 .5rem .35rem;
+}
+
+.app-terminal .term-prompt {
+  white-space: pre;
+  color: #8ae234;   /* 12.1:1 */
+}
+
+.app-terminal .term-input {
+  flex: 1;
+  min-width: 0;
+  /* The theme's input is a sunken bisque box, which inside a terminal would be a dialog
+     field floating on a console. The caret and the monospace run are the affordance. */
+  font: inherit;
+  color: #fff;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+  outline-offset: 2px;
+}
+
+.app-terminal .term-input:focus {
+  /* Removed from the theme's sunken box, so focus has to be said again — and said on the
+     pane's own colours rather than with the shell's blue. */
+  outline: 1px dotted #8ae234;
+}
+
+/* The character-width probe. Out of flow and out of the accessibility tree, but laid out, in
+   the pane's font: a `display: none` probe measures zero and the columns collapse to one. */
+.app-terminal .term-probe {
+  position: absolute;
+  visibility: hidden;
+  white-space: pre;
+  pointer-events: none;
+}
+
+/* A narrow window is the same problem a narrow phone has, and `@media` cannot see it:
+   `.window-body` is a container named `window`. */
+@container window (max-width: 24rem) {
+  .app-terminal .term {
+    font-size: 12px;
+  }
+}
