@@ -2236,9 +2236,14 @@ def check_day_02(page) -> list[str]:
         if not measured["raw"] or measured["raw"] <= 0:
             bad.append(f"day 02: the selected run measured {measured['raw']} m at full detail")
         elif not (measured["coarse"] < measured["raw"] * 0.999):
+            # The day's claim, which outlived the control that used to demonstrate it: the
+            # same trace measured at a coarser resolution is shorter. There is no slider any
+            # more, so this asserts the arithmetic rather than a widget — and it is the
+            # browser half of the pair `tools/gpsnoise.py` implements, so a divergence
+            # between the two shows up here.
             bad.append(
                 f"day 02: simplifying to 60 m took {measured['raw']:.0f} m to "
-                f"{measured['coarse']:.0f} m — the slider is not reaching the geometry"
+                f"{measured['coarse']:.0f} m — a coarser measurement must be shorter"
             )
 
     # Both panes of the status bar have to be where a reader can see them: below the map area,

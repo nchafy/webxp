@@ -4,26 +4,31 @@
  * recording is longer, because receiver jitter is indistinguishable from movement and
  * gets counted as distance covered.
  *
- * The slider is the argument. It simplifies one recorded trace at a tolerance the reader
- * chooses, and the distance falls as the wobble comes out. There is no setting at which
- * the number is right — that is the point. A run has no single length, only a length at a
- * stated resolution, which is the coastline paradox
- * (https://doi.org/10.1126/science.156.3775.636) happening on a 10 km run.
+ * The two lengths are the argument. A run has no single length, only a length at a stated
+ * resolution — the coastline paradox (https://doi.org/10.1126/science.156.3775.636)
+ * happening on a 10 km run — so the page shows two measurements of one run and the gap
+ * between them, rather than asserting a figure.
+ *
+ * A tolerance slider used to make that draggable: it simplified the selected trace live and
+ * the distance fell as the wobble came out. It is gone, because it was `disabled` until a
+ * run was selected and an inert control reads as a broken one. `focusLengthAt` still
+ * computes the whole ladder, and `scripts/check.py` still holds it against the Python, so
+ * the claim is still measured — it is just no longer a thing to drag.
  *
  * ## Why there are two resolutions
  *
  * A real history is 400-odd activities and over a million points. Handing a browser all
- * of it is 35 MB, and re-simplifying all of it per frame is seconds per frame. So:
+ * of it is 35 MB. So:
  *
  * - `overview.json` holds every run simplified to a stated floor. It draws the map, and
  *   the floor is printed in the interface rather than hidden.
- * - A single run's full-resolution document is fetched when the reader selects it. That is
- *   the only geometry the slider ever touches, so the slider is exact and continuous.
+ * - A single run's full-resolution document is fetched when the reader selects it. The
+ *   selected line and its readout are always that, never the simplified overview.
  * - The aggregate distances come from `index.json`, which `prepare.py` computed at full
  *   resolution. The headline figures are never the simplified ones.
  *
  * `draw` is re-run against a fresh style on every basemap change, so it adds its sources
- * unconditionally. The tolerance and the selection live outside it and are read back in.
+ * unconditionally. The selection lives outside it and is read back in.
  */
 
 import { createBaseMap } from '../../shared/map/basemap.mjs';
@@ -313,32 +318,23 @@ function buildCards(slot, instance) {
   legendEl.dataset.role = 'noise-legend';
   noiseToggle.setAttribute('aria-describedby', (legendEl.id = `noise-legend-${instance}`));
 
-  // Measuring stick.
+  /* The selected run.
+   *
+   * This card used to carry a tolerance slider — the "measuring stick" — which simplified
+   * the chosen trace live so the reader could watch its length fall. It is gone. It was
+   * `disabled` until a run was selected, which is most of the time, and an inert control
+   * reads as a broken one; the recompute behind it was never the problem, at 0.2 ms.
+   *
+   * What the slider demonstrated is still here, in the readout: a run's length at full
+   * resolution against the same run snapped to the road network. The gap is the measurement.
+   * The ladder of lengths at a range of tolerances is still computed and still cross-checked
+   * against the Python, it is just no longer something to drag.
+   */
   const stickCard = el('div', 'card', slot);
-  heading(stickCard, 'Scale');
-  const bar = el('div', 'trackbar', stickCard);
-  const label = el('label', null, bar);
-  label.textContent = 'Detail';
-  const slider = el('input', null, bar);
-  slider.type = 'range';
-  slider.min = '0';
-  slider.max = '100';
-  slider.step = '0.5';
-  slider.value = '0';
-  slider.disabled = true;
-  slider.dataset.role = 'tolerance';
-  slider.id = `tolerance-${instance}`;
-  label.setAttribute('for', slider.id);
-  const sliderOut = el('output', null, bar);
-  sliderOut.setAttribute('for', slider.id);
-  sliderOut.dataset.role = 'tolerance-out';
-  sliderOut.textContent = '0 m';
+  heading(stickCard, 'Selected run');
   const readoutEl = el('p', 'readout', stickCard);
   readoutEl.dataset.role = 'readout';
-  // After the readout exists, not before: `const` is not hoisted, and describing the
-  // slider by an element declared further down throws on the first mount.
   readoutEl.id = `readout-${instance}`;
-  slider.setAttribute('aria-describedby', readoutEl.id);
 
   const key = el('div', 'key', stickCard);
   const keyRow = (colour, text) => {
@@ -370,8 +366,6 @@ function buildCards(slot, instance) {
     noiseNote,
     noiseToggle,
     legendEl,
-    slider,
-    sliderOut,
     readoutEl,
     keyRecordedEl,
     matchedToggle,
@@ -399,8 +393,6 @@ export async function startDay({ win, chrome }) {
     //: they go in. `let` rather than `const` because every function below closes over them
     //: and runs long after the cards exist.
     let statusEl = null;
-    let slider = null;
-    let sliderOut = null;
     let readoutEl = null;
     let matchedToggle = null;
     let keyRecordedEl = null;
@@ -412,7 +404,6 @@ export async function startDay({ win, chrome }) {
 
     //: State that has to survive a basemap switch.
 
-    let tolerance = 0;
     let showMatched = true;
 
     let dataDir = null;
@@ -655,12 +646,17 @@ export async function startDay({ win, chrome }) {
       };
     }
 
-    /* The selected run at the current tolerance. One pass produces the geometry and the
+    /* The selected run, simplified to `tol` metres. One pass produces the geometry and the
      * length, because the simplification that makes the line is also what makes the number:
-     * computing them separately is two chances to disagree. */
-    function focusData() {
+     * computing them separately is two chances to disagree.
+     *
+     * `tol` is an argument rather than shared mutable state. It was a variable the slider
+     * wrote to, which meant `focusLengthAt` had to save it, overwrite it, read, and put it
+     * back — a getter with a side effect on the thing being drawn. With the slider gone the
+     * interface only ever wants 0, and the ladder cross-check passes what it needs. */
+    function focusData(tol = 0) {
       if (!focus) return { fc: EMPTY, length: 0, kept: 0, total: 0 };
-      const keep = simplifyMask(focus.projected, tolerance);
+      const keep = simplifyMask(focus.projected, tol);
       const coords = simplifiedCoords(focus.doc.recorded, keep);
       let kept = 0;
       for (let i = 0; i < keep.length; i += 1) kept += keep[i];
@@ -770,62 +766,43 @@ export async function startDay({ win, chrome }) {
       big.textContent = fmtKm(measured.length);
       readoutEl.append(big, ' ');
 
-      const drop = d.recorded_m - measured.length;
-      const delta = document.createElement('span');
-      delta.className = 'delta';
-      delta.textContent =
-        drop > 0.5
-          ? `−${fmtKm(drop)} (−${((drop / d.recorded_m) * 100).toFixed(1)}%)`
-          : 'full resolution';
-      readoutEl.append(delta);
+      // The gap against the matched length, which is the measurement this day is about.
+      //
+      // It used to show the drop from simplifying, against a "full resolution" label when the
+      // slider sat at zero — which is now always, so that label named a state that cannot
+      // vary. Recorded-against-matched is the comparison the rest of the page makes.
+      if (d.matched_m) {
+        const gap = d.recorded_m / d.matched_m - 1;
+        const delta = document.createElement('span');
+        delta.className = 'delta';
+        delta.textContent = `${gap >= 0 ? '+' : '−'}${Math.abs(gap * 100).toFixed(1)}% vs map`;
+        readoutEl.append(delta);
+      }
 
       const sub = document.createElement('span');
       sub.className = 'sub';
-      const bits = [`${measured.kept.toLocaleString()} of ${measured.total.toLocaleString()} points`];
+      // The point count, not "N of M": with no simplification the two are always equal, and
+      // a ratio that cannot move is furniture.
+      const bits = [`${measured.total.toLocaleString()} points`];
       if (d.matched_m) bits.push(`map ${fmtKm(d.matched_m)}`);
       if (d.strava_m) bits.push(`Strava ${fmtKm(d.strava_m)}`);
       sub.textContent = `${d.name} · ${bits.join(' · ')}`;
       readoutEl.append(sub);
 
-      if (keyRecordedEl) {
-        keyRecordedEl.textContent = tolerance > 0 ? `simplified to ${tolerance} m` : 'strava';
-      }
+      // Always 'strava' now. The other branch named the slider's tolerance, and the line it
+      // labels is no longer simplified.
+      if (keyRecordedEl) keyRecordedEl.textContent = 'strava';
     }
 
     /* ---------------------------------------------------------------------------
-       Applying the slider.
+       Drawing the selected run.
        --------------------------------------------------------------------------- */
-
-    //: Coalesce slider input into one update per frame. Dragging fires `input` far more often
-    //: than the display can change.
-    //: The handle is kept so `onClose` can cancel it. Closing the window within one frame of
-    //: a slider drag otherwise ran `applyTolerance` against a map that `destroy()` had
-    //: already removed.
-    let pendingFrame = 0;
-    function scheduleUpdate(map) {
-      if (pendingFrame) return;
-      pendingFrame = requestAnimationFrame(() => {
-        pendingFrame = 0;
-        applyTolerance(map);
-      });
-    }
 
     function applyTolerance(map) {
       const measured = focusData();
       const source = map && map.getSource(FOCUS);
       if (source) source.setData(measured.fc);
-      if (sliderOut) sliderOut.textContent = `${tolerance} m`;
       renderReadout(measured);
-    }
-
-    function setSliderEnabled(on) {
-      if (!slider) return;
-      slider.disabled = !on;
-      if (!on) {
-        slider.value = '0';
-        tolerance = 0;
-        if (sliderOut) sliderOut.textContent = '0 m';
-      }
     }
 
     /* ---------------------------------------------------------------------------
@@ -855,7 +832,6 @@ export async function startDay({ win, chrome }) {
         return null;
       }
       focus = entry;
-      setSliderEnabled(true);
 
       applyTraceEmphasis(map);
       applyTolerance(map);
@@ -871,7 +847,6 @@ export async function startDay({ win, chrome }) {
     function clearSelection(map) {
       focus = null;
       passSpan = null;
-      setSliderEnabled(false);
       if (map.getSource(FOCUS)) map.getSource(FOCUS).setData(EMPTY);
       if (map.getSource(PASS)) map.getSource(PASS).setData(EMPTY);
       ghostSpans = [];
@@ -1023,11 +998,8 @@ export async function startDay({ win, chrome }) {
     function openPanel() {
       if (!panel || !focus) return;
       const d = focus.doc;
-      const keep = simplifyMask(focus.projected, tolerance);
-      const atTolerance = planeLength(focus.projected, keep);
 
       const rows = [['Strava distance', fmtKm(d.recorded_m)]];
-      if (tolerance > 0) rows.push([`Simplified to ${tolerance} m`, fmtKm(atTolerance)]);
       if (d.matched_m) rows.push(['Map distance', fmtKm(d.matched_m)]);
       if (d.strava_m) rows.push(['Strava’s own figure', fmtKm(d.strava_m)]);
       if (d.matched_m) {
@@ -1307,8 +1279,6 @@ export async function startDay({ win, chrome }) {
       noiseNote,
       noiseToggle,
       legendEl,
-      slider,
-      sliderOut,
       readoutEl,
       keyRecordedEl,
       matchedToggle,
@@ -1320,12 +1290,6 @@ export async function startDay({ win, chrome }) {
     // The program owns what it started: webxp destroys the window's DOM but knows nothing
     // about a WebGL context or a ResizeObserver.
     win.onClose = () => {
-      // The frame first: a queued `applyTolerance` would otherwise run against a map that
-      // `destroy()` has already removed.
-      if (pendingFrame) {
-        cancelAnimationFrame(pendingFrame);
-        pendingFrame = 0;
-      }
       base.destroy();
     };
 
@@ -1337,9 +1301,6 @@ export async function startDay({ win, chrome }) {
 
       //: What `scripts/check.py` drives. Nothing in the interface reads it.
       win.lines = {
-        get tolerance() {
-          return tolerance;
-        },
         dataDir: () => dataDir,
         overviewFloor: () => (overview ? overview.floor_m : null),
         //: The stated opening view, so a check can assert the camera honours it without
@@ -1369,26 +1330,21 @@ export async function startDay({ win, chrome }) {
         selectedId: () => (focus ? focus.id : null),
         select: (id) => selectActivity(map, id, { fly: false }),
         clear: () => clearSelection(map),
-        setTolerance: (t) => {
-          tolerance = t;
-          applyTolerance(map);
-        },
         //: The ladder for the selected run, computed here, against the one `prepare.py`
         //: wrote into that run's document. The guard on two implementations of one
         //: calculation.
         ladder: () => (focus ? ladder(focus.doc.recorded, LADDER_TOLERANCES) : null),
         writtenLadder: () => (focus ? focus.doc.ladder : null),
+        //: The length this run would measure at `t` metres of simplification. No control
+        //: drives it any more; it is how a check holds the browser's geometry against the
+        //: Python's, and it is the one place the coastline-paradox argument is still
+        //: measurable even though it is no longer draggable.
         focusLengthAt: (t) => {
           if (!focus) return null;
-          const was = tolerance;
-          tolerance = t;
-          const out = focusData().length;
-          tolerance = was;
-          return out;
+          return focusData(t).length;
         },
       };
 
-      setSliderEnabled(false);
       renderAggregate();
       applyTolerance(map);
 
@@ -1401,12 +1357,6 @@ export async function startDay({ win, chrome }) {
         );
       }
 
-      if (slider) {
-        slider.addEventListener('input', () => {
-          tolerance = Number(slider.value);
-          scheduleUpdate(map);
-        });
-      }
 
       if (matchedToggle) {
         matchedToggle.addEventListener('click', () => {
