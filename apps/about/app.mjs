@@ -16,8 +16,7 @@ export default {
   mount() {
     return sheet([
       group('webxp', [
-        'A Windows XP window manager, extracted from the 30 Day Map Challenge base map and '
-        + 'given the behaviour the original only drew.',
+        'A Windows XP window manager.',
         'Every program on this desktop is a folder under apps/. The contract is in '
         + 'docs/apps.md.',
       ]),

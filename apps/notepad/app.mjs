@@ -18,9 +18,8 @@ export default {
     area.className = 'notepad-area';
     area.setAttribute('aria-label', 'Document text');
     area.spellcheck = false;
-    area.value = 'This window is not a singleton. Open a second Notepad from the Start '
-      + 'menu and drag it off this one.\n\nThe text reflows on every resize frame, which is '
-      + 'the point: the window is not a screenshot of a window.\n';
+    area.value = 'Type here. Open a second Notepad from the Start menu and drag it off '
+      + 'this one.\n\nThe text reflows on every resize frame.\n';
 
     const count = () => win.setStatus(`${area.value.length} characters`);
     area.addEventListener('input', () => {

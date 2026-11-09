@@ -14,7 +14,7 @@ const desktop = new Desktop({
   root: document.getElementById('webxp'),
   name: 'webxp',
   tagline: 'a Windows XP window manager',
-  footer: 'Every program here is a folder under apps/. See docs/apps.md.',
+  footer: 'Programs are folders under apps/.',
 });
 
 desktop.surface.classList.add('wall-bliss');

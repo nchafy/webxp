@@ -43,7 +43,7 @@ function mountFailure(program, error) {
   what.textContent = error && error.message ? error.message : String(error);
   const where = document.createElement('p');
   where.className = 'group-line';
-  where.textContent = `Thrown by the mount of program "${program.id}". The console carries the stack.`;
+  where.textContent = `Thrown by mount of ${program.id}. See the console.`;
   box.append(legend, what, where);
 
   const sheet = document.createElement('div');

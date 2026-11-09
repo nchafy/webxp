@@ -625,7 +625,7 @@ export async function startDay({ win, chrome }) {
       if (failed) {
         // Named rather than swallowed: a worm quietly missing half its ghosts would read as a
         // quiet segment, which is the opposite of the truth.
-        setStatus(`${failed} of ${results.length} crossings could not be loaded for the overlay.`);
+        setStatus(`${failed} of ${results.length} crossings failed to load`);
       }
       return ghostSpans.length;
     }
@@ -919,11 +919,11 @@ export async function startDay({ win, chrome }) {
       const sign = (v) => `${v > 0 ? '+' : ''}${v.toFixed(2)}`;
       const stats = [
         ['Noise', `${props.inflation_pct.toFixed(2)}%`],
-        ['Worst tenth', `${props.p90_pct.toFixed(2)}%`],
+        ['90th percentile', `${props.p90_pct.toFixed(2)}%`],
         // Not a percentage, and labelled so it cannot be read as one: it is this street's
         // noise minus the noise of every traversal recorded at the same speed, in points.
         // Zero means "as noisy as usual at this speed", which is why it can be negative.
-        ['vs same speed', `${sign(props.adjusted_pts)} pts`],
+        ['Vs same speed', `${sign(props.adjusted_pts)} pts`],
         ['Crossings', `${props.windows}`],
         ['Runs', `${props.activities}`],
       ];
@@ -978,7 +978,7 @@ export async function startDay({ win, chrome }) {
           columns: ['Measure', 'Value'],
           rows: [
             ['Noise', `${pass.inflation_pct.toFixed(2)}%`],
-            ['vs same speed', `${sign(pass.adjusted_pts)} pts`],
+            ['Vs same speed', `${sign(pass.adjusted_pts)} pts`],
             ['Speed', `${pass.speed_ms.toFixed(2)} m/s`],
             ['Points', `${pass.i1 - pass.i0 + 1}`],
           ],
@@ -999,9 +999,9 @@ export async function startDay({ win, chrome }) {
       if (!panel || !focus) return;
       const d = focus.doc;
 
-      const rows = [['Strava distance', fmtKm(d.recorded_m)]];
+      const rows = [['Recorded', fmtKm(d.recorded_m)]];
       if (d.matched_m) rows.push(['Map distance', fmtKm(d.matched_m)]);
-      if (d.strava_m) rows.push(['Strava’s own figure', fmtKm(d.strava_m)]);
+      if (d.strava_m) rows.push(['Strava distance', fmtKm(d.strava_m)]);
       if (d.matched_m) {
         const gap = (d.recorded_m / d.matched_m - 1) * 100;
         rows.push(['Recorded vs map', `${gap >= 0 ? '+' : ''}${gap.toFixed(1)}%`]);
@@ -1349,7 +1349,7 @@ export async function startDay({ win, chrome }) {
       applyTolerance(map);
 
       if (loadError) {
-        setStatus(`No activity data: ${loadError.message}. Run prepare.py, then build_overview.py.`);
+        setStatus(`No activity data: ${loadError.message}`);
       } else {
         const a = aggregate();
         setStatus(
@@ -1386,7 +1386,7 @@ export async function startDay({ win, chrome }) {
           // does not exist, and this one is one script away.
           noiseToggle.disabled = true;
           if (noiseNote) {
-            noiseNote.textContent = 'Run noise_by_area.py to measure noise by place.';
+            noiseNote.textContent = 'No segment data.';
           }
         } else {
           // Built from the same two constants the fill expression uses, so the legend cannot

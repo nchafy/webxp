@@ -156,7 +156,7 @@ export default {
           ],
         }),
       );
-      win.setStatus(`${lngLat.lat.toFixed(4)}, ${lngLat.lng.toFixed(4)} — read off the camera, not a geocoder.`);
+      win.setStatus(`${lngLat.lat.toFixed(4)}, ${lngLat.lng.toFixed(4)}`);
     };
 
     map.on('click', (event) => {

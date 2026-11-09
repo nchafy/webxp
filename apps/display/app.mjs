@@ -41,8 +41,7 @@ export default {
     return sheet([
       group('Background', [chooser]),
       group('Window animation', [
-        'The zoom on open, minimise and restore comes from --zoom-ms in theme.css. Under '
-        + 'prefers-reduced-motion it is skipped rather than shortened.',
+        '--zoom-ms in theme.css. Skipped under prefers-reduced-motion.',
       ]),
     ]);
   },
