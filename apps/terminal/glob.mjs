@@ -7,7 +7,12 @@
  * Imports nothing.
  */
 
+
 const MAGIC = /[*?[]/;
+
+//: The refusals that mean "this name contributes no matches". Everything else is a defect in
+//: the filesystem or in this module, and is logged rather than read as absence.
+const UNMATCHABLE = new Set(['ENOENT', 'ENOTDIR', 'EACCES', 'ELOOP']);
 
 export function hasMagic(word) {
   return MAGIC.test(word);
@@ -40,11 +45,13 @@ export function componentRegex(pattern, { ignoreCase = false } = {}) {
   }
   try {
     return new RegExp(`${out}$`, ignoreCase ? 'i' : '');
-  } catch {
     // A bracket body can still be unparseable as a character class — `[\]` is the short
+  } catch (error) {
     // one — and the pattern reaches here straight from `find -name`, outside any try. The
     // whole pattern degrades to a literal rather than becoming a stack trace, which is the
-    // same answer the unclosed-bracket case above already gives.
+    // same answer the unclosed-bracket case above already gives. Only a pattern that will
+    // not compile: anything else thrown here is not this function's to absorb.
+    if (!(error instanceof SyntaxError)) throw error;
     return new RegExp(`^${pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, ignoreCase ? 'i' : '');
   }
 }
@@ -60,9 +67,22 @@ function present(fs, path, cwd) {
   try {
     fs.lstat(path, { cwd });
     return true;
-  } catch {
+  } catch (error) {
+    report(path, error);
     return false;
   }
+}
+
+/**
+ * Name a refusal this module cannot read as "no matches here".
+ *
+ * Swallowed, a defect in resolution would be indistinguishable from a name that is not
+ * there: the pattern would come back as itself and the reader would be told the file does
+ * not exist.
+ */
+function report(path, error) {
+  if (UNMATCHABLE.has(error.code)) return;
+  console.error(`glob: ${path} could not be examined`, error);
 }
 
 /**
@@ -87,9 +107,10 @@ export function expandGlob(fs, cwd, pattern) {
         let names;
         try {
           names = fs.readdir(prefix || '.', { cwd });
-        } catch {
+        } catch (error) {
           // A component that is not a readable directory contributes no matches, which is
           // also what a shell does.
+          report(prefix || '.', error);
           continue;
         }
         for (const name of names.sort()) {

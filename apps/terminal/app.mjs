@@ -220,8 +220,13 @@ export default {
 
     try {
       append(fs.readFile('/etc/motd'), null);
-    } catch {
-      // A filesystem without a readable motd is not a broken terminal.
+    } catch (error) {
+      // A filesystem with no readable motd is not a broken terminal, so the banner is
+      // skipped. Any other reason is named: swallowed, a defect in reading a file would
+      // look exactly like a tree that ships without one.
+      if (!['ENOENT', 'ENOTDIR', 'EACCES', 'EISDIR'].includes(error.code)) {
+        console.error('terminal: /etc/motd could not be read', error);
+      }
     }
     append(`${persistence.source === 'restored' ? 'Filesystem restored from this browser.' : 'Fresh filesystem.'} `
       + "Type 'help'.\n\n", 'term-note');
@@ -235,15 +240,30 @@ export default {
     // one — or by `format`. Watched rather than discovered on the next command, which would
     // report ENOENT for a directory the reader never left.
     const unwatch = fs.watch(() => {
-      if (!fs.exists(shell.cwd)) {
-        const next = fs.exists(HOME) ? HOME : '/';
-        // The destination is read from the decision, not restated as `HOME`: when home is
-        // gone too this moves to `/`, and a message that said otherwise would be a report of
-        // something that did not happen.
-        append(`terminal: ${shell.cwd} is gone; moved to ${next}\n`, 'term-error');
-        shell.cwd = next;
-        refreshPrompt();
+      // The status bar first, because the probe below can refuse: `fs.exists` rethrows
+      // EACCES, and a throw here left the bar and the prompt frozen on the values they had
+      // when an ancestor of the working directory was last readable — for the rest of the
+      // session, with nothing said in the pane.
+      refreshStatus();
+      let gone;
+      try {
+        gone = !fs.exists(shell.cwd);
+      } catch (error) {
+        // A directory inside something this session may not look into is not a removed
+        // directory; it is an unavailable answer, and moving the reader on one would strand
+        // them somewhere they never went. Anything else is rethrown, which `fs.watch`
+        // reports to the console rather than letting it abort the write.
+        if (error.code !== 'EACCES') throw error;
+        return;
       }
+      if (!gone) return;
+      const next = fs.exists(HOME) ? HOME : '/';
+      // The destination is read from the decision, not restated as `HOME`: when home is
+      // gone too this moves to `/`, and a message that said otherwise would be a report of
+      // something that did not happen.
+      append(`terminal: ${shell.cwd} is gone; moved to ${next}\n`, 'term-error');
+      shell.cwd = next;
+      refreshPrompt();
       refreshStatus();
     });
 

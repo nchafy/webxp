@@ -21,6 +21,7 @@
 import { COMMANDS, UsageError } from './commands.mjs';
 import { expandGlob } from './glob.mjs';
 import { HOME, HOSTNAME, userName } from '../../shared/fs/seed.mjs';
+import { DIR, FsError } from '../../shared/fs/vfs.mjs';
 
 /* ---------------------------------------------------------------------------
    Words.
@@ -155,6 +156,10 @@ export function expandTilde(word) {
    The session.
    --------------------------------------------------------------------------- */
 
+//: The refusals a half-typed path produces. Tab offers nothing for these and says nothing;
+//: any other refusal is a defect and is logged where it happens.
+const UNREADABLE = new Set(['ENOENT', 'ENOTDIR', 'EACCES', 'ELOOP']);
+
 export class Shell {
   /**
    * @param {object} context
@@ -274,9 +279,12 @@ export class Shell {
       try {
         status = (await command.run(context)) || 0;
       } catch (error) {
-        if (error instanceof UsageError || error.name === 'FsError') {
+        if (error instanceof UsageError) {
           io.warn(`${name}: ${error.message}\n`);
-          status = error.name === 'UsageError' ? 2 : 1;
+          status = 2;
+        } else if (error instanceof FsError) {
+          io.warn(`${name}: ${error.message}\n`);
+          status = 1;
         } else {
           // An unexpected throw is a defect in a command, and the console gets the stack.
           io.warn(`${name}: internal error: ${error.message}\n`);
@@ -329,7 +337,13 @@ export class Shell {
     let entries;
     try {
       entries = this.fs.list(dir, { cwd: this.cwd });
-    } catch {
+    } catch (error) {
+      // A half-typed path names a directory that is not there yet, and a Tab is not the
+      // place to report it. Anything other than a name that cannot be read is named, because
+      // a Tab that silently offers nothing is indistinguishable from an empty directory.
+      if (!UNREADABLE.has(error.code)) {
+        console.error(`terminal: completion could not read ${dir}`, error);
+      }
       return { matches: [], prefix: word };
     }
     const matches = entries

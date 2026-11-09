@@ -37,6 +37,23 @@ export class UsageError extends Error {
   }
 }
 
+/**
+ * The error a command may print beside itself and carry on past.
+ *
+ * Returns it, or rethrows anything that is not one — and the rethrow is the point:
+ * `shell.mjs` prints it as `internal error` and puts the stack in the console. Absorbed into
+ * a per-operand warn instead, a defect read exactly like a refusal from the filesystem.
+ * `du: Cannot read properties of undefined` and `du: Permission denied` are the same line to
+ * a reader, and only one of them is a fact about their files.
+ *
+ * @param {Error} error
+ * @returns {UsageError|FsError}
+ */
+function refusal(error) {
+  if (error instanceof FsError || error instanceof UsageError) return error;
+  throw error;
+}
+
 /* ---------------------------------------------------------------------------
    Argument handling.
    --------------------------------------------------------------------------- */
@@ -140,7 +157,7 @@ function readInputs(ctx, operands) {
     try {
       files.push({ name: path, text: ctx.fs.readFile(path, { cwd: ctx.shell.cwd }) });
     } catch (error) {
-      ctx.warn(`${ctx.argv[0]}: ${error.message}`);
+      ctx.warn(`${ctx.argv[0]}: ${refusal(error).message}`);
       failed = true;
     }
   }
@@ -203,6 +220,11 @@ function abs(ctx, path) {
   return normalize(path.startsWith('/') ? path : joinPath(ctx.shell.cwd, path));
 }
 
+//: The refusals that mean "where this symlink points cannot be examined". A caller that has
+//: an answer without the target treats these as "stay with the link"; anything else is a
+//: defect and must not be absorbed as one of them.
+const UNREACHABLE = new Set(['ENOENT', 'ENOTDIR', 'EACCES', 'ELOOP']);
+
 /**
  * `lstat`, with the one exception `ls` needs: an operand that is a symlink **to a
  * directory** is treated as that directory, so `ls links/relative-dir` lists what is in it.
@@ -218,8 +240,9 @@ function operandStat(ctx, path) {
   try {
     const target = ctx.fs.stat(path, { cwd });
     return target.type === DIR ? target : link;
-  } catch {
+  } catch (error) {
     // A broken link is still a name worth printing, which is why this is not an error.
+    if (!UNREACHABLE.has(error.code)) throw error;
     return link;
   }
 }
@@ -400,7 +423,7 @@ export const COMMANDS = {
           ctx.line(`Access: (${(stat.mode & 0o7777).toString(8).padStart(4, '0')}/${stat.modeString})  Uid: (${stat.uid}/${userName(stat.uid)})  Gid: (${stat.gid}/${userName(stat.gid)})`);
           ctx.line(`Modify: ${new Date(stat.mtime).toISOString()}`);
         } catch (error) {
-          ctx.warn(`stat: ${error.message}`);
+          ctx.warn(`stat: ${refusal(error).message}`);
           status = 1;
         }
       }
@@ -426,7 +449,7 @@ export const COMMANDS = {
           else kind = `ASCII text, ${lines(ctx.fs.readFile(path, { cwd: ctx.shell.cwd })).length} lines`;
           ctx.line(`${path}: ${kind}`);
         } catch (error) {
-          ctx.warn(`file: ${error.message}`);
+          ctx.warn(`file: ${refusal(error).message}`);
           status = 1;
         }
       }
@@ -474,7 +497,7 @@ export const COMMANDS = {
             for (const [dir, size] of [...totals.entries()].sort()) show(size, dir);
           }
         } catch (error) {
-          ctx.warn(`du: ${error.message}`);
+          ctx.warn(`du: ${refusal(error).message}`);
           status = 1;
         }
       }
@@ -609,6 +632,9 @@ export const COMMANDS = {
       try {
         regex = new RegExp(source, flags.has('i') ? 'i' : '');
       } catch (error) {
+        // `new RegExp` throws a SyntaxError for a pattern that will not compile, which is
+        // the reader's mistake. Anything else is not, and must not be reported as one.
+        if (!(error instanceof SyntaxError)) throw error;
         throw new UsageError(`bad pattern: ${error.message}`);
       }
 
@@ -632,7 +658,7 @@ export const COMMANDS = {
                 try {
                   targets.push({ name: entry.path, text: ctx.fs.readFile(entry.path) });
                 } catch (error) {
-                  ctx.warn(`grep: ${error.message}`);
+                  ctx.warn(`grep: ${refusal(error).message}`);
                   failed = true;
                 }
               }
@@ -640,7 +666,7 @@ export const COMMANDS = {
             }
             targets.push({ name: path, text: ctx.fs.readFile(path, { cwd: ctx.shell.cwd }) });
           } catch (error) {
-            ctx.warn(`grep: ${error.message}`);
+            ctx.warn(`grep: ${refusal(error).message}`);
             failed = true;
           }
         }
@@ -787,7 +813,7 @@ export const COMMANDS = {
           start = abs(ctx, path);
           ctx.fs.lstat(start);
         } catch (error) {
-          ctx.warn(`find: ${error.message}`);
+          ctx.warn(`find: ${refusal(error).message}`);
           status = 1;
           continue;
         }
@@ -825,7 +851,7 @@ export const COMMANDS = {
         try {
           ctx.fs.touch(path, { cwd: ctx.shell.cwd });
         } catch (error) {
-          ctx.warn(`touch: ${error.message}`);
+          ctx.warn(`touch: ${refusal(error).message}`);
           status = 1;
         }
       }
@@ -845,7 +871,7 @@ export const COMMANDS = {
         try {
           ctx.fs.mkdir(path, { cwd: ctx.shell.cwd, recursive: flags.has('p') });
         } catch (error) {
-          ctx.warn(`mkdir: ${error.message}`);
+          ctx.warn(`mkdir: ${refusal(error).message}`);
           status = 1;
         }
       }
@@ -865,7 +891,7 @@ export const COMMANDS = {
         try {
           ctx.fs.rmdir(path, { cwd: ctx.shell.cwd });
         } catch (error) {
-          ctx.warn(`rmdir: ${error.message}`);
+          ctx.warn(`rmdir: ${refusal(error).message}`);
           status = 1;
         }
       }
@@ -899,8 +925,9 @@ export const COMMANDS = {
         try {
           remove(path);
         } catch (error) {
-          if (flags.has('f') && error.code === 'ENOENT') continue;
-          ctx.warn(`rm: ${error.message}`);
+          const reason = refusal(error);
+          if (flags.has('f') && reason.code === 'ENOENT') continue;
+          ctx.warn(`rm: ${reason.message}`);
           status = 1;
         }
       }
@@ -950,7 +977,7 @@ export const COMMANDS = {
           const target = destIsDir ? joinPath(dest, basename(source)) : dest;
           copy(source, target);
         } catch (error) {
-          ctx.warn(`cp: ${error.message}`);
+          ctx.warn(`cp: ${refusal(error).message}`);
           status = 1;
         }
       }
@@ -977,7 +1004,7 @@ export const COMMANDS = {
           const target = destIsDir ? joinPath(dest, basename(abs(ctx, source))) : dest;
           ctx.fs.rename(source, target, { cwd });
         } catch (error) {
-          ctx.warn(`mv: ${error.message}`);
+          ctx.warn(`mv: ${refusal(error).message}`);
           status = 1;
         }
       }
@@ -1011,7 +1038,7 @@ export const COMMANDS = {
         try {
           ctx.line(ctx.fs.readlink(path, { cwd: ctx.shell.cwd }));
         } catch (error) {
-          ctx.warn(`readlink: ${error.message}`);
+          ctx.warn(`readlink: ${refusal(error).message}`);
           status = 1;
         }
       }
@@ -1031,7 +1058,7 @@ export const COMMANDS = {
         try {
           ctx.line(ctx.fs.realpath(path, { cwd: ctx.shell.cwd }));
         } catch (error) {
-          ctx.warn(`realpath: ${error.message}`);
+          ctx.warn(`realpath: ${refusal(error).message}`);
           status = 1;
         }
       }
@@ -1058,7 +1085,7 @@ export const COMMANDS = {
         try {
           ctx.fs.chmod(path, mode, { cwd: ctx.shell.cwd });
         } catch (error) {
-          ctx.warn(`chmod: ${error.message}`);
+          ctx.warn(`chmod: ${refusal(error).message}`);
           status = 1;
         }
       }
