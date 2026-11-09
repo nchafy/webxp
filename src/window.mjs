@@ -202,7 +202,7 @@ export class XPWindow {
     // and pressing an arrow is the keyboard equivalent of the drag (SC 2.1.1).
     bar.tabIndex = 0;
     bar.setAttribute('role', 'toolbar');
-    bar.setAttribute('aria-label', `${spec.title} window: arrow keys move, shift and arrow keys resize`);
+    bar.setAttribute('aria-label', this.barLabel());
 
     bar.append(makeIcon(this.iconName, 16));
 
@@ -214,7 +214,10 @@ export class XPWindow {
     const boxes = document.createElement('div');
     boxes.className = 'title-buttons';
     this.minBtn = this.titleBox('_', 'Minimize', () => this.minimize());
-    this.maxBtn = this.titleBox('□', 'Maximize', () => this.toggleMaximize());
+    // The maximise box is the one title box whose glyph and name follow the state, so
+    // `syncTitleButtons` writes both and nothing else does.
+    this.maxBtn = this.titleBox('', '', () => this.toggleMaximize());
+    this.syncTitleButtons();
     this.closeBtn = this.titleBox('✕', 'Close', () => this.close());
     this.closeBtn.classList.add('close');
     this.minBtn.hidden = !this.minimizable;
@@ -273,6 +276,15 @@ export class XPWindow {
     button.setAttribute('aria-label', label);
     button.addEventListener('click', onClick);
     return button;
+  }
+
+  /**
+   * The title bar's accessible name: the window, then the keyboard equivalent of the drag
+   * (SC 2.1.1). Written at build and again at every rename, so it is one sentence and a
+   * renamed window cannot offer different instructions from a fresh one.
+   */
+  barLabel() {
+    return `${this.titleText} window: arrow keys move, shift and arrow keys resize`;
   }
 
   /* -------------------------------------------------------------------------
@@ -564,7 +576,7 @@ export class XPWindow {
   setTitle(text) {
     this.titleText = text;
     this.headingEl.textContent = text;
-    this.bar.setAttribute('aria-label', `${text} window: arrow keys move, shift and arrow keys resize`);
+    this.bar.setAttribute('aria-label', this.barLabel());
     this.host.titleChanged(this);
   }
 
