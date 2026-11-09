@@ -15,10 +15,10 @@ coastline paradox ([Mandelbrot
 1967](https://doi.org/10.1126/science.156.3775.636)) happening on a 5 km run.
 
 So the day shows two measurements of one run and the gap between them, rather than
-asserting a figure. A tolerance slider used to make that draggable — simplifying the trace
-live while the total fell — but it was disabled until a run was selected, which is most of
-the time, and an inert control reads as a broken one. The ladder of lengths is still computed
-and still cross-checked against the Python; it is no longer something to drag.
+asserting a figure. No control simplifies the trace: a tolerance control has nothing to act
+on until a run is selected, which is most of the time, and an inert control reads as a
+broken one. The ladder of lengths is still computed on both sides, and `scripts/check.py`
+asserts that a coarser measurement is shorter.
 
 ## Where this code lives now
 
@@ -32,6 +32,18 @@ NOT be hand-synced: if that tree is kept, its `days/02-lines/` should be deleted
 maintained.
 
 ## The pipeline
+
+Every tool here needs numpy, and reading a real export needs `fitdecode` — Strava's bulk
+export hands back whatever the device uploaded, which for most watches is FIT. Both are
+declared in `tools/requirements.txt`:
+
+```
+.venv/bin/pip install -r apps/day-02-lines/tools/requirements.txt
+```
+
+The repository's one venv at `.venv` also serves `scripts/check.py`, which needs
+`websocket-client` and none of this. Nothing the site itself serves needs Python: the
+browser half of the geometry is `geo.mjs`, which has no dependencies at all.
 
 ```
 .venv/bin/python apps/day-02-lines/tools/prepare.py ~/Downloads/strava_export
@@ -54,19 +66,56 @@ totals, the street segments and the grid. Cropping on the way out instead would 
 lengths describing geometry that is not in the file, and the noise statistics still measured
 over somebody's doorstep.
 
+Two conditions, not one. A quarter mile of recorded path comes off each end, and then the
+crop keeps walking inward until the kept end is at least **200 m straight-line** from the
+original end.
+
+The second condition is not decoration. Path distance is not displacement: a watch left
+running at a door piles up metres without going anywhere, and on this export cropping by path
+alone left two finishes **3 m** from where they started, with ten under 50 m. All were hikes,
+which sample sub-1.5 m and spend time milling about at a trailhead.
+
+200 m rather than another quarter mile, measured rather than picked. At the point a quarter
+mile of path has passed, the straight-line offset is a median of 408 m — but 179 of 401 runs
+are under 402 m there and only 7 are under 200 m. A 402 m floor would crop past the stated
+quarter mile on 45% of runs; 200 m reaches the 1.7% that path distance leaves next to the
+door and changes nothing else.
+
 What it costs and what it buys, on one 401-activity export:
 
-- 322.7 km of 4,282.8 km removed, 7.5% of the distance;
-- the start point moves a median of 408 m, 326 m at the 10th percentile;
-- 3 runs of 401 still end up within 100 m of their old start, and 0 were too short to
-  survive the crop.
+- **397 runs kept.** Four never get 200 m from their own start and are dropped, counted and
+  named — not written as stubs. A run that never leaves its block is entirely near home.
+- **348.0 km of 4,282.8 km removed**, 8.1% of the distance.
+- The start moves a median of **357 m**, the finish **345 m**.
+- The nearest kept end of all 794 is exactly **200 m**. Nothing is within 100 m.
 
-Those 3 are the limit of the method, and it is worth being plain about: the crop is by
-distance **along the path**, not by radius. An out-and-back or a loop that passes its own
-start mid-run still has that pass in the data. This removes the obvious tell, not every tell.
+It is still not a radius, and that is the limit worth being plain about: only the ends are
+cropped, so an out-and-back or a loop that passes its own start mid-run keeps that pass. This
+removes the obvious tell, not every tell.
 
-Runs shorter than twice the crop are dropped and counted, not written as stubs — a run that
-short is entirely near home.
+### The crop reduced the noise it was not meant to touch
+
+Cropping the ends was done for privacy. It also made the headline figure smaller, and that
+belongs in the same breath, because the obvious question about a crop removing 8% of the data
+is whether it was chosen to flatter the answer.
+
+Measured over the same 397 runs, before and after:
+
+| | before | after | change |
+| --- | --- | --- | --- |
+| aggregate recorded vs map | +4.22% | +4.13% | -0.09 points |
+| per-run median | +0.98% | +0.82% | -0.16 points |
+| **Runs only (377)** | **+0.90%** | **+0.67%** | **-0.23 points** |
+
+The Runs-only median is the number this day leads with, and the crop took about a quarter off
+it. There is a mechanical reason -- the first and last stretch of a recording is where the
+receiver is coldest and where somebody stands still, so it is where jitter is worst -- but
+that is an explanation after the fact, not why the crop exists. A quarter mile was asked for
+to hide a front door; the noise it removed came along with it.
+
+So every inflation figure below is measured on cropped traces, and would be roughly a quarter
+higher on whole ones. `index.json` records `crop.trim_m` and `crop.min_end_offset_m` so no
+consumer has to guess which it is holding.
 
 `--trim-m 0` disables it, which is right only for the synthetic fixture: `test_pipeline.py`
 holds the output against known route lengths, and cropping would invalidate that comparison
@@ -81,13 +130,17 @@ publishes them.
 | --- | --- |
 | `gpsnoise.py` | The measurement library: projection, length, Douglas-Peucker, file readers, map matching. |
 | `prepare.py` | The CLI. Walks an export, measures, writes the page's data. |
-| `geo.mjs` | The same length and simplification arithmetic, in the browser, and the half of the pair `scripts/check.py` holds against the Python. |
+| `geo.mjs` | The same length and simplification arithmetic, in the browser. The other half of a pair nothing currently holds together. |
 | `lines.mjs` | The two line layers, the segment overlay, the detail panel. |
 | `app.mjs` | The spec, and the `mount`/`ready` split the map needs. |
 | `make_fixture.py` | Builds a synthetic export whose true answer is known. |
 | `test_gpsnoise.py` | Unit checks, plus `--negative-control`. |
 | `test_matching.py` | Integration checks against the live matcher. |
 | `test_pipeline.py` | Holds `prepare.py`'s output against the fixture's truth. |
+| `make_summary.py` | Aggregates a measured export into the committed `data/noise-summary.json`. |
+| `report.py` | Prints the distribution of one measured directory. Nothing is written. |
+| `noise_by_area.py` | Noise per ~220 m cell, speed-controlled. |
+| `street_segments.py` | Noise per OSM way, which is what the overlay draws. |
 
 ## Measuring in a local plane
 
@@ -97,11 +150,19 @@ for north, the prime-vertical radius times cos(lat) for east. Length, perpendicu
 distance and simplification are then plane geometry and agree with each other by
 construction.
 
-Over the few km of one run the planar error is of order (L/R)², about 3 mm over 5 km.
+Over the few km of one run the planar error is of order (L/R)², which is 3.1 mm over 5 km.
 Doing it on a sphere of mean radius instead was measured — by sabotaging the projection in
-`test_gpsnoise.py --negative-control` — to skew a degree of latitude by +0.14% and a
-degree of longitude by −0.25%. That is the same size as the inflation on a clean trace, so
-the ellipsoid is load-bearing rather than fussy.
+`test_gpsnoise.py --negative-control` — to skew a degree of latitude by +0.15% and a degree
+of longitude by −0.25%, in opposite directions. A real run's own inflation is under a
+percent, so an error of that size is a fraction of the effect being measured rather than a
+rounding detail: the ellipsoid is load-bearing and not fussy.
+
+Two nearby figures are easy to confuse and worth separating. The meridional radius varies by
+0.017% over a *degree* of latitude and 0.175% over ten, so taking the frame origin at an edge
+rather than the midpoint costs 0.0087% — two orders of magnitude below the effect, which is
+why `frame_origin`'s midpoint is tidiness and its *rounding* is the load-bearing half. And M
+and N themselves differ by 0.395% at 40°N, which is the error the two separate scale factors
+exist to avoid.
 
 The origin is the bounding-box midpoint, rounded to six decimal places by an explicitly
 written rule rather than by either language's `round`. Not for accuracy: for
@@ -116,15 +177,31 @@ control had to re-simplify in the browser; the control is gone, and the duplicat
 because the agreement between the two implementations is itself the check — a divergence in
 either one is caught by holding them against each other.
 
-The guard is that `prepare.py` writes its own ladder into every activity document and
-`scripts/check.py` drives the browser's implementation over the same geometry and requires
-agreement — on the integer count of surviving points, which carries no rounding, and on
-the lengths to 2 mm. They currently agree to 0.43 mm across twelve rungs with identical
-point sets at every one.
+**That check does not exist.** `prepare.py` writes its own ladder into every activity
+document and `geo.mjs` can recompute it — `win.lines.ladder()` against
+`win.lines.writtenLadder()` — but nothing calls either, so the duplication is currently
+guarded by nobody. `shared/map/README.md` § Not checked carries the gap and the agreement
+measured by hand.
 
-That check found two real defects. Lengths were being written at one decimal place, which
-put a 3e-5 floor under any comparison; they are now written at three. And it is why
-`frame_origin` exists at all.
+What that hand measurement found, over the committed fixture: the two agree to 0.50 mm
+across all 72 rungs with identical surviving-point counts, and 0.50 mm is the rounding floor
+rather than a disagreement — `prepare.LENGTH_DP` writes lengths to three decimals. That one
+is reproducible by anyone, because the fixture is committed.
+
+Over a private export of about four hundred activities the counts also matched everywhere,
+and one rung of several thousand came out millimetres apart, because `math.cos` and
+`Math.cos` differ by a last bit at some latitudes and that flips a near-threshold
+Douglas-Peucker decision. **Provisional:** that measurement predates `--trim-m`, so it
+describes a geometry the pipeline no longer produces, and the rung count and the millimetre
+figure both need re-measuring. The mechanism does not depend on the dataset.
+
+Either way the counts can be asserted exactly and the lengths cannot: a flat 2 mm bar passes
+the fixture and fails a real export, so a tolerance has to carry the 0.5 mm rounding floor
+plus a term that scales with the trace.
+
+Two real defects came out of measuring it rather than assuming it. Lengths were being
+written at one decimal place, which put a 3e-5 floor under any comparison; they are now
+written at three. And it is why `frame_origin` exists at all.
 
 ## What was verified, and how
 
@@ -138,13 +215,22 @@ of itself.
   mean is known in closed form ([Rice
   1945](https://doi.org/10.1002/j.1538-7305.1945.tb00453.x)). `test_gpsnoise.py` builds a
   trace whose true length is exact by construction and requires the measured inflation to
-  match the prediction. It does, to better than 0.2% across three noise regimes.
+  match the prediction. It does, to 0.08% at worst across three noise regimes.
 - **Against published values.** A degree of latitude and a degree of longitude at 40°N,
-  to 2e-4.
+  both to 5e-5 of the NOAA figures ([latitude and longitude
+  lengths](https://www.noaa.gov/jetstream/latlong)). The check's own bar is 2e-4.
 - **Against a known route.** `test_matching.py` asks Valhalla to route between two points,
   resamples the path, displaces every point by noise, and feeds it back as a recording.
-  Matching recovers the length Valhalla itself reported to within 0.5% on street grid,
-  park path and waterfront.
+  Two things are measured and they are different sizes, which is worth not blurring:
+
+  - the plane length of Valhalla's own returned shape against the length Valhalla reports
+    for it — 0.22% to 0.26% across the three legs, two implementations agreeing about one
+    geometry;
+  - matching a noisy recording back to the network length — +0.3%, +0.4% and +2.5%. The
+    street-grid leg is the +2.5%, because a dense grid gives the matcher parallel
+    alternatives. The check's bar is 10%.
+
+  The three legs are a Manhattan street grid, a Central Park path and a Prospect Park path.
 - **Against the fixture's truth.** `tools/test_pipeline.py` holds the committed output
   against `fixture/truth.json`: matching recovers the route length to within 0.52% on all
   six activities — worst −0.52%, best −0.07% — and the GPX round trip is lossless to 0.08%.
@@ -173,42 +259,64 @@ the wrong one for predicting a real activity. The fixture is a test, not a claim
 
 ## What a real history turned out to look like
 
-Figures below are from one 401-activity export. They are not in this repo — the export and
-everything built from it are gitignored, so these are quoted as a measurement, not shipped
-as data. Reproduce with `report.py` against your own.
+Figures below are from one private export of a few hundred activities. The export and the
+per-run documents built from it are gitignored, because an activity trace says where
+somebody lives — so the aggregates are committed in their place:
 
-**Inflation is about 1%, not the tens of percent the fixture shows.** Median recorded-over-
-matched across 381 runs was +0.9%, and the running total was +0.8%. That is the correlated-
-noise argument above, confirmed: receiver error drifts over tens of seconds, so consecutive
-points share most of it and their difference carries far less than 2σ².
+```
+.venv/bin/python -I apps/day-02-lines/tools/make_summary.py apps/day-02-lines/private
+```
 
-**Sample spacing predicts it, strongly.** Binning the same export by median step:
+That writes `data/noise-summary.json`: counts, percentiles and the headline figures, with no
+coordinate, identifier, date or bounding box in it. The file's own header lists what was left
+out and why. `report.py` prints the same ground in more detail against a directory you have.
 
-| median step | n | median inflation |
-| --- | --- | --- |
-| under 1.5 m | 19 | +61% |
-| 3.0–3.5 m | 210 | +1.4% |
-| 3.5–4.0 m | 158 | +0.2% |
+**Every figure here is measured on a cropped export.** A quarter mile comes off each end of
+every run before anything measures it, so "recorded" means the middle of a run and not the
+run. See *The ends are cropped* above. The committed fixture in `data/` is built with
+`--trim-m 0`, so a figure from `data/` and a figure from `private/` are not the same quantity
+and must not be compared.
 
-Every activity in the top band was a hike. Walking at 1 Hz puts consecutive points under a
-metre apart — below the receiver's own error — and the trace becomes a random walk. This is
-`expected_inflation`'s step/sigma ratio showing up in real data.
+Read the numbers out of `noise-summary.json` rather than from here. This section says what
+the shape of the answer is; the file says what it is for a given export, and does not go
+stale when the export is re-measured.
 
-**Matching is not a lower bound.** 107 of 401 activities matched *longer* than they
-recorded, because the matcher follows network geometry where the GPS line cut a corner. Any
-description of matched distance as "the true minimum" is wrong.
+**Inflation is about 1%, not the tens of percent the fixture shows.** Median
+recorded-over-matched across the runs is under a percent, and so is the running total
+(`export.by_sport`). That is what the correlated-noise argument above predicts, and the
+agreement is consistent with it rather than proof of it: this measures the size of the
+effect, not its mechanism. Satellite geometry and atmospheric delay drifting over tens of
+seconds would produce this, and so would other things that make consecutive errors
+similar.
 
-**Where matching fails, it fails big, and it looks like noise.** 11 activities matched to
-under 80% of Strava's own figure, all of them hikes on trails OSM does not carry well. Their
-recorded-over-matched ratios reach +265%, which is mostly a lost match rather than a noisy
-trace. `report.py` separates these two by consulting the simplification ladder, which never
-touches a map: if simplifying the recording to a few metres lands near Strava's independent
-figure, the extra length was jitter and the matcher is the thing that is wrong.
+**Sample spacing predicts it, strongly.** Binning by median step
+(`export.median_inflation_by_spacing`) separates the sub-1.5 m activities, inflated by tens
+of percent, from the 3–4 m ones inflated by a fraction of a percent. Every activity in the
+top band is a hike. Walking at 1 Hz puts consecutive points under a metre apart — below the
+receiver's own error — and the trace becomes a random walk. This is `expected_inflation`'s
+step/sigma ratio showing up in real data.
 
-**Strava's reported distance is close to the matched one, not the raw one.** Resolved
-against the matched length the CSV column sat at a median ratio of 1.003 across 401
-activities, where the raw sum was +2.6% above Strava's figure. Strava is already smoothing;
-the naive trackpoint sum is not what it reports.
+**Matching is not a lower bound.** Just under a third of activities match *longer* than they
+recorded -- 122 of 397 (`export.recorded_over_matched_pct.negative`), because the matcher follows network
+geometry where the GPS line cut a corner. Any description of matched distance as "the true
+minimum" is wrong.
+
+**Where matching fails, it fails big, and it looks like noise.** A handful of activities
+match to well under Strava's own figure, all of them hikes on trails OSM does not carry
+well, and their recorded-over-matched ratios run into the hundreds of percent — mostly a
+lost match rather than a noisy trace. `report.py` separates the two by consulting the
+simplification ladder, which never touches a map: if simplifying the recording to a few
+metres lands near Strava's independent figure, the extra length was jitter and the matcher
+is the thing that is wrong.
+
+**Strava's own figure is not available on a cropped export.** Its CSV distance covers the
+whole activity while these lengths cover the cropped middle, so the two are different
+quantities and `resolve_distance_unit` refuses rather than resolving a unit against a
+mismatched reference. Every section comparing against Strava is therefore absent from a
+cropped run, and `report.py` says so instead of leaving blank columns. On an uncropped
+export the CSV column resolved close to the *matched* length rather than the raw one, which
+is the finding worth keeping: Strava is already smoothing, and the naive trackpoint sum is
+not what it reports.
 
 ## Does it depend on where you are?
 
@@ -237,20 +345,27 @@ Two defences, in order:
 1. A window only counts when its mean speed is 2.0–5.0 m/s. Windows outside are dropped
    and counted, so the cost of the filter is visible.
 2. That is not enough on its own, and the script says so rather than assuming. Inside the
-   band, speed still explained **12.6%** of the variance in one export. So each window is
-   compared against the median inflation of other windows *at the same speed* — 40
-   equal-count bins and a median, non-parametric because the relationship is curved — and
-   what gets mapped is the residual. After that, speed explains **0.4%**.
+   band, speed still explains of the order of a tenth of the variance. So each window is
+   compared against the median inflation of other windows *at the same speed* — equal-count
+   bins and a median, non-parametric because the relationship is curved — and what gets
+   mapped is the residual. After that, under one percent is left.
+   `grid.speed_control` in `noise-summary.json` carries both figures and the bin count,
+   which follows the number of windows rather than being fixed.
 
 The script prints the variance explained before and after, and warns if over 1% remains.
-Judging it on variance rather than on `r` is deliberate: `r = −0.065` sounds like a
+Judging it on variance rather than on `r` is deliberate: an `r` of −0.065 sounds like a
 leftover relationship and is four parts in a thousand.
 
 ### What survived
 
-In one 368-activity export, **91% of the between-cell spread survived the speed control** —
-a 2.35-point spread across well-sampled cells, against 2.59 before. So the spatial pattern
-is not mostly speed.
+**Most of the between-cell spread survives the speed control** — a spread of a couple of
+points across well-sampled cells, and nine tenths of it still there after the residual is
+taken (`grid.between_cell_spread_pts`). So the spatial pattern is not mostly speed.
+
+The cell count is smaller than the activity count suggests: only runs inside
+`gpsnoise.SPACING_BAND_M` contribute, so an export of 401 activities -- 397 after the end
+crop drops four -- hands this script 363 of them, and only cells clearing `MIN_WINDOWS` from `MIN_ACTIVITIES` are
+reported at all.
 
 The shape of it: dense, low-rise-to-mid-rise urban grid came out roughly 1.5 to 2.5 points
 noisier than the same runner's quiet residential and suburban cells, with a city's downtown
@@ -266,11 +381,11 @@ runs is not public information.
 
 ## Showing it: the crossing overlay
 
-The number is 2.3 points of spread between the quietest and noisiest places. The way to
-*see* it needs no number at all.
+The number is a couple of points of spread between the quietest and noisiest places. The way
+to *see* it needs no number at all.
 
 Press **Show segments** and every well-sampled stretch of road is coloured by how much it
-disagrees with itself — a diverging ramp along the path, which answers *where*. Click a
+disagrees with itself — a sequential ramp along the path, which answers *where*. Click a
 segment and the map draws **every crossing of that stretch on top of itself**: one faint
 line per run that went through it. Where the receiver agreed with
 itself the lines lie on each other; where it did not, they fan apart. The width of that
@@ -298,24 +413,30 @@ drawn as the simplified path of the crossing whose own reading is nearest the se
 median — a real trace through the place, rather than an average of traces, which would be a
 path nobody ran.
 
-**Colour and width both ramp.** Diverging blue to red, neutral middle, measured against the
-casing each line sits on:
+**Colour and width both ramp, and the ramp is sequential.** `NOISE_RAMP` in `lines.mjs` is
+seven steps of dim amber to bright gold. Measured there, step by step, against the casing
+each line sits on and against both run inks:
 
 | | |
 | --- | --- |
-| each arm as an ordinal ramp | monotone lightness, step gaps ≥ 0.06 |
-| innermost steps vs the casing | 4.10:1 blue, 4.12:1 red |
-| across the midpoint, CVD | worst pair ΔE 8.6 deutan, 10.5 tritan (≥8 target) |
-| across the midpoint, normal vision | worst pair ΔE 17.4 (≥15 floor) |
+| CIE L\* across the seven steps | 43.9 → 93.1, no reversal |
+| each step vs the casing | 3.23:1 at the dimmest, 15.23:1 at the brightest |
+| each step vs the recorded ink | ΔE 81 at worst |
+| each step vs the matched ink | ΔE 73 at worst |
 
-The midpoint is `#7f7f77`, not the palette's darker `#383835`. A dark neutral is right for
-an *area* fill, where "unremarkable" should recede toward the surface; on a thin *line* it
-recedes to invisible, and an invisible segment is indistinguishable from one with too few
-passes to report. Lightening it costs separation from the red arm, so it was walked up only
-until the CVD gate passed again: `#5c5c56` and `#6e6e67` fail at ΔE 5.8 and 5.7, `#7f7f77`
-clears at 8.6. That leaves the midpoint about as light as the innermost steps, so **width**
-carries "near zero is unremarkable" instead — a hairline at the middle, heavy at the
-extremes. Two channels for one quantity, which also survives greyscale.
+Sequential rather than diverging, because the mapped value is `inflation_pct` and a
+percentage is not signed: it is above zero on almost every street measured, so a neutral
+midpoint would sit near the bottom of the data and mean nothing. A diverging blue-to-red
+ramp with a grey midpoint was right while the mapped value was `adjusted_pts`, a residual
+either side of zero where the middle really did mean "unremarkable".
+
+Amber also keeps the choropleth off the two hues the run lines use. Those are magenta and
+cyan, and blue and red were close enough to both that a reader had to remember which scale a
+colour belonged to.
+
+**Width** is the second channel: `NOISE_WIDTHS` rises with the class, so a quiet street is a
+hairline and a noisy one is heavy. The map reads in greyscale, before anyone finds the
+legend, and for a reader who cannot separate the hues. Two channels for one quantity.
 
 **A casing under every segment, and the scrim above the whole basemap.** These are two
 different jobs and conflating them was the bug. The casing is the ramp's actual surface, so

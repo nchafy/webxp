@@ -117,9 +117,10 @@ COORD_DP = 6
 #: compared against, so the file has to carry more precision than the comparison needs.
 #:
 #: At one decimal place the rounding alone is 0.05 m, which is 3.1e-5 of a 1.6 km activity
-#: and larger than any real disagreement -- the measured worst case across a 401-activity
-#: export is 8.7 mm, and that on one rung of 4,812. Three decimals puts the floor at 0.5 mm,
-#: which is what any tolerance has to be stated above.
+#: and larger than any real disagreement between the two implementations -- so the floor
+#: swamped what the comparison was for. Three decimals puts the floor at 0.5 mm, and that is
+#: the figure any tolerance has to be stated above. `shared/map/README.md` § Not checked
+#: carries what the two were measured to agree to.
 LENGTH_DP = 3
 
 
@@ -407,11 +408,22 @@ def main() -> int:
         if args.trim_m > 0:
             trimmed = gn.trim_ends(track, args.trim_m)
             if trimmed is None:
-                dropped_short.append((path, len(track)))
-                print(
-                    f"    skipped: shorter than twice the {args.trim_m:.0f} m crop",
-                    file=sys.stderr,
-                )
+                # Say which condition refused it, rather than guessing.
+                #
+                # Two can: too little recorded path to crop, or a trace that never gets
+                # `MIN_END_OFFSET_M` from its own start. The second is the usual one — a run
+                # that circles a block, or a watch left going in one place — and naming the
+                # first for both was a message asserting a cause it had not checked.
+                length = gn.track_length_m(track.lat, track.lon)
+                if length <= 2 * args.trim_m:
+                    why = f"only {length:.0f} m recorded, under twice the {args.trim_m:.0f} m crop"
+                else:
+                    why = (
+                        f"{length:.0f} m recorded but never {gn.MIN_END_OFFSET_M:.0f} m "
+                        "from its own start"
+                    )
+                dropped_short.append((path, why))
+                print(f"    skipped: {why}", file=sys.stderr)
                 continue
             track = trimmed
 
@@ -555,7 +567,25 @@ def main() -> int:
 
     index.sort(key=lambda r: (r["date"] or "", r["id"]))
     (args.out / "index.json").write_text(json.dumps(
-        {"activities": index, "failures": [{"file": p.name, "why": w} for p, w in failures]},
+        {
+            # The crop, recorded with the data it produced.
+            #
+            # Without this nothing downstream can tell a cropped dataset from an uncropped
+            # one, and the difference is about 8% in what every length in this file *means*:
+            # a cropped "recorded length" is the middle of a run, not the run. A consumer
+            # that has to warn a human instead of checking a field will eventually compare
+            # the two and be wrong by that much.
+            #
+            # `dropped` is the count excluded by the crop, so a reader can tell 397 of 401
+            # from 397 of 397.
+            "crop": {
+                "trim_m": args.trim_m,
+                "min_end_offset_m": gn.MIN_END_OFFSET_M if args.trim_m > 0 else 0,
+                "dropped": len(dropped_short),
+            },
+            "activities": index,
+            "failures": [{"file": p.name, "why": w} for p, w in failures],
+        },
         indent=1,
     ))
 
@@ -578,11 +608,11 @@ def main() -> int:
           f"across the {matched_n} that snapped.")
     if dropped_short:
         print(
-            f"{len(dropped_short)} run(s) dropped: shorter than twice the "
-            f"{args.trim_m:.0f} m crop, so nothing of them is far enough from home to keep."
+            f"{len(dropped_short)} run(s) dropped: nothing of them is far enough from home "
+            "to keep."
         )
-        for path, points in dropped_short[:5]:
-            print(f"    {path.name} ({points} points)")
+        for path, why in dropped_short[:6]:
+            print(f"    {path.name}: {why}")
     if failures:
         print(f"{len(failures)} file(s) failed; see data/index.json")
     print(f"wrote {args.out}")

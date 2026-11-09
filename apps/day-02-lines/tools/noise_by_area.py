@@ -1,6 +1,6 @@
 """Does GPS noise depend on *where* you are? Measured per segment, not per activity.
 
-    .venv/bin/python -I days/02-lines/noise_by_area.py ~/path/to/strava_export
+    .venv/bin/python -I apps/day-02-lines/tools/noise_by_area.py ~/path/to/strava_export
 
 Walks every trace in short windows, measures how much each window is inflated, and bins
 the windows into a spatial grid. A cell with many windows from many activities gets a
@@ -10,10 +10,11 @@ Writes a GeoJSON of cells next to the measured data, and prints the distribution
 
 ## Why per window, and not per activity
 
-Per-activity inflation is dominated by sample spacing: in this export the activities under
-1.5 m median spacing were inflated 61% and those over 3.5 m by 0.2%. Any per-activity
-comparison between places is really a comparison between how fast you were moving. A
-window is short enough that the terrain under it is one kind of place.
+Per-activity inflation is dominated by sample spacing: run `report.py` and read
+"inflation by sample spacing", where the densest-sampled activities come out tens of
+percent inflated against a fraction of a percent inside `gpsnoise.SPACING_BAND_M`. Any
+per-activity comparison between places is really a comparison between how fast you were
+moving. A window is short enough that the terrain under it is one kind of place.
 
 ## The confound that would otherwise invent a finding
 
@@ -22,12 +23,9 @@ running and you get thirty points inside a four-metre circle: enormous local inf
 and nothing to do with the sky. Bin that spatially and every junction in the city lights
 up as a GPS black spot, which would be a confident, reproducible, wrong answer.
 
-So a window only counts when its mean speed says you were running through it. That is the
-single most important line in this file:
-
-    SPEED_BAND_MS = (2.0, 5.0)
-
-Windows outside it are dropped and counted separately, so the cost of the filter is
+So a window only counts when its mean speed says you were running through it. That gate is
+`gpsnoise.SPEED_BAND_MS`, 2.0 to 5.0 m/s, and it is the single most important thing in this
+file. Windows outside it are dropped and counted separately, so the cost of the filter is
 visible rather than hidden. Everything else here is bookkeeping.
 
 A second, smaller confound in the same direction: slowing for a hill or a crowd raises
@@ -60,10 +58,6 @@ WINDOW_M = 150.0
 #: receiver jitter at a running pace and below the scale of a street corner.
 FLOOR_M = 5.0
 
-#: Mean speed a window must fall in to count, in m/s. 2.0 is a slow jog, 5.0 a fast one.
-#: Below 2.0 is walking, waiting, or stopped -- see the module docstring.
-SPEED_BAND_MS = (2.0, 5.0)
-
 #: Grid cell size in degrees of latitude. 0.002 is about 222 m, so a cell is roughly a
 #: couple of city blocks: small enough to separate a park from the street beside it, large
 #: enough to collect repeat passes.
@@ -75,8 +69,10 @@ CELL_DEG = 0.002
 MIN_WINDOWS = 12
 MIN_ACTIVITIES = 4
 
-#: Only activities whose median spacing sits here, so spacing cannot masquerade as place.
-SPACING_BAND_M = (3.0, 4.0)
+#: The speed and spacing gates, from `gpsnoise` rather than restated here, so this pipeline
+#: and `street_segments.py` cannot disagree about what they filtered on.
+SPEED_BAND_MS = gn.SPEED_BAND_MS
+SPACING_BAND_M = gn.SPACING_BAND_M
 
 
 def windows_for(track):
@@ -134,6 +130,16 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("targets", nargs="+", type=pathlib.Path)
     ap.add_argument("--out", type=pathlib.Path, default=prepare.PRIVATE_OUT)
+    # Same flag, same default as `prepare.py` and `street_segments.py`: all three read the
+    # export, so all three have to agree about how much came off the ends.
+    ap.add_argument(
+        "--trim-m",
+        type=float,
+        default=gn.QUARTER_MILE_M,
+        metavar="METRES",
+        help=f"crop this much off each end of every run (default {gn.QUARTER_MILE_M:.0f}; "
+        "must match whatever prepare.py used)",
+    )
     ap.add_argument("--top", type=int, default=12)
     args = ap.parse_args()
 
@@ -144,6 +150,7 @@ def main() -> int:
     skipped_sport = 0
     skipped_spacing = 0
     skipped_speed = 0
+    skipped_short = 0
     used_activities = 0
     #: One set across every file: `prepare.activity_id` mutates it to keep two filenames with
     #: the same stem apart. A fresh `set()` per call makes that inert — see the note in
@@ -163,6 +170,17 @@ def main() -> int:
         if "run" not in sport:
             skipped_sport += 1
             continue
+
+        # The same crop `prepare.py` applies. This tool reads the export, not `prepare.py`'s
+        # output, so without it the grid measures noise over the doorsteps the rest of the
+        # pipeline removed — and reports a cell there as if it were anywhere else.
+        if args.trim_m > 0:
+            trimmed = gn.trim_ends(track, args.trim_m)
+            if trimmed is None:
+                skipped_short += 1
+                continue
+            track = trimmed
+
         x, y, _ = gn.project(track.lat, track.lon)
         steps = gn.segment_lengths(x, y)
         if steps.size == 0:
@@ -223,25 +241,29 @@ def main() -> int:
     # because you run slowly through it now sits at zero.
     #
     # Non-parametric on purpose: equal-count speed bins and a median, rather than a fitted
-    # line. The relationship is visibly curved -- +4.5% at 2.0-2.5 m/s falling to +1.7% at
-    # 4.0-4.5 -- and a straight line through that would leave structure in the residual at
-    # both ends, which is exactly where the slow, built-up windows are.
+    # line. The relationship is visibly curved -- inflation falls by about three points
+    # across the band, which the table printed just above shows and
+    # `grid.speed_control.median_inflation_by_speed` in `data/noise-summary.json` records --
+    # and a straight line through that would leave structure in the residual at both ends,
+    # which is exactly where the slow, built-up windows are.
     #
-    # `gn.speed_residuals`, not a copy of it. This was reimplemented inline, and the two had
-    # already diverged: the shared version falls back to one global median when there are
-    # fewer than 800 windows, the inline copy always binned into at least 8. Below 8 windows
-    # that meant medianing empty bins, so every residual came out identically 0 and `r_after`
-    # came out `nan` — and `abs(nan) > 0.1` is False, so the warning below never fired. The
-    # speed control became a silent no-op. Measured divergence at n=300: 6.89 points, against
-    # the 2.35-point spatial spread this whole file exists to measure.
+    # `gn.speed_residuals`, not a copy of it, and the difference is not cosmetic. The shared
+    # version falls back to one global median below 800 windows; an inline copy that always
+    # binned into at least 8 medianed empty bins on a small input, so every residual came out
+    # identically 0 and `r_after` came out `nan` -- and `abs(nan) > 0.1` is False, so the
+    # warning below never fired and the speed control was a silent no-op. The spatial spread
+    # this file exists to measure is a couple of points
+    # (`grid.between_cell_spread_pts` in `data/noise-summary.json`), so a control that
+    # silently does nothing is not a small error.
     residual, n_bins = gn.speed_residuals(speed, infl)
 
     r_after = float(np.corrcoef(speed, residual)[0, 1])
     print(f"\n--- after removing the speed trend ({n_bins} equal-count speed bins) ---")
     print(f"  Pearson r between speed and residual: {r_after:+.3f} (was {r:+.3f})")
-    # Judged on variance explained, not on r itself. r = -0.065 sounds like a residual
-    # relationship and is 0.4% of the variance; the 0.1 bar is "under one percent left",
-    # which is the question that matters. A bar on r alone would have to be arbitrary.
+    # Judged on variance explained, not on r itself. An r of -0.065 sounds like a residual
+    # relationship and is four parts in a thousand of the variance; the 0.1 bar is "under one
+    # percent left", which is the question that matters. A bar on r alone would have to be
+    # arbitrary.
     print(
         f"  variance explained by speed: {r * r * 100:.1f}% before, "
         f"{r_after * r_after * 100:.1f}% after"

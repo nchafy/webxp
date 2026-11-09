@@ -154,10 +154,12 @@ def project(lat: np.ndarray, lon: np.ndarray) -> tuple[np.ndarray, np.ndarray, d
     # One libm call is still trusted, and it does not hold. `math.cos` and `Math.cos`
     # disagree by one ulp at some latitudes -- at 40.664366 N, 0x3fe845f5271c98a0 against
     # ...a1 -- which carries into `kx` and flips the occasional near-threshold
-    # Douglas-Peucker decision. Rare: on a 401-activity export one rung of several thousand
-    # kept a neighbouring point instead, which moved that rung's length by millimetres while
-    # every surviving-point *count* still matched exactly. There is no fix on this side, so a
-    # check comparing the two implementations has to budget for it rather than assume bitwise
+    # Douglas-Peucker decision. Rare: on a private export of about four hundred activities
+    # one rung of several thousand kept a neighbouring point instead, which moved that rung's
+    # length by millimetres while every surviving-point *count* still matched exactly. That
+    # count and that millimetre figure predate `--trim-m` and are provisional; the mechanism
+    # does not depend on the dataset. There is no fix on this side either way, so a check
+    # comparing the two implementations has to budget for it rather than assume bitwise
     # agreement. `shared/map/README.md` § Not checked carries what was measured.
     ky = (math.pi / 180.0) * m_rad
     kx = (math.pi / 180.0) * n_rad * math.cos(phi)
@@ -203,14 +205,19 @@ QUARTER_MILE_M = 0.25 * 1609.344
 #: path was cropped to get there.
 #:
 #: Cropping by path distance alone does not do what the crop is for. A watch left running at
-#: the door accumulates distance without going anywhere: measured on one export, two runs had
-#: 402 m of path removed and their finish moved 3 m, and ten moved under 50 m. Both were
-#: hikes, which sample sub-1.5 m and spend time milling about at a trailhead.
+#: the door accumulates distance without going anywhere: on one 401-activity export, two runs
+#: had a quarter mile of path removed and their finish moved 3 m, and ten moved under 50 m.
+#: All were hikes, which sample sub-1.5 m and spend time milling about at a trailhead.
 #:
-#: 200 m, not 402: this is a straight line where `QUARTER_MILE_M` is along a winding path, and
-#: on this export only 1 run in 401 ever reaches 402 m straight-line from its start. 200 m
-#: covers a block or two in a city grid, and crops a further 39 finishes and 9 starts that
-#: path distance alone left close to home.
+#: 200 m rather than 402, measured rather than picked. At the point a quarter mile of path has
+#: passed, the straight-line offset from the start is a median of 408 m — but 179 of those 401
+#: runs are under 402 m there and only 7 are under 200 m. So a 402 m floor would crop past the
+#: stated quarter mile on 45% of runs, while 200 m reaches the 1.7% that path distance leaves
+#: next to the door and changes nothing else. It is also a block or two in a city grid.
+#:
+#: With the floor in place, no kept end on that export is nearer than 200 m to the original —
+#: that is the floor's definition, and `trim_ends` refuses a run that cannot reach it. Four of
+#: the 401 never do, and are dropped.
 MIN_END_OFFSET_M = 200.0
 
 
@@ -223,19 +230,24 @@ def trim_ends(
 
     A trace starts and ends at a front door. Cropping both ends leaves the middle intact and
     measurable: the route still shows where somebody runs without showing where they live.
-    Measured on one 401-activity export, a quarter mile at each end moves the start a median
-    of 408 m, and 3 runs of 401 still end within 100 m of their old start — out-and-backs
-    that pass close to home mid-run.
 
-    Cropped by distance *along the trace*, which is what a watch reports and therefore what
-    "the first quarter mile" means to whoever ran it. It is not a radius: a loop that comes
-    back past its own start is cropped by path distance, so the second pass near home stays.
-    That is a real limit of the method, and `apps/day-02-lines/README.md` states it rather
-    than implying more protection than it gives.
+    Two conditions, and the second is why this is not a one-liner. `metres` of recorded path
+    comes off each end — that is what a watch reports, and what "the first quarter mile" means
+    to whoever ran it. Then it keeps walking inward until the kept end is at least
+    `min_offset_m` straight-line from the original end, because path distance is not
+    displacement and the first condition alone left two finishes 3 m from where they started.
 
-    Returns `None` when the trace cannot survive the crop. A run shorter than twice the trim
-    is entirely "near home" and has no publishable middle; the caller reports it rather than
-    writing a stub.
+    On one 401-activity export with both conditions: 397 runs kept, the start moved a median
+    of 357 m and the finish 345 m, and the nearest kept end of all 794 is exactly the 200 m
+    floor. Nothing is within 100 m.
+
+    It is still not a radius. A loop or an out-and-back that passes its own start mid-run keeps
+    that pass: only the ends are cropped. `apps/day-02-lines/README.md` states that rather than
+    implying more protection than this gives.
+
+    Returns `None` when the trace cannot satisfy both conditions — too little path to crop, or
+    never far enough from its own start. Four of those 401 never reach the floor. The caller
+    reports which condition refused it rather than writing a stub.
 
     Timestamps and elevations are sliced with the coordinates, so speed and spacing are still
     computed from the points they belong to.
