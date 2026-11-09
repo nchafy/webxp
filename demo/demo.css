@@ -38,8 +38,14 @@
 
 .clippy-body { flex: 0 0 auto; filter: drop-shadow(2px 3px 4px rgb(0 0 0 / 40%)); }
 
-/* The bubble sits to his left, so he stays between it and the corner. */
-.clippy-bubble {
+/* The bubble sits to his left, so he stays between it and the corner.
+ *
+ * Two classes, because the bubble is a `.card` as well — it takes the card's padding — and a
+ * bare `.clippy-bubble` would tie `.card` in `theme.css` at (0,1,0) on `background`, `border`
+ * and `box-shadow`. Four declarations would then hang on the order of the `<link>` tags in
+ * `index.html`, and swapping two of them turns the tooltip bisque. `.clippy` is the bubble's
+ * own parent, so this is (0,2,0) and the card loses outright. */
+.clippy .clippy-bubble {
   position: relative;
   max-width: 17rem;
   /* Luna's tooltip yellow, which is what an Office assistant spoke in. */
@@ -63,7 +69,9 @@
 }
 .clippy-bubble::before { right: -10px; border-left-color: #000; }
 
-.clippy-says { margin: 0 0 .5rem; font-size: 12px; line-height: 1.45; color: var(--ink); }
+/* Scoped for the same reason the bubble is: the line is a `<p>` inside a `.card`, and
+   `.card p` at (0,1,1) was beating a bare `.clippy-says` at (0,1,0) and setting the margin. */
+.clippy-bubble .clippy-says { margin: 0 0 .5rem; font-size: 12px; line-height: 1.45; color: var(--ink); }
 
 .clippy-buttons { display: flex; flex-wrap: wrap; gap: .3rem; }
 .clippy-buttons button { font-size: 11px; }

@@ -88,6 +88,12 @@
   text-shadow: 0 1px 0 rgb(255 255 255 / 55%);
 }
 .window:not(.is-active) { box-shadow: 1px 1px 5px rgb(0 0 0 / 25%); }
+/* Changes nothing visible, and is here anyway. A maximised window fills `.desktop`, which is
+   `position: fixed` with `overflow: hidden`, so an outset shadow is clipped on all four sides
+   either way. The rule above and `.window.is-max` are both (0,2,0) and tie on `box-shadow`, so
+   without this the cascade arrives at "maximised has no shadow" only because of which rule
+   sits later in the file. Three classes says it instead. */
+.window.is-max:not(.is-active) { box-shadow: none; }
 
 .window-title h2 {
   margin: 0;
@@ -191,11 +197,21 @@
    single-page app usually does not: you got a window, then you watched it fill.
    --------------------------------------------------------------------------- */
 
-.window-body.is-loading {
+/* The child combinator is load-bearing. `.window-body` is a direct child of `.window`
+   (`window.mjs` appends the bar and the body together), so this is three classes and it beats
+   an app's own two-class body rule — which a bare `.window-body.is-loading` would only tie.
+   The terminal is the case: `.window-body.app-terminal` paints the pane `#0c0c0c`, and with
+   the tie decided by link order the black won, putting the loading caption's `--muted` at
+   1.72:1 against it. The caption is the one thing the window is saying at that moment, so it
+   has to be readable: on the holding colour it measures 9.10:1. One mount's worth of bisque in
+   a console is the price, and it is the right one.
+
+   Scoped this way the holding colour is single-sourced for every app, rather than for every
+   app whose stylesheet happens to be linked earlier. */
+.window > .window-body.is-loading {
   display: grid;
   place-items: center;
-  /* The holding colour, so a slow mount shows a client area rather than a white flash. */
-  background: #e9e6da;
+  background: var(--holding);
   cursor: progress;
   overflow: hidden;
 }

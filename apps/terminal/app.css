@@ -3,9 +3,9 @@
  *
  * The pane is black on purpose, and it is the one surface in this desktop that is not Luna's
  * bisque: a terminal that looked like a dialog would read as a text field. Every ratio in
- * this file is against the pane's `#0c0c0c` and is printed by `scripts/check.py`'s
- * `terminal contrast` check, which reads them off `getComputedStyle` rather than off these
- * comments.
+ * this file is against the pane's own background, declared on `.window-body.app-terminal`
+ * below, and is printed by `scripts/check.py`'s `terminal contrast` check, which reads them
+ * off `getComputedStyle` rather than off these comments.
  */
 
 /* Two classes, deliberately. `.window-body` in `src/window.css` is one class, so a single
@@ -46,7 +46,7 @@
 
 .app-terminal .term-echo {
   /* What was typed, kept distinguishable from what was printed. Pure white measures
-     19.6:1 on the pane and only 1.2:1 against the #e8e8e8 of output, so the echo is a
+     19.6:1 on the pane and only 1.2:1 against `.term`'s output colour, so the echo is a
      difference in weight rather than in legibility — which is all it should be. */
   color: #fff;
 }
@@ -91,7 +91,10 @@
 
 .app-terminal .term-input:focus {
   /* Removed from the theme's sunken box, so focus has to be said again — and said on the
-     pane's own colours rather than with the shell's blue. */
+     pane's own colours rather than with the shell's blue.
+     `:focus`, not the `:focus-visible` every other focus rule in this repo uses: the prompt
+     is where typing goes whether a pointer or a key put it there, and a console whose caret
+     line is unmarked after a click reads as dead. */
   outline: 1px dotted #8ae234;
 }
 

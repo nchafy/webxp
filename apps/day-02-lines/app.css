@@ -1,20 +1,13 @@
 /* Day 02 — Lines. This day's own controls and its key.
  *
- * The map's furniture is `shared/map/map.css`, declared beside this one in `styles`.
- * Only what this day adds is here: the distance readout, the key and the noise legend.
+ * The map's furniture is `shared/map/map.css`, declared beside this one in `styles`. Only what
+ * this day adds is here: the per-run readout, the two keys, the noise legend, and a row in the
+ * detail panel that is a target. A second day wanting something similar should take this file
+ * as a starting point rather than import it — the day owns its own controls.
  *
  * Scoped under `.app-day-02-lines`, the class the loader puts on this app's window body.
  * An unscoped rule here would reach into every other window that ever draws a map.
  */
-
-/* Day 2's own widgets: the per-run readout, the two keys, the noise legend, and a row in
- * the detail panel that is a target.
- *
- * Separate from `shared/map/map.css` because these belong to one day rather than to every
- * map. A second day wanting something similar should take this file as a starting point, not
- * import it — the day owns its own controls.
- */
-
 
 /* The selected run's two lengths. Big enough to be the answer rather than a caption. */
 .app-day-02-lines .readout { margin: .45rem 0 0; font-variant-numeric: tabular-nums; }
@@ -35,8 +28,13 @@
 
 /* The segment key. The swatch is a line because the marks are lines, and it carries the
    class's own width as well as its colour -- width is the second channel on the map, so a
-   key showing only colour would be describing half the encoding. Set per row by map.mjs. */
-.app-day-02-lines .noise-legend i {
+   key showing only colour would be describing half the encoding. Set per row by map.mjs.
+
+   `.key` is in the selector to outrank the rule above it. `lines.mjs` builds this element with
+   both classes, and the two rules set `width` to different values — so at two classes and a
+   type each, the wider swatch would win only by sitting later in the file. Three classes and a
+   type here. Count the classes. */
+.app-day-02-lines .key.noise-legend i {
   width: 20px;
   height: 0;
   border-top-style: solid;
@@ -63,9 +61,14 @@
   background: transparent;
   border: 1px solid transparent;
   border-radius: 2px;
-  box-shadow: none;
   cursor: pointer;
 }
+
+/* The button bevel goes; the theme's focus halo stays. The halo is a `box-shadow`, and two
+   classes outrank `button:focus-visible`'s one class and a type — so `:not(:focus-visible)` is
+   what keeps cancelling the bevel from also cancelling the halo. Without it the focus
+   indicator rests on the hover background, not on the mechanism `theme.css` documents. */
+.app-day-02-lines .pass-row:not(:focus-visible) { box-shadow: none; }
 
 .app-day-02-lines .pass-row:hover,
 .app-day-02-lines .pass-row:focus-visible {

@@ -359,19 +359,43 @@ From porting the 30 Day Map Challenge base map into `apps/basemap/`:
    drew nothing while every flag read healthy.
 
    When you scope a stylesheet that already fought a specificity battle, **count the
-   classes**. The count is the invariant; the class names are not. This has bitten three
-   times on rescopes that looked purely mechanical:
+   classes**. The count is the invariant; the class names are not. This has bitten eight
+   times, usually on an edit that looked purely mechanical.
 
-   | Rule | Became | Lost to |
+   The third column is "what decided it", not "what it lost to", because a tie has two
+   outcomes and only one of them is a loss. **A tie you win by accident is the same defect as
+   a tie you lose:** both put the result in the order of the `<link>` tags, and the one that
+   currently looks right is the one nobody will check before reordering them.
+
+   | Rule | Became | What decided it | What the reader saw |
+   | --- | --- | --- | --- |
+   | `.app-basemap .basemap-root > .map` (3) | `.map-root > .map` (2) | tied `.map-root .maplibregl-map` (2); the vendored block sits last | The map container collapsed to 0 px high and the window drew only the holding colour, while every MapLibre flag read healthy. |
+   | `.app-basemap .map` (2) | — | tied `.app-basemap .maplibregl-map` (2); source order | The same collapse, in the form it took before the move to `shared/`. |
+   | `.map-root .map-compass` (2) | — | lost to `.map-root .map-zoom button` (2 classes and a type) | A 34 px compass rose inside a 28 px button, overhanging three pixels a side and sitting four pixels down and right of centre. |
+   | `.task-button:hover` (2) | a third rule, `.task-button[aria-pressed="true"]:hover` (3) | tied `.task-button[aria-pressed="true"]` (2); source order | The taskbar button for the *active* window — the one a pointer is over most of the time — answered a hover with nothing, while every other button on the bar lit up. |
+   | `.clippy-says` (1) | `.clippy-bubble .clippy-says` (2) | lost to `.card p` (1 and a type) | Clippy's line took `.25rem 0` instead of `0 0 .5rem`: the text sat four pixels low and the buttons crowded the question. |
+   | `.clippy-bubble` (1) | `.clippy .clippy-bubble` (2) | tied `.card` (1) on four declarations; won only because `demo.css` is the last `<link>` | Nothing yet. Reorder the four `<link>` tags in `index.html` and the tooltip turns bisque with a grey bevel. |
+   | `.window-body.is-loading` (2) | `.window > .window-body.is-loading` (3) | tied `.window-body.app-terminal` (2); `app.css` is linked later, so black won | A loading Terminal showed the marquee bar sliding in a void: the caption under it measured 1.72:1 on `#0c0c0c` and was not there. |
+
+   One more shape, which the table above cannot express, because the rule *won*:
+
+   | Rule | Became | What it outranked, and deleted |
    | --- | --- | --- |
-   | `.app-basemap .basemap-root > .map` (3) | `.map-root > .map` (2) | `.map-root .maplibregl-map` (2), on source order |
-   | `.app-basemap .map` (2) | — | `.app-basemap .maplibregl-map` (2), on source order |
-   | `.map-root .map-compass` (2) | — | `.map-root .map-zoom button` (2 classes and a type) |
+   | `.app-day-02-lines .pass-row` (2) | `.app-day-02-lines .pass-row:not(:focus-visible)` (3) | `button:focus-visible` (1 and a type). A flat `box-shadow: none` on the pass-row deleted the theme's focus halo, which is a `box-shadow`. The indicator survived only because `:focus-visible` also paints a background — it rested on a colour rule rather than on the mechanism `theme.css` documents. |
 
-   The third drew the compass at 28 px with a 34 px rose inside it, overflowing its own
-   button and sitting four pixels off centre. It was reported from a screenshot, because no
-   check looked inside a control; `basemap app` now measures the rose against its button.
-   `shared/map/map.css` carries the live selectors and a note to count before touching them.
+   Three further pairs tie and happen to resolve the way they should —
+   `.icon-tile:active` against `.desktop-icon:hover`, `.start-item:active` against
+   `.start-item:hover`, and `.window.is-max` against `.window:not(.is-active)`. None has a
+   visible symptom, so none gets a row; the first two were rewritten in longhands so the two
+   sides share no property and the tie decides nothing, and the third says itself at three
+   classes.
+
+   The compass was reported from a screenshot, because no check looked inside a control;
+   `basemap app` now measures the rose against its button. `shared/map/map.css` carries the
+   live selectors and a note to count before touching them, and `scripts/css_ties.py` pins
+   the live decision behind every row above — the first two rows are two spellings of one
+   decision, so they share a pin. Read its docstring first: it is a regression guard over this
+   list, not a detector, so it will not find the ninth. It needs no browser.
 6. **Anything measuring its container goes in `ready`.** See above.
 
 The lesson behind 5 and 6: **look at the window**. `tilesLoaded: true` and a blank rectangle

@@ -124,7 +124,12 @@
   line-height: 1.25;
   text-align: center;
 }
-.icon-tile:active { background: none; box-shadow: none; }
+/* `button:active` in `theme.css` sinks a bevel this tile does not have, and at (0,1,1) it
+   outranks the (0,1,0) rule above, so the pressed state has to say so again. Longhands, not
+   the `background` shorthand: `.desktop-icon:hover` below is also (0,2,0), and a shorthand
+   here would reach `background-color` too and leave the wash on a pressed icon to source
+   order. Split this way the two rules share no property and cannot tie. */
+.icon-tile:active { background-image: none; box-shadow: none; }
 .icon-tile span { overflow-wrap: anywhere; }
 
 .desktop-icon {
@@ -135,7 +140,7 @@
 }
 .desktop-icon:hover,
 .desktop-icon:focus-visible {
-  background: rgb(10 36 106 / 42%);
+  background-color: rgb(10 36 106 / 42%);
   border-color: rgb(255 255 255 / 45%);
 }
 .desktop-icon svg { filter: drop-shadow(1px 1px 2px rgb(0 0 0 / 45%)); }
@@ -227,6 +232,14 @@
   background: linear-gradient(to bottom, #1a4faf 0%, #3072d8 100%);
   box-shadow: inset 1px 1px 3px rgb(0 0 0 / 45%);
 }
+/* Pressed and hovered, spelled out: the two rules above are both (0,2,0) and tie on
+   `background`, so the pressed button — the one the pointer is most likely to be over —
+   answered a hover with nothing at all. Darkened a shade from the pressed stops, which is the
+   direction hover already moves on an unpressed button, so the sink is kept and the response
+   is the same gesture. 9.10:1 and 5.53:1 with the white label. */
+.task-button[aria-pressed="true"]:hover {
+  background: linear-gradient(to bottom, #164497 0%, #2a66c4 100%);
+}
 .task-button:active { box-shadow: inset 1px 1px 3px rgb(0 0 0 / 45%); }
 .task-button span {
   flex: 1 1 auto;
@@ -301,9 +314,11 @@
   box-shadow: none;
   cursor: pointer;
 }
-.start-item:active { background: none; box-shadow: none; }
+/* Longhands for the same reason `.icon-tile:active` uses them: the two rules are both (0,2,0)
+   and a `background` shorthand in either would tie the other. */
+.start-item:active { background-image: none; box-shadow: none; }
 .start-item:hover,
-.start-item:focus-visible { background: var(--title-b); color: #fff; }
+.start-item:focus-visible { background-color: var(--title-b); color: #fff; }
 .start-item span { flex: 1 1 auto; min-width: 0; }
 .start-item .hint { flex: 0 0 auto; font-size: 10px; color: var(--muted); }
 .start-item:hover .hint,
