@@ -152,7 +152,10 @@ export function buildMapChrome(opts = {}) {
   const card = el('div', 'card');
   card.append(el('h2', null, 'Basemap'));
 
-  const layers = el('div', 'layer-switch');
+  // `segment` is the row layout and the pressed look, from `src/theme.css`; `layer-switch`
+  // has no rule of its own and is kept as the name `basemap.mjs` and `README.md` both point
+  // a future editor at when a fourth basemap is added.
+  const layers = el('div', 'layer-switch segment');
   layers.setAttribute('role', 'group');
   layers.setAttribute('aria-label', 'Which basemap to show');
   // From `BASEMAPS` rather than a list written again here: the presets, their labels and
@@ -172,7 +175,7 @@ export function buildMapChrome(opts = {}) {
   if (tilt) {
     // The tilt gesture is ctrl-drag on a desktop, which nobody finds, so there is a button
     // for it. It only moves the camera: the 3D buildings follow the angle, not the button.
-    const tiltRow = el('div', 'tilt-row');
+    const tiltRow = el('div', 'tilt-row segment');
     const tiltButton = el('button', 'map-tilt', 'Tilt');
     tiltButton.type = 'button';
     tiltButton.setAttribute('aria-pressed', 'false');

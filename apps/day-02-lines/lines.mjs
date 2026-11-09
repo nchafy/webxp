@@ -307,7 +307,7 @@ function buildCards(slot, instance) {
   const notePara = el('p', 'readout', noiseCard);
   const noiseNote = el('span', 'sub', notePara);
   noiseNote.dataset.role = 'noise-note';
-  const noiseRow = el('div', 'tilt-row', noiseCard);
+  const noiseRow = el('div', 'tilt-row segment', noiseCard);
   const noiseToggle = el('button', null, noiseRow);
   noiseToggle.type = 'button';
   noiseToggle.setAttribute('aria-pressed', 'false');
@@ -349,7 +349,9 @@ function buildCards(slot, instance) {
   keyRecordedEl.dataset.role = 'key-recorded';
   keyRow(INK_MATCHED, 'map');
 
-  const buttons = el('div', 'tilt-row', stickCard);
+  //: `segment` carries the row layout and the pressed look; see `src/theme.css`. These two
+  //: buttons are independent toggles rather than a one-of-N switcher, which the class covers.
+  const buttons = el('div', 'tilt-row segment', stickCard);
   const matchedToggle = el('button', null, buttons);
   matchedToggle.type = 'button';
   matchedToggle.setAttribute('aria-pressed', 'true');

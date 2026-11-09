@@ -129,8 +129,10 @@ input[type="text"], textarea {
   box-shadow: inset 1px 1px 2px rgb(0 0 0 / 14%);
 }
 
-/* A segmented group wearing tab clothes: exactly one member is on, so the pressed state is
-   the whole answer and `aria-pressed` carries it. */
+/* A row of buttons whose state `aria-pressed` carries: a one-of-N switcher wearing tab
+   clothes, or a lone toggle. One pressed look for both, because a pressed button means the
+   same thing either way. `widgets.segment` builds the switcher; a caller laying out its own
+   row adds the class. */
 .segment { display: flex; flex-wrap: wrap; gap: 3px; }
 .segment button[aria-pressed="true"] {
   background: linear-gradient(to bottom, var(--title-b), var(--title-a));
