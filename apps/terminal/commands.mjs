@@ -257,6 +257,16 @@ function operandStat(ctx, path) {
    The table.
    --------------------------------------------------------------------------- */
 
+//: What `help` calls each group. A heading only: which groups exist, and their order, come
+//: from the table itself, so a command in a group with no title here is still listed — under
+//: the group's own name, which is the reader's sign that it needs one.
+const GROUP_TITLES = {
+  navigate: 'Where you are',
+  read: 'Reading',
+  write: 'Writing',
+  session: 'The session',
+};
+
 export const COMMANDS = {
   /* ------------------------------ where am I ------------------------------ */
 
@@ -309,67 +319,19 @@ export const COMMANDS = {
     summary: 'list a directory',
     run(ctx) {
       const { flags, operands } = options(ctx, { bool: 'laR1Fhtr' });
-      const paths = operands.length ? operands : ['.'];
-      let status = 0;
-
-      const files = [];
-      const dirs = [];
-      for (const path of paths) {
-        try {
-          const stat = operandStat(ctx, path);
-          if (stat.type === DIR) dirs.push(path);
-          else files.push({ name: path, stat });
-        } catch (error) {
-          ctx.warn(`ls: ${error.message}`);
-          status = 1;
-        }
-      }
-
-      const header = files.length + dirs.length > 1 || flags.has('R');
-      if (files.length) ctx.write(render(ctx, sortEntries(files, flags), flags));
-
-      let first = !files.length;
-      for (const dir of dirs) {
-        const queue = [dir];
-        while (queue.length) {
-          const current = queue.shift();
-          let entries;
-          try {
-            entries = ctx.fs.list(current, { cwd: ctx.shell.cwd }).map((entry) => ({
-              name: entry.name,
-              stat: entry,
-            }));
-          } catch (error) {
-            ctx.warn(`ls: ${error.message}`);
-            status = 1;
-            continue;
-          }
-          if (!flags.has('a')) entries = entries.filter((entry) => !entry.name.startsWith('.'));
-          else {
-            // Resolved physically, because these two name the directory being listed and
-            // its real parent. Lexically, `.` inside a symlinked directory reported the
-            // symlink — a listing of a directory in which the directory itself appeared as
-            // a link to somewhere else.
-            const here = ctx.fs.realpath(current, { cwd: ctx.shell.cwd });
-            entries.unshift(
-              { name: '..', stat: ctx.fs.lstat(ctx.fs.realpath(`${here}/..`)) },
-              { name: '.', stat: ctx.fs.lstat(here) },
-            );
-          }
-          if (header) ctx.write(`${first ? '' : '\n'}${current}:\n`);
-          first = false;
-          ctx.write(render(ctx, sortEntries(entries, flags), flags));
-          if (flags.has('R')) {
-            // Symlinked directories are not descended: a link to an ancestor would make the
-            // recursion endless, and `ls -R` on a real filesystem does not follow them.
-            const children = entries
-              .filter((entry) => entry.stat.type === DIR && entry.name !== '.' && entry.name !== '..')
-              .map((entry) => (current === '/' ? `/${entry.name}` : `${current}/${entry.name}`));
-            queue.unshift(...children);
-          }
-        }
-      }
-      return status;
+      // Walked to the end before anything is written. Writing mid-walk meant a directory
+      // that refused halfway left the listing it had already printed and nothing after it,
+      // which understates the tree rather than reporting one refusal.
+      const { blocks, failures } = listing(ctx, operands.length ? operands : ['.'], flags);
+      for (const failure of failures) ctx.warn(`ls: ${failure.message}`);
+      // One block needs no heading. More than one, or any `-R`, and the reader has to be
+      // told which directory each listing belongs to.
+      const headings = blocks.length > 1 || flags.has('R');
+      blocks.forEach((block, index) => {
+        if (headings && block.path !== null) ctx.write(`${index ? '\n' : ''}${block.path}:\n`);
+        ctx.write(render(ctx, block.entries, flags));
+      });
+      return failures.length ? 1 : 0;
     },
   },
 
@@ -387,9 +349,20 @@ export const COMMANDS = {
 
       let dirs = 0;
       let files = 0;
+      let status = 0;
       const walk = (path, prefix, depth) => {
         if (depth > maxDepth) return;
-        let entries = ctx.fs.list(path, { cwd: ctx.shell.cwd });
+        let entries;
+        try {
+          entries = ctx.fs.list(path, { cwd: ctx.shell.cwd });
+        } catch (error) {
+          // Reported and carried on, as `find` and `du` do: one unreadable directory is a
+          // fact about that directory. Thrown, it cost every later sibling and the summary
+          // line, which left the output describing a smaller tree than the one there.
+          ctx.warn(`tree: ${refusal(error).message}`);
+          status = 1;
+          return;
+        }
         if (!flags.has('a')) entries = entries.filter((entry) => !entry.name.startsWith('.'));
         entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
         entries.forEach((entry, index) => {
@@ -411,7 +384,7 @@ export const COMMANDS = {
       walk(root, '', 1);
       ctx.line('');
       ctx.line(`${dirs} ${dirs === 1 ? 'directory' : 'directories'}, ${files} ${files === 1 ? 'file' : 'files'}`);
-      return 0;
+      return status;
     },
   },
 
@@ -476,6 +449,10 @@ export const COMMANDS = {
       const { flags, operands } = options(ctx, { bool: 'sh' });
       const paths = operands.length ? operands : ['.'];
       let status = 0;
+      //: Inodes already charged in this invocation. One inode with two names is one file's
+      //: worth of space, and counting it per name made `du` of a tree holding a hard link
+      //: report space the filesystem does not use.
+      const charged = new Set();
       for (const path of paths) {
         try {
           const totals = new Map();
@@ -489,6 +466,10 @@ export const COMMANDS = {
             if (entry.stat.type === DIR) {
               if (!totals.has(entry.path)) totals.set(entry.path, 0);
               continue;
+            }
+            if (entry.stat.nlink > 1) {
+              if (charged.has(entry.stat.ino)) continue;
+              charged.add(entry.stat.ino);
             }
             own += entry.stat.size;
             // Charged to every ancestor inside the walk, which is what makes a directory's
@@ -967,13 +948,37 @@ export const COMMANDS = {
         throw new UsageError(`${dest}: Not a directory`);
       }
       let status = 0;
-      const copy = (from, to) => {
-        const stat = ctx.fs.stat(from, { cwd });
+
+      /** One child of a directory being copied, with the directories this walk has made. */
+      const copyEntry = (from, to, visited) => {
+        const stat = ctx.fs.lstat(from, { cwd });
+        if (stat.type === LINK) {
+          // Recreated, never walked through. Following a link is what made the walk
+          // re-enter directories it had already copied, and a copy of a symlink is a
+          // symlink — including when it points at nothing.
+          ctx.fs.symlink(ctx.fs.readlink(from, { cwd }), to, { cwd });
+          return;
+        }
         if (stat.type !== DIR) {
           ctx.fs.copyFile(from, to, { cwd });
           return;
         }
-        if (!flags.has('r')) throw new UsageError(`${from}: Is a directory`);
+        copyTree(from, to, stat.mode, visited);
+      };
+
+      /**
+       * One directory, and everything under it.
+       *
+       * `visited` holds the physical directories this walk has already made, and it is one
+       * walk's — one operand's — not the command's: two operands that name the same tree are
+       * two copies, which is what a shell does. What it bounds is the recursion, which once
+       * re-entered the same two directories under an ever longer name through a pair of
+       * symlinks pointing at each other, making a directory per hop until resolution hit the
+       * symlink ceiling — 642 of them from one `cp -r`. Recreating a link child rather than
+       * following it is what stops that now; this is what keeps the walk finite if that ever
+       * stops being true, so it is a bound and not a second copy of the same rule.
+       */
+      const copyTree = (from, to, mode, visited) => {
         // A directory copied into its own subtree never terminates: the copy creates a new
         // child, the walk reaches it, and it copies that too. Resolved on both sides first,
         // because `cp -r a /tmp/link-to-a/b` is the same mistake spelled differently.
@@ -985,15 +990,37 @@ export const COMMANDS = {
         if (destination === source || destination.startsWith(`${source}/`)) {
           throw new UsageError(`cannot copy '${from}' into itself, '${to}'`);
         }
-        if (!ctx.fs.exists(to, { cwd })) ctx.fs.mkdir(to, { cwd, mode: stat.mode });
+        if (visited.has(source)) {
+          throw new UsageError(`'${from}' is '${source}', which this copy is already walking`);
+        }
+        visited.add(source);
+        if (!ctx.fs.exists(to, { cwd })) ctx.fs.mkdir(to, { cwd, mode });
         for (const name of ctx.fs.readdir(from, { cwd })) {
-          copy(`${from}/${name}`, `${to}/${name}`);
+          try {
+            copyEntry(joinPath(from, name), joinPath(to, name), visited);
+          } catch (error) {
+            // Skipped and reported, which is this file's convention for one input of many:
+            // one child that cannot be read used to abandon every sibling after it, so
+            // `cp -r links lcopy` silently produced a copy missing two of its six names.
+            ctx.warn(`cp: ${refusal(error).message}`);
+            status = 1;
+          }
         }
       };
+
       for (const source of operands) {
         try {
-          const target = destIsDir ? joinPath(dest, basename(source)) : dest;
-          copy(source, target);
+          // The basename of the resolved source, not of the word typed: `basename('.')` is
+          // not a name, and `joinPath(dest, '/')` is the root — `cp -r . /tmp/dst` copied
+          // into `/` and reported success.
+          const target = destIsDir ? joinPath(dest, basename(abs(ctx, source))) : dest;
+          // An operand that is a symlink is followed, where a child is recreated: `cp -r
+          // links/relative-dir copy` is a request for what the link points at.
+          const stat = ctx.fs.stat(source, { cwd });
+          if (stat.type !== DIR) ctx.fs.copyFile(source, target, { cwd });
+          else if (!flags.has('r')) throw new UsageError(`${source}: Is a directory`);
+          // One walk, one set: the operand after this one starts with a clean slate.
+          else copyTree(source, target, stat.mode, new Set());
         } catch (error) {
           ctx.warn(`cp: ${refusal(error).message}`);
           status = 1;
@@ -1045,7 +1072,7 @@ export const COMMANDS = {
   },
 
   readlink: {
-    group: 'write',
+    group: 'read',
     usage: 'readlink path...',
     summary: 'the path a symlink holds',
     run(ctx) {
@@ -1065,7 +1092,7 @@ export const COMMANDS = {
   },
 
   realpath: {
-    group: 'write',
+    group: 'read',
     usage: 'realpath path...',
     summary: 'the path with every symlink resolved',
     run(ctx) {
@@ -1143,10 +1170,13 @@ export const COMMANDS = {
         ctx.line(`  ${command.summary}`);
         return 0;
       }
-      const groups = { navigate: 'Where you are', read: 'Reading', write: 'Writing', session: 'The session' };
       const width = Math.max(...Object.keys(COMMANDS).map((name) => name.length));
-      for (const [group, title] of Object.entries(groups)) {
-        ctx.line(`${title}:`);
+      // The groups are the ones the table uses, in the order the table introduces them, so
+      // every command reaches this list. Taken from a written-out set of groups instead, a
+      // command whose group was not in it printed nowhere — and `help` is the command
+      // reference, so a command missing from it is a command that does not exist.
+      for (const group of [...new Set(Object.values(COMMANDS).map((command) => command.group))]) {
+        ctx.line(`${GROUP_TITLES[group] || group}:`);
         for (const [name, command] of Object.entries(COMMANDS)) {
           if (command.group !== group) continue;
           ctx.line(`  ${name.padEnd(width)}  ${command.summary}`);
@@ -1319,8 +1349,79 @@ export const COMMANDS = {
 };
 
 /* ---------------------------------------------------------------------------
-   `ls`, which is big enough to live below the table.
+   `ls`, which is big enough to live below the table. Four steps, each on its own:
+   classify the operands, read one directory, collect the blocks, render one block.
    --------------------------------------------------------------------------- */
+
+/** The operands split into the names `ls` prints as themselves and the directories it lists. */
+function classifyOperands(ctx, paths) {
+  const files = [];
+  const dirs = [];
+  const failures = [];
+  for (const path of paths) {
+    try {
+      const stat = operandStat(ctx, path);
+      if (stat.type === DIR) dirs.push(path);
+      else files.push({ name: path, stat });
+    } catch (error) {
+      failures.push(refusal(error));
+    }
+  }
+  return { files, dirs, failures };
+}
+
+/** One directory's entries, with `.` and `..` when they were asked for. */
+function directoryEntries(ctx, path, flags) {
+  const entries = ctx.fs.list(path, { cwd: ctx.shell.cwd })
+    .map((entry) => ({ name: entry.name, stat: entry }));
+  if (!flags.has('a')) return entries.filter((entry) => !entry.name.startsWith('.'));
+  // Resolved physically, because these two name the directory being listed and its real
+  // parent. Lexically, `.` inside a symlinked directory reported the symlink — a listing of
+  // a directory in which the directory itself appeared as a link to somewhere else.
+  const here = ctx.fs.realpath(path, { cwd: ctx.shell.cwd });
+  return [
+    { name: '..', stat: ctx.fs.lstat(ctx.fs.realpath(`${here}/..`)) },
+    { name: '.', stat: ctx.fs.lstat(here) },
+    ...entries,
+  ];
+}
+
+/**
+ * Every block `ls` will print, and every refusal it met on the way.
+ *
+ * A block is a heading and its sorted entries; the loose operands are one block with no
+ * heading. Nothing is written here, so a refusal partway through a `-R` walk costs that
+ * directory and not the rest of the output.
+ *
+ * @returns {{blocks: {path: string|null, entries: object[]}[], failures: Error[]}}
+ */
+function listing(ctx, paths, flags) {
+  const { files, dirs, failures } = classifyOperands(ctx, paths);
+  const blocks = [];
+  if (files.length) blocks.push({ path: null, entries: sortEntries(files, flags) });
+
+  for (const dir of dirs) {
+    const queue = [dir];
+    while (queue.length) {
+      const current = queue.shift();
+      let entries;
+      try {
+        entries = sortEntries(directoryEntries(ctx, current, flags), flags);
+      } catch (error) {
+        failures.push(refusal(error));
+        continue;
+      }
+      blocks.push({ path: current, entries });
+      if (!flags.has('R')) continue;
+      // Symlinked directories are not descended: a link to an ancestor would make the
+      // recursion endless, and `ls -R` on a real filesystem does not follow them.
+      queue.unshift(...entries
+        .filter((entry) => entry.stat.type === DIR && entry.name !== '.' && entry.name !== '..')
+        .map((entry) => joinPath(current, entry.name)));
+    }
+  }
+  return { blocks, failures };
+}
 
 function sortEntries(entries, flags) {
   const sorted = [...entries].sort((a, b) => {

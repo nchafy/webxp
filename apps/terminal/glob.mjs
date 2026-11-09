@@ -1,12 +1,15 @@
 /* Name patterns: `*`, `?`, `[...]`.
  *
  * Its own module because two callers need it and they must agree. The shell expands a word
- * into filenames; `find -name` and `grep --include` test one name against a pattern. A
- * second implementation of the bracket rules is a second set of bracket bugs.
+ * into filenames; `find -name` and `find -iname` test one name against a pattern. A second
+ * implementation of the bracket rules is a second set of bracket bugs.
  *
- * Imports nothing.
+ * Imports one thing: the filesystem's node types, because a pattern ending in a separator
+ * means directories only, and `'dir'` spelled here would be a second copy of a value
+ * `vfs.mjs` exports.
  */
 
+import { DIR } from '../../shared/fs/vfs.mjs';
 
 const MAGIC = /[*?[]/;
 
@@ -38,15 +41,14 @@ export function componentRegex(pattern, { ignoreCase = false } = {}) {
         out += '\\[';
         continue;
       }
-      const body = pattern.slice(i + 1, close);
-      out += `[${body.startsWith('!') ? `^${body.slice(1)}` : body}]`;
+      out += charClass(pattern.slice(i + 1, close));
       i = close;
     } else out += char.replace(/[.+^${}()|\\\]]/g, '\\$&');
   }
   try {
     return new RegExp(`${out}$`, ignoreCase ? 'i' : '');
-    // A bracket body can still be unparseable as a character class — `[\]` is the short
   } catch (error) {
+    // A bracket body can still be unparseable as a character class — `[a-\]` is the short
     // one — and the pattern reaches here straight from `find -name`, outside any try. The
     // whole pattern degrades to a literal rather than becoming a stack trace, which is the
     // same answer the unclosed-bracket case above already gives. Only a pattern that will
@@ -54,6 +56,20 @@ export function componentRegex(pattern, { ignoreCase = false } = {}) {
     if (!(error instanceof SyntaxError)) throw error;
     return new RegExp(`^${pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, ignoreCase ? 'i' : '');
   }
+}
+
+/**
+ * One `[...]` body as a JS character class.
+ *
+ * The members are escaped rather than passed through. A `]` inside the body is a literal in
+ * a glob — `[]]` matches `]`, which is why the scan for the closing bracket starts one
+ * character late — but an unescaped `]` closes a JS class, so `[]]` compiled to the empty
+ * class `[]`: it matched nothing, threw nothing, and left a file called `]` unfindable.
+ */
+function charClass(body) {
+  const negated = body.startsWith('!');
+  const members = negated ? body.slice(1) : body;
+  return `[${negated ? '^' : ''}${members.replace(/[\]\\^]/g, '\\$&')}]`;
 }
 
 function joinPrefix(prefix, part) {
@@ -67,6 +83,16 @@ function present(fs, path, cwd) {
   try {
     fs.lstat(path, { cwd });
     return true;
+  } catch (error) {
+    report(path, error);
+    return false;
+  }
+}
+
+/** Whether a name names a directory, following a final symlink as a shell does. */
+function isDirectory(fs, path, cwd) {
+  try {
+    return fs.stat(path, { cwd }).type === DIR;
   } catch (error) {
     report(path, error);
     return false;
@@ -95,6 +121,10 @@ function report(path, error) {
 export function expandGlob(fs, cwd, pattern) {
   if (!hasMagic(pattern)) return [pattern];
   let prefixes = [pattern.startsWith('/') ? '/' : ''];
+  // A trailing separator is the directories-only constraint, and it is carried here rather
+  // than left in the component list: `'*/'.split('/')` ends in an empty component, which is
+  // skipped, which dropped the constraint and let `echo */` answer with regular files.
+  const directoriesOnly = pattern.endsWith('/');
 
   for (const part of pattern.split('/')) {
     if (part === '') continue;
@@ -123,6 +153,8 @@ export function expandGlob(fs, cwd, pattern) {
     prefixes = next;
   }
 
-  const matches = prefixes.filter((path) => present(fs, path, cwd));
+  const matches = directoriesOnly
+    ? prefixes.filter((path) => isDirectory(fs, path, cwd)).map((path) => `${path}/`)
+    : prefixes.filter((path) => present(fs, path, cwd));
   return matches.length ? matches : [pattern];
 }
