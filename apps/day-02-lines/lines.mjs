@@ -647,21 +647,74 @@ export async function startDay({ win, chrome }) {
      * into the grid file. The grid would have had to carry a few thousand short line strings,
      * and they would be a second copy of coordinates that already exist -- fine until the grid
      * is rebuilt against changed data and the two disagree. `docCache` makes a revisit free. */
+    /* Whether a crossing's index span still addresses the run it names.
+     *
+     * A crossing is stored as `[i0, i1]` into one activity's `recorded` array, so the
+     * segment file is only meaningful against the per-activity documents it was built from.
+     * Re-run `prepare.py` with a different `--trim-m` and every index shifts.
+     *
+     * The failure is silent in both directions and that is why this exists. A span past the
+     * end slices short, the crossing is dropped, and a noisy street reads as a quiet one; a
+     * span still in range after a shift points at a different stretch of road and gets drawn
+     * with no indication that anything is wrong. This catches the first and the caller
+     * reports it; nothing in the file lets the second be detected, which is the limit of the
+     * guard and the reason the status line names the segment file rather than the crossing.
+     *
+     * It has already happened, and the shape of it is worth naming because it will recur.
+     * `prepare.py` crops each end of every run; `street_segments.py` and `noise_by_area.py`
+     * read the export directly rather than `prepare.py`'s output, so for a while they did
+     * not crop at all. They wrote spans indexing points the cropped documents no longer
+     * have, and put grid cells back on the doorsteps every other output had removed. The
+     * class is three tools reading one dataset with two of them bypassing the transform the
+     * third applies — so a guard here, at the consumer, is worth more than care in any one
+     * producer.
+     *
+     * Requires the run loaded, so it is only called after `loadFocus` has resolved. */
+    function spanFits(span) {
+      const entry = docCache.get(span.activity);
+      if (!entry) return false;
+      const n = entry.doc.recorded.length;
+      return span.i0 >= 0 && span.i1 < n && span.i1 > span.i0;
+    }
+
     async function drawGhosts(map, passes) {
       const wanted = evenSample(passes, GHOST_CAP);
       const results = await Promise.allSettled(wanted.map((p) => loadFocus(p.activity)));
-      ghostSpans = wanted.filter((_p, i) => results[i].status === 'fulfilled');
+      const loaded = wanted.filter((_p, i) => results[i].status === 'fulfilled');
+      ghostSpans = loaded.filter((span) => spanFits(span));
       const source = map.getSource(GHOSTS);
       if (source) source.setData(ghostData());
-      const failed = results.length - ghostSpans.length;
-      if (failed) {
-        // Named rather than swallowed: a worm quietly missing half its ghosts would read as a
-        // quiet segment, which is the opposite of the truth.
-        setStatus(`${failed} of ${results.length} crossings failed to load`);
+      const failed = results.length - loaded.length;
+      const misfit = loaded.length - ghostSpans.length;
+      // Named rather than swallowed: a worm quietly missing half its ghosts reads as a quiet
+      // segment, which is the opposite of the truth. `misfit` is the worse of the two,
+      // because a span that still fits but has shifted draws the wrong road at full
+      // confidence, so it is reported separately and points at the cause.
+      // Two different failures, counted apart because they need different fixes: a run that
+      // is no longer in the export at all, and a run that is there but shorter than the span
+      // claims. Both mean the segment file is older than the activity data; only the second
+      // can also draw silently wrong geometry.
+      if (failed || misfit) {
+        const parts = [];
+        if (failed) {
+          parts.push(
+            `${failed} of ${results.length} crossings name a run that would not load — ` +
+              'it has probably left the export'
+          );
+        }
+        if (misfit) {
+          parts.push(`${misfit} index past the end of their run`);
+        }
+        setStatus(`${parts.join('; ')}. Rebuild the segment file against this data.`);
       }
       return ghostSpans.length;
     }
 
+    /* The one crossing being shown, as a line over its own run's full-resolution geometry.
+     *
+     * Needs the run loaded, which `showPass` guarantees before setting `passSpan`. Returns
+     * empty rather than throwing when it is not, because `draw` runs on every basemap change
+     * and must not care what order things happened in. */
     function passData() {
       if (!passSpan || !focus || focus.id !== passSpan.activity) return EMPTY;
       const coords = focus.doc.recorded.slice(passSpan.i0, passSpan.i1 + 1);
@@ -931,18 +984,17 @@ export async function startDay({ win, chrome }) {
 
       const passes = Array.isArray(props.passes) ? props.passes : [];
 
-      // Go there first. A 220 m cell at city zoom is a few pixels across, and a worm drawn
-      // inside it would be one smudge: the overlay only says anything at a zoom where two
-      // traces four metres apart are two traces.
-      map.fitBounds(
-        [
-          ...(segmentBounds(props) || [
-            [props.lon - 0.002, props.lat - 0.0014],
-            [props.lon + 0.002, props.lat + 0.0014],
-          ]),
-        ],
-        { padding: 40, duration: 600, maxZoom: 18 }
-      );
+      /* Go there first. A segment at city zoom is a few pixels long, and a worm drawn inside
+       * it would be one smudge: the overlay only says anything at a zoom where two traces
+       * four metres apart are two traces.
+       *
+       * No fallback box. This used to frame a hand-written half-degree either side of the
+       * segment's centre when `segmentBounds` found nothing, which was a copy of the grid's
+       * cell size living in the one place that cannot check it — and it reached a zoom the
+       * worm is useless at. A segment with no geometry has no extent to frame, so the camera
+       * stays where the reader put it and the panel below still opens. */
+      const box = segmentBounds(props);
+      if (box) map.fitBounds(box, { padding: 40, duration: 600, maxZoom: 18 });
       const drawn = passes.length ? await drawGhosts(map, passes) : 0;
       const sign = (v) => `${v > 0 ? '+' : ''}${v.toFixed(2)}`;
       const stats = [
@@ -988,12 +1040,22 @@ export async function startDay({ win, chrome }) {
 
     /* The leaf: load the run this crossing came from, draw just that stretch, and go there.
      *
-     * The run is loaded at full resolution, so the slider works on it afterwards -- the point
-     * of arriving here is to look at the wobble, and the wobble is what the overview's 5 m
-     * floor removed. */
+     * The run is loaded at full resolution rather than taken from the overview: the point of
+     * arriving here is to look at the wobble, and the wobble is what the overview's 5 m floor
+     * removed. */
     async function showPass(map, pass, cell) {
       const entry = await selectActivity(map, pass.activity, { fly: false, openPanel: false });
       if (!entry) return;
+      // Same guard as the worm, and for the same reason: without it this draws an empty
+      // `PASS` layer and flies the camera to a box built from no coordinates, which reads as
+      // the map having lost the crossing rather than as the data being out of date.
+      if (!spanFits(pass)) {
+        setStatus(
+          `This crossing indexes outside ${pass.name || pass.activity} — the segment file ` +
+            'is older than the activity data, so rebuild it'
+        );
+        return;
+      }
       passSpan = pass;
       const source = map.getSource(PASS);
       if (source) source.setData(passData());
