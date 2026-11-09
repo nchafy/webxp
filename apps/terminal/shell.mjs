@@ -177,6 +177,9 @@ export class Shell {
     this.cwd = fs.exists(cwd) ? cwd : '/';
     this.columns = columns;
     this.history = [];
+    //: Where `cd -` goes, and null until the first `cd`. Session state, declared with the
+    //: rest of it rather than invented by the command that writes it.
+    this.oldcwd = null;
     this.host = HOSTNAME;
   }
 

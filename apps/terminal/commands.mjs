@@ -285,14 +285,20 @@ export const COMMANDS = {
         target = ctx.shell.oldcwd;
         ctx.line(target);
       }
-      const next = abs(ctx, target);
-      const stat = ctx.fs.stat(next);
+      // Checked on the path as typed, and only then stored normalised. Normalising first
+      // cancelled `..` against the name before it lexically, so no intermediate component
+      // was ever resolved: `cd /nope/..` and `cd /etc/motd/..` both succeeded while `ls` on
+      // the same string refused, which is the disagreement this module's header rules out.
+      const cwd = ctx.shell.cwd;
+      const stat = ctx.fs.stat(target, { cwd });
       if (stat.type !== DIR) throw new UsageError(`${target}: Not a directory`);
       // Entering a directory is the execute bit, not the read bit: `--x` is a directory you
       // can stand in and cannot list. Asked here rather than discovered by the first `ls`.
-      ctx.fs.access(next, PERM.X);
-      ctx.shell.oldcwd = ctx.shell.cwd;
-      ctx.shell.cwd = next;
+      ctx.fs.access(target, PERM.X, { cwd });
+      ctx.shell.oldcwd = cwd;
+      // Logical, as `bash -L` keeps it: the path walked, not the path resolved. That is what
+      // makes `pwd` and `pwd -P` two commands.
+      ctx.shell.cwd = abs(ctx, target);
       return 0;
     },
   },
