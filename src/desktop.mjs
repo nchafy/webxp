@@ -71,6 +71,10 @@ export class Desktop {
     this.active = null;
     this.z = Z_BASE;
     this.minLoadMs = Number.isFinite(options.minLoadMs) ? options.minLoadMs : MIN_LOAD_MS;
+    //: Everything `destroy` has to undo. A listener added to `window` or `document`, or a
+    //: timer, outlives the root this desktop was built in; one list is what makes the
+    //: teardown complete rather than nearly complete.
+    this.teardown = [];
 
     this.ready = false;
     this.build(options);
@@ -94,19 +98,42 @@ export class Desktop {
    * every window re-clamps on each event.
    */
   watchViewport() {
-    let queued = false;
-    window.addEventListener('resize', () => {
+    let queued = 0;
+    const onResize = () => {
       if (queued) return;
-      queued = true;
-      requestAnimationFrame(() => {
-        queued = false;
+      queued = requestAnimationFrame(() => {
+        queued = 0;
         // A maximised window takes its size from CSS, so it needs no arithmetic. A
         // minimised one is re-clamped too, or it comes back out of the taskbar off-screen.
         for (const win of this.windows) {
           if (!win.closed && win.state !== 'max') win.apply();
         }
       });
+    };
+    window.addEventListener('resize', onResize);
+    this.teardown.push(() => {
+      window.removeEventListener('resize', onResize);
+      // The coalesced frame outlives the listener, and it re-clamps every window this
+      // desktop holds. Left pending, a teardown during a resize drag still runs once.
+      if (queued) cancelAnimationFrame(queued);
+      queued = 0;
     });
+  }
+
+  /**
+   * Stop this desktop.
+   *
+   * A desktop reaches `window` and `document` for the resize and for the clicks that close
+   * the Start menu, and runs a timer for the clock. None of that goes away with the root
+   * element, so a page that builds a second desktop otherwise leaves the first re-clamping
+   * windows on every resize for as long as the page lives.
+   *
+   * The windows and the markup are left alone: whoever owns the root decides what replaces
+   * them.
+   */
+  destroy() {
+    for (const undo of this.teardown) undo();
+    this.teardown = [];
   }
 
   /* -------------------------------------------------------------------------
@@ -200,6 +227,7 @@ export class Desktop {
 
     this.wireStartMenu();
     this.tick(clock);
+    this.teardown.push(() => clearTimeout(this.clockTimer));
   }
 
   /* -------------------------------------------------------------------------
@@ -214,7 +242,7 @@ export class Desktop {
     // seconds hand has nothing to say in between, and a 1 s interval wakes the page 60x for
     // nothing.
     const msToNextMinute = (60 - now.getSeconds()) * 1000 - now.getMilliseconds();
-    setTimeout(() => this.tick(element), msToNextMinute + 50);
+    this.clockTimer = setTimeout(() => this.tick(element), msToNextMinute + 50);
   }
 
   /* -------------------------------------------------------------------------
@@ -506,18 +534,25 @@ export class Desktop {
 
     // Escape closes and returns focus to the button that opened it, which is the only way
     // back for a keyboard once focus has moved into the menu.
-    document.addEventListener('keydown', (event) => {
+    const onKeydown = (event) => {
       if (event.key !== 'Escape' || this.menu.hidden) return;
       setOpen(false);
       this.startBtn.focus();
-    });
+    };
 
     // A click anywhere else closes it. `pointerdown` rather than `click`, so the menu is
     // gone before the click underneath is interpreted as a window focus.
-    document.addEventListener('pointerdown', (event) => {
+    const onPointerdown = (event) => {
       if (this.menu.hidden) return;
       if (this.menu.contains(event.target) || this.startBtn.contains(event.target)) return;
       setOpen(false);
+    };
+
+    document.addEventListener('keydown', onKeydown);
+    document.addEventListener('pointerdown', onPointerdown);
+    this.teardown.push(() => {
+      document.removeEventListener('keydown', onKeydown);
+      document.removeEventListener('pointerdown', onPointerdown);
     });
   }
 
