@@ -96,9 +96,6 @@ exactly that. An unknown `filetype` is an error for the same reason an unknown `
 typo would otherwise be a silently generic window, and the point of a group is that
 everything in it looks the same.
 
-`label` on each entry is not rendered yet. It exists so that a future grouped Start menu, or
-a folder of everything of one filetype, has a name to use rather than inventing one.
-
 ### `mount`
 
 ```js

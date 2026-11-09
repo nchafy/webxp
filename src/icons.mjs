@@ -11,17 +11,26 @@
 
 const NS = 'http://www.w3.org/2000/svg';
 
-/** Luna's icon palette, reduced to the few fills these shapes need. */
+/**
+ * Luna's icon palette, reduced to the few fills these shapes need.
+ *
+ * A presentation attribute is parsed as CSS, so `var()` resolves in it and a colour the
+ * theme already names is taken from the theme rather than retyped. The three literals in
+ * this table are shades `theme.css` has no token for: `line` is the mid grey these outlines
+ * want, between `--rule` and `--sunken`; `pale` is the globe's meridians against
+ * `--title-b`; `amber` is the one warm colour in the set and belongs to nothing else. Three
+ * more are justified where the shapes below use them.
+ */
 const C = {
-  paper: '#fcfcfa',
-  ink: '#3a3a3a',
+  paper: 'var(--panel)',
+  ink: 'var(--muted)',
   line: '#7a8a9a',
-  blue: '#3a6ea5',
-  deep: '#0a246a',
+  blue: 'var(--title-b)',
+  deep: 'var(--title-a)',
   pale: '#dfe8f5',
-  green: '#51a800',
+  green: 'var(--start-a)',
   amber: '#e8a317',
-  shade: '#919b9c',
+  shade: 'var(--rule)',
 };
 
 //: Each entry is a list of `[tag, attributes]` pairs, painted in order.
@@ -68,6 +77,9 @@ const SHAPES = {
     ['path', {
       d: 'M3 10c1.6-.6 2.2-2.6 4-2.2 1.8.4 2.4 2 4.5 1.2',
       fill: 'none',
+      // The close box's red. The palette has no token for it, so this is one of four copies
+      // — `window.css` has two and `shared/map/chrome.mjs` the compass needle — that have to
+      // be edited together until one exists.
       stroke: '#c8341a',
       'stroke-width': 1.4,
     }],
@@ -83,10 +95,11 @@ const SHAPES = {
     }],
   ],
 
-  /** A folder, for a list of other things. */
+  /** A folder, for a list of other things. The outline is `amber` darkened to hold against
+   *  its own fill, which no token covers; the fold is the lit edge of a bevel. */
   folder: [
     ['path', { d: 'M1.5 4.5h5l1.5 2h6.5v8h-13z', fill: C.amber, stroke: '#9a6a00' }],
-    ['path', { d: 'M1.5 6.5h13', stroke: '#fff', opacity: 0.6 }],
+    ['path', { d: 'M1.5 6.5h13', stroke: 'var(--raised)', opacity: 0.6 }],
   ],
 
   /** The information bubble, XP's own "read this first". */
@@ -96,7 +109,9 @@ const SHAPES = {
     ['path', { d: 'M8 7v5', stroke: C.blue, 'stroke-width': 2 }],
   ],
 
-  /** A console: a dark screen with a prompt on it. */
+  /** A console: a dark screen with a prompt on it. The screen is near-black, which the
+   *  palette has no token for — `--ink` is the text colour and reads as a shape, not a
+   *  surface. */
   terminal: [
     ['rect', { x: 1.5, y: 2.5, width: 13, height: 11, rx: 1, fill: '#0c0c0c', stroke: C.ink }],
     ['path', { d: 'M4 6.2l2 1.8-2 1.8', stroke: C.green, 'stroke-width': 1.4 }],
@@ -119,19 +134,17 @@ export const ICON_NAMES = Object.freeze(Object.keys(SHAPES));
  * answer to "which icon" and changing it is one edit here instead of thirty. Explicit `icon`
  * still wins, for the app that is genuinely an exception.
  *
- * Adding a filetype is one entry. The `label` is not rendered anywhere yet; it exists so a filetype
- * can be named in a UI — a grouped Start menu, a folder of everything of one filetype — without
- * that UI inventing its own vocabulary.
+ * Adding a filetype is one entry.
  */
 export const FILETYPES = Object.freeze({
-  map: { icon: 'map', label: 'Map' },
-  document: { icon: 'document', label: 'Document' },
-  notes: { icon: 'notepad', label: 'Notes' },
-  folder: { icon: 'folder', label: 'Folder' },
-  settings: { icon: 'display', label: 'Settings' },
-  info: { icon: 'info', label: 'Information' },
-  web: { icon: 'globe', label: 'Web page' },
-  tool: { icon: 'check', label: 'Tool' },
+  map: { icon: 'map' },
+  document: { icon: 'document' },
+  notes: { icon: 'notepad' },
+  folder: { icon: 'folder' },
+  settings: { icon: 'display' },
+  info: { icon: 'info' },
+  web: { icon: 'globe' },
+  tool: { icon: 'check' },
 });
 
 export const FILETYPE_NAMES = Object.freeze(Object.keys(FILETYPES));
