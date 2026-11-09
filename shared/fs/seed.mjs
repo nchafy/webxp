@@ -12,6 +12,24 @@
 
 export const HOME = '/home/user';
 
+//: The machine's name. One fact: `/etc/hosts` is rendered from it and the shell prompt reads
+//: it, so a prompt saying `webxp` cannot sit over a `/etc/hosts` that says anything else.
+export const HOSTNAME = 'webxp';
+
+//: Who exists. The filesystem checks permissions against a uid; `/etc/passwd`, `ls -l`,
+//: `whoami` and the prompt all name the same uid, and they do it from here rather than from
+//: three copies of the same two rows.
+const ACCOUNTS = [
+  { uid: 0, gid: 0, name: 'root', home: '/root' },
+  { uid: 1000, gid: 1000, name: 'user', home: HOME },
+];
+
+/** The name an id belongs to, or the number when nothing claims it. */
+export function userName(uid) {
+  const account = ACCOUNTS.find((each) => each.uid === uid);
+  return account ? account.name : String(uid);
+}
+
 const README = `webxp filesystem
 ================
 
@@ -60,13 +78,13 @@ const BOOT_LOG = `[    0.000000] webxp kernel booting
 `;
 
 const HOSTS = `127.0.0.1   localhost
-127.0.0.1   webxp
+127.0.0.1   ${HOSTNAME}
 ::1         localhost
 `;
 
-const PASSWD = `root:x:0:0:root:/root:/bin/sh
-user:x:1000:1000:user:/home/user:/bin/sh
-`;
+const PASSWD = `${ACCOUNTS.map(
+  (account) => `${account.name}:x:${account.uid}:${account.gid}:${account.name}:${account.home}:/bin/sh`,
+).join('\n')}\n`;
 
 const MOTD = `Windows XP's chrome. A POSIX shell behind it. Type help.
 `;

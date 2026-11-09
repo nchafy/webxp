@@ -20,7 +20,7 @@
 
 import { COMMANDS, UsageError } from './commands.mjs';
 import { expandGlob } from './glob.mjs';
-import { HOME } from '../../shared/fs/seed.mjs';
+import { HOME, HOSTNAME, userName } from '../../shared/fs/seed.mjs';
 
 /* ---------------------------------------------------------------------------
    Words.
@@ -172,13 +172,17 @@ export class Shell {
     this.cwd = fs.exists(cwd) ? cwd : '/';
     this.columns = columns;
     this.history = [];
-    this.user = 'user';
-    this.host = 'webxp';
+    this.host = HOSTNAME;
   }
 
-  /** The prompt, XP-free and bash-shaped: the home directory abbreviates to `~`. */
+  /**
+   * The prompt, XP-free and bash-shaped: the home directory abbreviates to `~`.
+   *
+   * The identity is read from the filesystem's uid every time rather than stored, so the
+   * prompt cannot say `user` while `whoami` says `root`.
+   */
   prompt() {
-    return `${this.user}@${this.host}:${this.shortCwd()}$ `;
+    return `${userName(this.fs.uid)}@${this.host}:${this.shortCwd()}$ `;
   }
 
   shortCwd() {

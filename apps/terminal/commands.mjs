@@ -18,10 +18,10 @@
  */
 
 import {
-  DIR, FILE, LINK, PERM, basename, dirname, joinPath, normalize,
+  DIR, FILE, FORMAT_VERSION, FsError, LINK, PERM, basename, dirname, joinPath, normalize,
 } from '../../shared/fs/vfs.mjs';
 import { componentRegex } from './glob.mjs';
-import { HOME } from '../../shared/fs/seed.mjs';
+import { HOME, userName } from '../../shared/fs/seed.mjs';
 
 /**
  * A command used wrongly, or a line that does not parse. Printed beside the command, never
@@ -160,12 +160,6 @@ function timestamp(ms) {
   const hh = String(date.getHours()).padStart(2, '0');
   const mm = String(date.getMinutes()).padStart(2, '0');
   return `${MONTHS[date.getMonth()]} ${day} ${hh}:${mm}`;
-}
-
-const USERS = new Map([[0, 'root'], [1000, 'user']]);
-
-function userName(uid) {
-  return USERS.get(uid) || String(uid);
 }
 
 /** `1.2K`. Sizes are character counts; the filesystem holds text. */
@@ -1175,7 +1169,11 @@ export const COMMANDS = {
     summary: 'what this is',
     run(ctx) {
       const { flags } = options(ctx, { bool: 'a' });
-      ctx.line(flags.has('a') ? `webxp ${ctx.shell.host} vfs-1 shared/fs/vfs.mjs ${navigator.userAgent}` : 'webxp');
+      // The filesystem's format version, read from the filesystem rather than written out
+      // here: `vfs-1` beside a `FORMAT_VERSION` of 2 is a version report that is wrong.
+      ctx.line(flags.has('a')
+        ? `webxp ${ctx.shell.host} vfs-${FORMAT_VERSION} shared/fs/vfs.mjs ${navigator.userAgent}`
+        : 'webxp');
       return 0;
     },
   },
