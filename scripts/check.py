@@ -6,9 +6,13 @@ same picture; what separates them is whether the geometry changed after a drag. 
 check here dispatches real input through CDP and then reads the numbers back off the
 window's own state.
 
-    .venv/bin/python scripts/check.py [--port 8099] [--out screenshots]
+    .venv/bin/python scripts/check.py [--port PORT] [--out screenshots]
 
-Two flags exist to keep the harness honest:
+Without `--port` the server takes a free port the kernel picks, which cannot collide with a
+second run out of this checkout. A fixed port is what you pass when you want to attach to the
+page yourself.
+
+A flag exists to keep the harness honest:
 
     --prove-failure   Inverts the drag assertion, so a run that reports clean is reporting
                       something. A harness that has never been seen to fail is a harness
@@ -23,7 +27,6 @@ from __future__ import annotations
 
 import argparse
 import base64
-import hashlib
 import json
 import re
 import shutil
@@ -31,13 +34,12 @@ import subprocess
 import sys
 import time
 import traceback
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from cdp import Browser, CDPError  # noqa: E402
+from serve import ServeError, serve  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -572,62 +574,6 @@ def near(got: float, want: float, slack: float = 2.0) -> bool:
     return abs(got - want) <= slack
 
 
-#: Files the whole suite is built on, fetched over HTTP and compared to disk before anything
-#: is measured. The page itself, plus the two modules whose fields every geometry assertion
-#: indexes into.
-TREE_WITNESSES = ("index.html", "src/window.mjs", "src/desktop.mjs", "src/icons.mjs")
-
-
-def serving_this_tree(base: str) -> list[str]:
-    """Prove the server answering on this port is serving *this* working tree.
-
-    The readiness loop in `main` is satisfied by anything that answers 200 on the port, and
-    `http.server` exits with `Address already in use` rather than failing loudly where the
-    harness can see it. So a second process already on that port — a peer's temp checkout at
-    another revision, a leftover server from an earlier run, another agent in the same tree —
-    silently becomes the thing every check in this file measures. `docs/review.md`: testing
-    a stale copy and reporting clean is the worst outcome available.
-
-    Checking the subprocess is still alive is not enough and was tried: the loop breaks on
-    the first 200, which the *other* server can answer while ours is still on its way to
-    exiting, so `poll()` is `None` and the inference is wrong. Measured against a decoy on
-    the port — it passed the process check and the run went on to report `window.webxp
-    missing`, blaming the page for a server mix-up.
-
-    So this measures instead of inferring: fetch the bytes and compare them to the file on
-    disk. That also catches an HTTP cache serving a stale module, which is the same defect
-    arriving by a different route.
-
-    This is the diagnosis for one run that was never explained at the time: `placed` came
-    back `{}`, `cascadeSlot` undefined, `Desktop.destroy` not a function and zero `var()`
-    fills in the icon set — four independent symptoms of a page built from older modules —
-    while every file on disk was newer than the failure and the next run was clean.
-    """
-    bad = []
-    for name in TREE_WITNESSES:
-        path = REPO_ROOT / name
-        if not path.is_file():
-            bad.append(f"{name} is not in {REPO_ROOT} — the harness is pointed at the wrong tree")
-            continue
-        try:
-            with urllib.request.urlopen(f"{base}/{name}", timeout=10) as answer:
-                served = answer.read()
-        except OSError as error:
-            bad.append(f"{base}/{name} could not be fetched — {error}")
-            continue
-        on_disk = path.read_bytes()
-        if served != on_disk:
-            bad.append(
-                f"{base}/{name} served {len(served)} bytes "
-                f"(sha256 {hashlib.sha256(served).hexdigest()[:12]}) but {name} on disk is "
-                f"{len(on_disk)} bytes (sha256 {hashlib.sha256(on_disk).hexdigest()[:12]}). "
-                "Something other than this tree is answering on that port, or a cache is "
-                "between the two. Every check would measure that copy, not this one — "
-                "re-run with --port on a free port."
-            )
-    return bad
-
-
 def set_viewport(page, width: int, height: int, settle: float = 0.4) -> None:
     """Force the layout viewport and wait out `watchViewport`'s coalescing frame.
 
@@ -700,17 +646,29 @@ RGB = re.compile(r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*[,/]\s*([\d.]+))
 #:
 #: Gradient stops are split at top-level commas so a nested `rgb(1, 2, 3)` or
 #: `color-mix(in oklab, a, b)` is not torn apart by its own separators.
+#:
+#: An unparseable value is detected by assigning a sentinel first and seeing whether the
+#: assignment displaced it. `scripts/inspect_colour_reader.py` is the control for both
+#: outcomes.
 COLOUR_READER = """
 window.__wxColours = (css) => {
   if (!css || css === 'none') return [];
   const ctx = document.createElement('canvas').getContext('2d');
+  // The sentinel the probe has to displace. Canvas `fillStyle` keeps its previous value when
+  // handed something it cannot parse, so the only way to tell "unparseable" from "parsed"
+  // is what is left behind — and the thing left behind must therefore be a colour no
+  // stylesheet in this tree resolves to. `#000` was used here, which made a value that
+  // legitimately resolves to black indistinguishable from an unparseable one: it came back
+  // `UNREADABLE:`, which `unreadable` reports as a failure. Nothing resolves to pure black
+  // today, so that was one palette edit away from a false failure.
+  const SENTINEL = '#010203';
   const read = (token) => {
     const probe = token.trim().replace(/\s+(-?[\d.]+(%|px|r?em)|calc\(.*\))$/, '').trim();
     if (!probe) return null;
-    ctx.fillStyle = '#000';
+    ctx.fillStyle = SENTINEL;
     const before = ctx.fillStyle;
     ctx.fillStyle = probe;
-    if (ctx.fillStyle === before && probe !== '#000' && probe !== 'black') return null;
+    if (ctx.fillStyle === before) return null;
     return ctx.fillStyle;
   };
   // The wrapper comes off first. Splitting before stripping it treated a bare
@@ -2049,8 +2007,9 @@ ICON_TOKENS = """(async () => {
   //: reports *black itself* as unparseable, and black is precisely the value this check
   //: exists to catch. Measured: with `#000` as the sentinel the control's own
   //: `rgb(0, 0, 0)` came back unreadable and the check failed on its own premise.
-  //: `COLOUR_READER` above has the same narrowness; it is left alone here because changing
-  //: it changes what `active styling` reads.
+  //: `COLOUR_READER` above probes the same way, for the same reason. The two sentinels are
+  //: separate on purpose: each only has to be a colour its own sweep never meets, and
+  //: neither reads the other's value.
   const UNPARSEABLE = '#010203';
   const norm = (value) => {
     const text = String(value || '').trim();
@@ -2660,6 +2619,91 @@ def check_iframe_app(page) -> list[str]:
     return bad
 
 
+#: The elements OpenTopoMap's own notice names, as a reader sees them
+#: (https://opentopomap.org/about#verwendung). The data half credits OSM and SRTM, the
+#: rendering half credits OpenTopoMap under CC-BY-SA; `OPENTOPO_CREDIT` in
+#: `shared/map/basemap.mjs` is the English rendering of it. Dropping any one of these drops
+#: a required credit, which is a licence breach and not a copy nit.
+OPENTOPO_CREDIT_PARTS = ("OpenStreetMap", "SRTM", "OpenTopoMap", "CC-BY-SA")
+
+#: How many `©` the notice carries: one for the data, one for the rendering.
+OPENTOPO_CREDIT_MARKS = 2
+
+#: How many links it carries: OSM's copyright page, OpenTopoMap, and the CC-BY-SA deed.
+OPENTOPO_CREDIT_LINKS = 3
+
+
+def switch_basemap(page, want: str) -> dict:
+    """Click the Base map app's `want` preset and wait for that style to be installed.
+
+    Identified by the style, not by the moment. `createBaseMap` stamps a serial into every
+    style's `name` (`stamp`, `shared/map/basemap.mjs`) because `styledata` fires repeatedly
+    as sprites, glyphs and tiles arrive and the *outgoing* style keeps firing it after
+    `setStyle` — so `map.loaded()` can read true off the style being replaced, and
+    `w.base.basemap` flips before `setStyle` is even called. Waiting for a `name` that
+    differs from the one installed before the click is what cannot be satisfied by a stale
+    event.
+
+    Returns the last reading, with `settled` true only when the new style is in and loaded,
+    and `why` describing the reading when it is not.
+    """
+    read = (
+        "(() => { const w = window.webxp.windows.find((w) => w.programId === 'basemap');"
+        " if (!w || !w.base) return { gone: true };"
+        " const map = w.base.map;"
+        " const style = map.getStyle();"
+        " const attribEl = w.bodyEl.querySelector('.map-attrib');"
+        " return { basemap: w.base.basemap, loaded: map.loaded(),"
+        "   styleName: style ? String(style.name || '') : '',"
+        "   layers: style ? style.layers.map((l) => l.id) : [],"
+        # `textContent`, because the credit is prose to a reader: `&copy;` in the source is
+        # a `©` on screen, and asserting the source string would pass while the element it
+        # is supposed to be written into stayed empty.
+        "   creditText: attribEl ? attribEl.textContent : '',"
+        "   creditHtml: attribEl ? attribEl.innerHTML : '' }; })()"
+    )
+    before = page.evaluate(read)
+    if not isinstance(before, dict) or before.get("gone"):
+        raise HarnessError(f"switch_basemap({want!r}): no Base map window with a map in it")
+    # `setBasemap` returns early when the preset is already active, so asking for a switch
+    # that is not one would install no style and wait out the deadline below reporting a
+    # failure in the app. That is a mistake in the caller, and it is named as one.
+    if before["basemap"] == want:
+        raise HarnessError(f"switch_basemap({want!r}): that preset is already the active one")
+
+    clicked = page.evaluate(
+        "(() => { const w = window.webxp.windows.find((w) => w.programId === 'basemap');"
+        " const b = w.bodyEl.querySelector(%s);"
+        " if (!b) return false; b.click(); return true; })()"
+        % json.dumps(f'[data-basemap="{want}"]')
+    )
+    if not clicked:
+        raise HarnessError(f"switch_basemap({want!r}): the app has no [data-basemap] button for it")
+
+    deadline = time.monotonic() + 45
+    state = before
+    while time.monotonic() < deadline:
+        state = page.evaluate(read)
+        if state.get("gone"):
+            raise HarnessError(f"switch_basemap({want!r}): the Base map window went away mid-switch")
+        if (
+            state["basemap"] == want
+            and state["loaded"]
+            and state["styleName"]
+            and state["styleName"] != before["styleName"]
+        ):
+            state["settled"] = True
+            return state
+        time.sleep(0.5)
+    state["settled"] = False
+    state["why"] = (
+        f"after 45s the app says {state['basemap']!r}, map.loaded() is {state['loaded']}, and "
+        f"the installed style is named {state['styleName']!r} against {before['styleName']!r} "
+        "before the click"
+    )
+    return state
+
+
 def check_basemap_app(page) -> list[str]:
     """The ported project draws, in a window, at the window's size.
 
@@ -2837,25 +2881,9 @@ def check_basemap_app(page) -> list[str]:
     if missing:
         bad.append(f"basemap app: overlay layers {sorted(missing)} missing before any switch")
 
-    page.evaluate(
-        "(() => { const w = window.webxp.windows.find((w) => w.programId === 'basemap');"
-        " w.bodyEl.querySelector('[data-basemap=\"satellite\"]').click(); })()"
-    )
-    deadline = time.monotonic() + 45
-    switched = None
-    while time.monotonic() < deadline:
-        switched = page.evaluate(
-            "(() => { const w = window.webxp.windows.find((w) => w.programId === 'basemap');"
-            " const map = w.base.map;"
-            " return { basemap: w.base.basemap, loaded: map.loaded(),"
-            "   layers: map.getStyle() ? map.getStyle().layers.map((l) => l.id) : [] }; })()"
-        )
-        if switched["basemap"] == "satellite" and switched["loaded"]:
-            break
-        time.sleep(0.5)
-
-    if not switched or switched["basemap"] != "satellite":
-        bad.append(f"basemap app: the satellite switch did not take — {switched}")
+    switched = switch_basemap(page, "satellite")
+    if not switched["settled"]:
+        bad.append(f"basemap app: the satellite switch did not take — {switched['why']}")
     else:
         missing = overlay - set(switched["layers"])
         if missing:
@@ -2863,6 +2891,63 @@ def check_basemap_app(page) -> list[str]:
                 f"basemap app: overlay layers {sorted(missing)} were discarded by the basemap "
                 "switch — draw() was not re-run"
             )
+
+    # Geography's credit, read off the page rather than out of the module.
+    #
+    # `paintAttribution` writes only the active preset's string, so a preset nothing
+    # switches to has its notice unrendered — and a rendering that never happens cannot be
+    # asserted. Reading `OPENTOPO_CREDIT` here instead would pass with `paintAttribution`
+    # broken, which is the defect that matters: the constant is right and the reader sees
+    # someone else's credit. OpenTopoMap's is the notice with terms of its own, crediting
+    # the data and the rendering separately with a `©` for each, and dropping either mark
+    # drops a required credit.
+    #
+    # Inside this check rather than beside it because the switch is the expensive part — a
+    # style, its glyphs and a screen of raster tiles — and this window has already paid for
+    # a map that is ready, laid out and drawing.
+    topo = switch_basemap(page, "geography")
+    if not topo["settled"]:
+        bad.append(f"basemap app: the geography switch did not take — {topo['why']}")
+    else:
+        text = topo["creditText"]
+        marks = text.count("©")
+        if marks < OPENTOPO_CREDIT_MARKS:
+            bad.append(
+                f"basemap app: the geography credit reads {text!r} — {marks} copyright "
+                f"mark(s), want {OPENTOPO_CREDIT_MARKS}. OpenTopoMap's notice marks the data "
+                "(OSM, SRTM) and their own rendering separately, and dropping either mark "
+                "drops a required credit"
+            )
+        absent = [part for part in OPENTOPO_CREDIT_PARTS if part not in text]
+        if absent:
+            bad.append(
+                f"basemap app: the geography credit reads {text!r}, with no {', '.join(absent)} "
+                "— every one of those is named by the notice OpenTopoMap specifies"
+            )
+        links = topo["creditHtml"].count("href")
+        if links < OPENTOPO_CREDIT_LINKS:
+            bad.append(
+                f"basemap app: the geography credit carries {links} link(s), want "
+                f"{OPENTOPO_CREDIT_LINKS} — OSM's copyright page, OpenTopoMap, and the "
+                "CC-BY-SA deed share-alike points a reader at"
+            )
+        missing = overlay - set(topo["layers"])
+        if missing:
+            bad.append(
+                f"basemap app: overlay layers {sorted(missing)} were discarded by the "
+                "geography switch — draw() was not re-run"
+            )
+
+    # Back to satellite, because the choice is remembered in `localStorage` and the `day 02
+    # lines` check reads the basemap this one leaves behind — see the comment on `own` there.
+    # Asserted rather than assumed: a restore that silently failed would hand that check a
+    # different style than its own comment describes.
+    restored = switch_basemap(page, "satellite")
+    if not restored["settled"]:
+        bad.append(
+            "basemap app: could not put satellite back after the geography switch — "
+            f"{restored['why']}. Later checks open a map on whatever this one remembered"
+        )
     return bad
 
 
@@ -4078,6 +4163,27 @@ def check_day_02_segment_spans(page) -> list[str]:
                         unknown += 1
                     elif crossing["i1"] >= n:
                         past_end += 1
+            # An overlay with no crossing in it is this check's own vacuous pass, in the one
+            # costume the guard below cannot see through: the file exists, so `examined` is
+            # not empty, the loops above run zero times, and nothing is found wrong. A fixture
+            # that degraded to empty, or a generator whose gates stopped admitting anything,
+            # would read as a clean result.
+            #
+            # Measured by pointing `REPO_ROOT` at a copy of the tree whose two overlays were
+            # replaced by `{"type": "FeatureCollection", "features": []}` and calling this
+            # function directly: before this block it returned no finding at all, and the
+            # same copy with the real overlays in place returns none either way. The
+            # generators refuse to write such a file
+            # (`apps/day-02-lines/tools/street_segments.py`, `noise_by_area.py`) and
+            # `tools/test_pipeline.py` asserts the counts over the committed pair; this is the
+            # same assertion at the layer that reads the file.
+            if not total:
+                bad.append(
+                    f"day 02: {name}/{overlay} carries "
+                    f"{len(doc.get('features', []))} segment(s) and no crossing at all, so "
+                    "no span was checked against any activity document. Not a clean result "
+                    "— nothing was measured."
+                )
             if past_end or unknown:
                 bad.append(
                     f"day 02: {name}/{overlay} has {past_end} of {total} crossings indexing "
@@ -4085,11 +4191,13 @@ def check_day_02_segment_spans(page) -> list[str]:
                     "the overlay predates the activity documents beside it, so the "
                     "drill-down draws the wrong road. Rebuild it."
                 )
-    # Named, never silent. `data/` carries no overlay files at all — the committed fixture
-    # has `index.json` and six activity documents and nothing else — so on a clean clone
-    # every loop above skips and this check would otherwise report ok having read nothing.
-    # That is the shape `docs/review.md` calls a check whose precondition can go false
-    # without failing, and it is the one outcome this file may not produce.
+    # Named, never silent. Both loops above are keyed on a file being there, so a checkout
+    # carrying no overlay under `private/` or `data/` runs them zero times and this check
+    # would otherwise report ok having read nothing. What a clean clone measures is the
+    # committed synthetic pair in `data/`, written from the fixture by
+    # `apps/day-02-lines/tools/street_segments.py` and `noise_by_area.py`. That is the shape
+    # `docs/review.md` calls a check whose precondition can go false without failing, and it
+    # is the one outcome this file may not produce.
     if not examined:
         bad.append(
             "day 02: no overlay file was found under "
@@ -5443,7 +5551,12 @@ CHECKS = (
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", type=int, default=8099)
+    parser.add_argument(
+        "--port",
+        type=int,
+        help="serve on this port instead of a free one the kernel picks; for attaching to "
+        "the page yourself",
+    )
     parser.add_argument("--out", default="screenshots")
     parser.add_argument(
         "--prove-failure",
@@ -5475,37 +5588,15 @@ def main(argv: list[str] | None = None) -> int:
     out_dir.mkdir(exist_ok=True)
     global SHOT_DIR
     SHOT_DIR = out_dir
-    base = f"http://127.0.0.1:{args.port}"
     global BASE_URL
-    BASE_URL = base
-
-    # Loopback only. Nothing here is meant to be reachable from another machine.
-    server = subprocess.Popen(
-        [sys.executable, "-m", "http.server", str(args.port), "--bind", "127.0.0.1"],
-        cwd=REPO_ROOT,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
 
     failures: list[str] = []
     try:
-        for _ in range(60):
-            try:
-                urllib.request.urlopen(base + "/", timeout=5)
-                break
-            except OSError:
-                time.sleep(0.1)
-        else:
-            print("server did not come up", file=sys.stderr)
-            return 1
-
-        wrong_tree = serving_this_tree(base)
-        if wrong_tree:
-            print("\n".join(wrong_tree), file=sys.stderr)
-            return 1
-
         width, height = VIEWPORT
-        with Browser() as browser:
+        # `serve` picks the port, proves the bytes on it are this tree's, and stops the
+        # server on the way out.
+        with serve(args.port) as base, Browser() as browser:
+            BASE_URL = base
             page = browser.page()
             page.call("Runtime.enable")
             page.call("Log.enable")
@@ -5620,9 +5711,11 @@ def main(argv: list[str] | None = None) -> int:
             except Exception as error:  # noqa: BLE001 - reported, never discarded
                 failures.append(f"the closing screenshot failed — {error}")
                 print(f"  [FAIL] {failures[-1]}")
-    finally:
-        server.terminate()
-        server.wait(timeout=10)
+    except ServeError as error:
+        # No server, or not this tree's server. Nothing was measured, so this is a failed
+        # run and not a clean one.
+        print(error, file=sys.stderr)
+        return 1
 
     # `--prove-failure` inverts the exit code: the run is correct when the inversions fired.
     #

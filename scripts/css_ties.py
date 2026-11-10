@@ -5,8 +5,8 @@ WHAT THIS IS, AND WHAT IT IS NOT
 --------------------------------
 This is a **regression guard over an explicit list of already-resolved ties**. It is
 **not a tie detector.** It cannot tell you that a new tie exists. It can only tell you
-that the twenty-odd decisions listed in `OUTRANKS`, `DISJOINT` and `GONE` below are still
-decided the way `docs/apps.md` says they are.
+that the decisions listed in `OUTRANKS`, `DISJOINT` and `GONE` below are still decided the
+way `docs/apps.md` says they are.
 
 The distinction matters, because the two halves of the list are pinned differently:
 
@@ -14,9 +14,12 @@ The distinction matters, because the two halves of the list are pinned different
   asserted to share no property. Reintroduce the overlap and this names the property. It
   would also catch a *newly* introduced overlap between those two selectors.
 * `OUTRANKS` and `GONE` entries are pinned as **"this selector exists and sets these
-  properties"**. Findings 1, 2, 3 and 22 live here. Delete the fix and the assertion fails
-  because the fix is gone — not because a tie was detected. **A brand-new tie of the same
-  shape, anywhere else in the tree, is not caught by this file.**
+  properties"** — `.map-root .map-area > .map` over `.map-root .maplibregl-map`,
+  `.clippy .clippy-bubble` over `.card`, `.window.is-max:not(.is-active)` over
+  `.window.is-max`, and in `GONE` the spellings those replaced — `.map-root > .map`,
+  `.clippy-bubble`. Delete the fix and the assertion fails because the fix is gone — not
+  because a tie was detected. **A brand-new tie of the same shape, anywhere else in the
+  tree, is not caught by this file.**
 
 The missing piece for the general case is ancestor reachability: deciding whether one
 element can match two selectors requires knowing which class sets co-occur *and* which
@@ -27,10 +30,10 @@ on one element. That is not a gate, and nothing here pretends to be one.
 AN ABSENT SELECTOR IS A FAILURE, NEVER A SKIP
 ---------------------------------------------
 `_rule()` records a miss and the run fails. This is deliberate and it is the defect class
-`docs/review.md` names under "a check that cannot fail": five of the six incidents in that
-table were a guard on a spelling, where a renamed class turned an assertion into a branch
-that quietly did nothing and printed ok. Every selector named below is a spelling. If one is
-renamed, this file must say so rather than assert nothing about it.
+`docs/review.md` names under "a check that cannot fail": a guard on a spelling, where a
+renamed class turned an assertion into a branch that quietly did nothing and printed ok.
+Every selector named below is a spelling. If one is renamed, this file must say so rather
+than assert nothing about it.
 
 PROVING IT CAN FAIL
 -------------------
