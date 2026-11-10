@@ -41,7 +41,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 #: These scripts live in `tools/` and the data lives one level up, beside `app.mjs`, because
 #: that is where the browser fetches it from: `lines.mjs` resolves `private/` and `data/`
 #: against its own module URL. Anchoring on `HERE` instead put the output in
-#: `tools/private/`, which `.gitignore`'s `apps/day-*/private/` does not match -- so the
+#: `tools/private/`, which `.gitignore`'s `apps/day-*/private` does not match -- so the
 #: documented command wrote 401 real traces to a *tracked* path while its own help text said
 #: the destination was ignored. Verified with `git check-ignore`: `tools/private/` exits 1,
 #: `private/` exits 0.

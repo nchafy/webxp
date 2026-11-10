@@ -154,9 +154,10 @@ So:
   owner's real traces.
 
 If you need the data for local work, symlinking it in is fine — but check
-`git ls-files apps/day-02-lines/private` before you commit. A symlink named `private` slipped
-past an `apps/day-*/private/` ignore rule once, because the trailing slash makes a pattern
-directory-only and a symlink is a blob. `.gitignore` now carries both forms.
+`git ls-files apps/day-02-lines/private` before you commit. `.gitignore`'s rule is
+`apps/day-*/private`, with no trailing slash: a trailing slash would make the pattern
+directory-only, and a symlink named `private` is a blob rather than a directory, so the
+slash-less form is the one that covers both.
 
 Also avoid `git push --mirror`, which would carry `refs/stash`.
 

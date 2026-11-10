@@ -12,12 +12,12 @@ screenshots/
 # `tools/prepare.py` writes to `private/` by default for this reason. Pointing its `--out` at
 # `data/` publishes real traces; it prints its destination so that is a decision rather than
 # an accident.
-apps/day-*/private/
-# Without a second pattern lacking the trailing slash, a *symlink* named `private` is not
-# ignored — git treats the slash as "directory only" and a symlink is a blob. One got
-# committed that way (92bc9fe, removed in the commit that added this line): a worktree needs
-# the real data to run the day 02 checks, linking it in is the obvious way to get it, and the
-# link sailed straight past the rule meant to stop exactly that.
+#
+# No trailing slash, and that is the load-bearing part. A trailing slash matches directories
+# only, and a symlink is a blob rather than a directory, so `apps/day-*/private/` would let a
+# *symlink* named `private` be staged. A symlink is how the real export reaches a worktree,
+# because linking it in is the obvious way to run the day 02 checks. The slash-less form
+# matches the directory and the symlink both, so it is the only pattern needed here.
 apps/day-*/private
 strava/
 strava-export/
