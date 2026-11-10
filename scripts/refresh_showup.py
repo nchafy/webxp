@@ -43,6 +43,10 @@ SOURCE_SITE = "site"
 #: lookup 28 KB, preview 120 KB, references 6.3 KB, zips.geo 259 KB, manifest 870 B.
 FLOORS = {
     "board-meetings.json": 80_000,
+    # The uncapped budget requests and the members' contact detail. Measured 2026-11-10:
+    # 2.6 MB, which is most of this directory — 3,809 requests each carrying the board's
+    # explanation and the agency's reply.
+    "detail.json": 800_000,
     "boards.geo.json": 150_000,
     "districts.geo.json": 60_000,
     "lookup.json": 10_000,

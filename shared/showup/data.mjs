@@ -44,6 +44,12 @@ export const LOOKUP = '/data/showup/lookup.json';
 export const PREVIEW = '/data/showup/preview.json';
 export const BOARD_MEETINGS = '/data/showup/board-meetings.json';
 
+//: What the deleted district and board pages showed and `preview.json` does not: the
+//: member's email, offices and term, each district's per-field provenance, and every budget
+//: request with the board's explanation and the agency's reply. `preview.json` is a
+//: side-panel summary and caps those; this is the uncapped one.
+export const DETAIL = '/data/showup/detail.json';
+
 /** Districts as `{n, hoods}` rows, in number order. */
 export async function districts() {
   const lookup = await load(LOOKUP);

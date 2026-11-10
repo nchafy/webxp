@@ -41,6 +41,7 @@ PROGRAMS = ("showup", "showup-boards", "showup-councils", "showup-map", "showup-
 #: shape change upstream fails here rather than in a window.
 EXPECTED_SHAPE: dict[str, tuple[str, ...]] = {
     "lookup.json": ("districts", "boards"),
+    "detail.json": ("districts", "boards"),
     "preview.json": ("districts", "boards", "as_of"),
     "board-meetings.json": ("boards", "generated_at"),
     "references.json": ("datasets", "derived", "cited", "caveats"),
@@ -62,6 +63,8 @@ EXPECTED_COUNTS: tuple[tuple[str, str, int], ...] = (
     ("preview.json", "districts", DISTRICT_COUNT),
     ("preview.json", "boards", BOARD_COUNT),
     ("board-meetings.json", "boards", BOARD_COUNT),
+    ("detail.json", "districts", DISTRICT_COUNT),
+    ("detail.json", "boards", BOARD_COUNT),
     ("districts.geo.json", "features", DISTRICT_COUNT),
     ("boards.geo.json", "features", BOARD_COUNT),
 )
