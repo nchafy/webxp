@@ -33,7 +33,7 @@
  * be on screen before anything waits on the network.
  */
 
-import { group, iconTile } from '../../src/widgets.mjs';
+import { folderView, group } from '../../src/widgets.mjs';
 import { load, PREVIEW } from '../../shared/showup/data.mjs';
 import { addressBox } from './address.mjs';
 
@@ -115,18 +115,15 @@ export default {
   status: true,
   // `links.css` carries `.cross-link`, which is what the address box's choices render as —
   // the same affordance the councils and boards programs use for the same kind of jump.
-  styles: ['../../shared/showup/links.css', 'app.css'],
+  styles: ['../../src/folder.css', '../../shared/showup/links.css', 'app.css'],
 
   mount({ win, desktop }) {
     const sheet = el('div', 'sheet folder-sheet');
 
-    const grid = el('ul', 'folder-grid');
-    for (const entry of CONTENTS) {
-      const item = document.createElement('li');
-      item.append(iconTile({
+    const view = folderView({
+      items: CONTENTS.map((entry) => ({
         name: entry.name,
         icon: entry.icon,
-        className: 'folder-icon',
         onOpen: async () => {
           // Awaited, and the await is the point: `launch` is async and resolves to the
           // window, or to null for a program that is not registered. Testing the promise
@@ -136,15 +133,23 @@ export default {
             desktop.announce(`${entry.name} could not be opened. Its program is not registered.`);
           }
         },
-      }));
-      grid.append(item);
-    }
-    sheet.append(grid);
+      })),
+      places: [
+        { name: '30DaysOfMaps', icon: 'folder', onOpen: () => desktop.launch('map-challenge') },
+      ],
+      details: [
+        ['Show Up NYC', `${CONTENTS.length} programs`],
+        ['Type', 'Folder of programs'],
+        ['Built from', "the City's published data"],
+      ],
+    });
 
     // Ships with its form hidden and reveals it in `ready`, once it has the index it answers
     // a ZIP, a neighbourhood and a district number from. A box that cannot answer those would
     // have only the geocoder left, which is the one input a reader did not ask to send.
     const address = addressBox(desktop);
+    sheet.append(view);
+
     const lookup = el('div', 'folder-lookup');
     lookup.append(address.node);
     sheet.append(lookup);

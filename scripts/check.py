@@ -1938,7 +1938,7 @@ def check_map_challenge_folder(page) -> list[str]:
     state = page.evaluate(
         "(() => { const w = window.webxp.windows.find((x) => x.programId === 'map-challenge');"
         " if (!w) return { error: 'no folder window' };"
-        " const tiles = [...w.bodyEl.querySelectorAll('.day-grid .folder-icon')];"
+        " const tiles = [...w.bodyEl.querySelectorAll('.folder-items .folder-item')];"
         " const label = tiles.length ? tiles[0].querySelector('span') : null;"
         " const deskIcon = document.querySelector('.desktop-icons .desktop-icon');"
         " const style = label ? getComputedStyle(label) : null;"
@@ -2005,7 +2005,7 @@ def check_map_challenge_folder(page) -> list[str]:
     before = len(probe(page)["wins"])
     opened = page.evaluate(
         "(() => { const w = window.webxp.windows.find((x) => x.programId === 'map-challenge');"
-        " const tile = w && w.bodyEl.querySelector('.day-grid .folder-icon');"
+        " const tile = w && w.bodyEl.querySelector('.folder-items .folder-item');"
         " if (!tile) return false; tile.click(); return true; })()"
     )
     if not opened:

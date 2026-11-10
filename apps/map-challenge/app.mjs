@@ -22,7 +22,7 @@
  * the only one a reader ever sees.
  */
 
-import { iconTile } from '../../src/widgets.mjs';
+import { folderView } from '../../src/widgets.mjs';
 
 //: Every day app's id begins with this. It is the whole membership rule.
 const DAY_PREFIX = 'day-';
@@ -36,7 +36,7 @@ export default {
   width: 620,
   height: 440,
   status: true,
-  styles: ['app.css'],
+  styles: ['../../src/folder.css', 'app.css'],
 
   mount({ win, desktop }) {
     const days = [...desktop.programs.values()]
@@ -51,26 +51,30 @@ export default {
         : 'No day apps found under apps/.',
     );
 
-    const grid = document.createElement('ul');
-    grid.className = 'day-grid';
-
-    for (const program of days) {
-      const item = document.createElement('li');
-      item.append(iconTile({
+    return folderView({
+      items: days.map((program) => ({
         name: program.name,
         icon: program.icon,
-        className: 'folder-icon',
         // The desktop owns opening things, including focusing a singleton that is already
         // open. Nothing here needs to know which of those happened.
         onOpen: () => desktop.launch(program.id),
-      }));
-      grid.append(item);
-    }
-
-    // The sheet is the white page a folder's contents sit on, same as Explorer's.
-    const sheet = document.createElement('div');
-    sheet.className = 'sheet day-sheet';
-    sheet.append(grid);
-    return sheet;
+      })),
+      places: [
+        {
+          name: 'Show Up NYC',
+          icon: 'folder',
+          onOpen: () => desktop.launch('showup'),
+        },
+        {
+          name: 'Base map',
+          icon: 'globe',
+          onOpen: () => desktop.launch('basemap'),
+        },
+      ],
+      details: [
+        ['30DaysOfMaps', `${days.length} days`],
+        ['Type', 'Folder of programs'],
+      ],
+    });
   },
 };

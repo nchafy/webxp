@@ -15,47 +15,43 @@
 
 /* `.sheet` is a centred 44rem page with a bevel, which is right for prose and wrong for a
    folder: the icons would sit in a column down the middle of a wide window, inside a second
-   frame drawn just within the client area's own. The window body already scrolls. */
+   frame drawn just within the client area's own.
+
+   A column, because this folder carries two things 30DaysOfMaps does not — the address box
+   and the citywide meeting — and they belong under the folder chrome rather than inside the
+   task pane, which is for where you can go and what this is. `folderView` takes the space
+   that is left; the two blocks below size to their content. The grid, the task pane and the
+   hover wash all live in `src/folder.css` now, shared with every other folder. */
 .app-showup .folder-sheet {
+  display: flex;
+  flex-direction: column;
   max-width: none;
   min-height: 100%;
   margin: 0;
-  padding: .5rem;
+  padding: 0;
   border: none;
   box-shadow: none;
 }
 
-.app-showup .folder-grid {
-  display: grid;
-  /* Fills the width with whole tiles and reflows on resize. `auto-fill` rather than
-     `auto-fit`, so four icons in a wide window stay the width of four icons instead of
-     stretching across the row. */
-  grid-template-columns: repeat(auto-fill, 5.5rem);
-  align-content: start;
-  gap: .35rem;
-  margin: 0;
-  padding: 0;
-  list-style: none;
+/* The folder chrome takes what is left after the two blocks below have their content, with
+   a floor so it cannot be squeezed to nothing in a short window. */
+.app-showup .folder-view {
+  flex: 1 1 auto;
+  min-height: 11rem;
 }
 
-.app-showup .folder-icon {
-  color: var(--ink);
-}
-.app-showup .folder-icon:hover,
-.app-showup .folder-icon:focus-visible {
-  /* Explorer's hover wash. Mixed from the title-bar blue rather than written as a literal,
-     so the folder cannot drift from the theme it is quoting. */
-  background: color-mix(in srgb, var(--title-b) 20%, transparent);
-  border-color: var(--sunken);
-}
-
-/* The overview sits below the icons, separated by a rule rather than by space alone: it is a
-   different kind of thing from the folder's contents, not a fifth item in it. The address box
-   is the same kind of thing again, and takes the same separator. */
+/* The two blocks sit on the sheet rather than in the icon area, so they need its padding
+   back — `folderView` owns the padding inside itself. */
 .app-showup .folder-lookup,
 .app-showup .folder-overview {
-  margin-top: .6rem;
-  padding-top: .5rem;
+  flex: 0 0 auto;
+  padding: .5rem;
+}
+
+/* Each is a different kind of thing from the folder's contents, not a fifth item in it, so
+   each takes a rule above it rather than space alone. */
+.app-showup .folder-lookup,
+.app-showup .folder-overview {
   border-top: 1px solid var(--rule);
 }
 

@@ -1,42 +1,7 @@
 /* 30DaysOfMaps — the folder window's own surface.
  *
- * `.icon-tile` in `src/shell.css` already carries the tile's box. Only what this surface
- * changes is here: a sheet that fills the window instead of being a centred page, and a
- * label that is dark on white rather than white on a wallpaper.
+ * Almost nothing, and that is the point: the grid, the task pane, the hover wash and the
+ * sheet override all live in `src/folder.css` now, shared with every other folder. This file
+ * held its own copy of them, and `apps/showup/app.css` held a second copy written to match —
+ * which is how the two drifted into being two folders that only looked alike.
  */
-
-/* `.sheet` is a centred 44rem page with a bevel, which is right for prose and wrong for a
-   folder: the icons would sit in a column down the middle of a wide window, inside a second
-   frame drawn just within the client area's own. The window body already scrolls. */
-.app-map-challenge .day-sheet {
-  max-width: none;
-  min-height: 100%;
-  margin: 0;
-  padding: .5rem;
-  border: none;
-  box-shadow: none;
-}
-
-.app-map-challenge .day-grid {
-  display: grid;
-  /* Fills the width with whole tiles and reflows on resize. `auto-fill` rather than
-     `auto-fit`, so eight icons in a wide window stay the width of eight icons instead of
-     stretching to fill the row. */
-  grid-template-columns: repeat(auto-fill, 5.5rem);
-  align-content: start;
-  gap: .35rem;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.app-map-challenge .folder-icon {
-  color: var(--ink);
-}
-.app-map-challenge .folder-icon:hover,
-.app-map-challenge .folder-icon:focus-visible {
-  /* Explorer's hover wash. Mixed from the title-bar blue rather than written as a literal,
-     so the folder cannot drift from the theme it is quoting. */
-  background: color-mix(in srgb, var(--title-b) 20%, transparent);
-  border-color: var(--sunken);
-}

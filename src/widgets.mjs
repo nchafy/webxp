@@ -215,3 +215,125 @@ export function segment(spec) {
   wrap.append(...buttons);
   return wrap;
 }
+
+/**
+ * An Explorer folder window: the task pane on the left, the icons on the right.
+ *
+ * Every folder in this project drew its own grid before this existed. `iconTile` gave them
+ * the tile and nothing gave them the window, so two folders meant two `repeat(auto-fill,
+ * 5.5rem)` rules, two sheet overrides and two hover washes in two app stylesheets, kept in
+ * step by hand. A third folder would have been a third copy.
+ *
+ * What XP put in that left pane is the part worth having, and not decoration: it is where a
+ * folder says what it is and where else you can go. A folder window without it is a grid in
+ * a frame.
+ *
+ * Icons view only. XP also had Tiles, List, Details and Thumbnails, and a switch for them
+ * belongs here when something can switch — a mode nobody can reach is dead code, and
+ * `segment` above is the control it would use.
+ *
+ * The caller owns `status: true` on its own spec: the object count goes in the window's
+ * status bar, which is where XP put it, and this returns no chrome it does not own.
+ *
+ * Load `/src/folder.css` from the calling app's `styles`. It is not linked globally because
+ * two of this project's apps are folders and the other forty are not.
+ *
+ * @param {object} spec
+ * @param {{name: string, icon?: string, onOpen: () => void}[]} spec.items
+ * @param {{name: string, icon?: string, onOpen: () => void}[]} [spec.tasks]
+ *        "File and Folder Tasks". Omit it rather than passing an empty list.
+ * @param {{name: string, icon?: string, onOpen: () => void}[]} [spec.places]
+ *        "Other Places" — where a reader goes instead of here.
+ * @param {[string, string][]} [spec.details]  "Details": label and value rows.
+ * @param {string} [spec.itemClass]  Surface class for each tile, as `iconTile` takes.
+ * @returns {HTMLDivElement}
+ */
+export function folderView(spec) {
+  const view = document.createElement('div');
+  view.className = 'folder-view';
+
+  const pane = document.createElement('div');
+  pane.className = 'folder-pane';
+  for (const block of [
+    ['File and Folder Tasks', spec.tasks],
+    ['Other Places', spec.places],
+  ]) {
+    const [heading, entries] = block;
+    if (!entries || !entries.length) continue;
+    pane.append(taskBlock(heading, entries.map(paneLink)));
+  }
+  if (spec.details && spec.details.length) {
+    const rows = document.createElement('dl');
+    rows.className = 'folder-details';
+    for (const [label, value] of spec.details) {
+      const term = document.createElement('dt');
+      term.textContent = label;
+      const detail = document.createElement('dd');
+      detail.textContent = value;
+      rows.append(term, detail);
+    }
+    pane.append(taskBlock('Details', [rows]));
+  }
+  if (pane.childElementCount) view.append(pane);
+
+  const items = document.createElement('ul');
+  items.className = 'folder-items';
+  for (const item of spec.items || []) {
+    const cell = document.createElement('li');
+    cell.append(iconTile({
+      name: item.name,
+      icon: item.icon,
+      className: spec.itemClass ? `folder-item ${spec.itemClass}` : 'folder-item',
+      onOpen: item.onOpen,
+    }));
+    items.append(cell);
+  }
+  view.append(items);
+  return view;
+}
+
+/* One collapsible block of the task pane.
+ *
+ * The chevron is a real button carrying `aria-expanded`, not a styled div: collapsing a
+ * section is something a keyboard reaches in XP, and the heading is what names the region
+ * it collapses.
+ */
+function taskBlock(heading, children) {
+  const block = document.createElement('section');
+  block.className = 'task-block';
+
+  const bar = document.createElement('h2');
+  bar.className = 'task-head';
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'task-toggle';
+  toggle.textContent = heading;
+  toggle.setAttribute('aria-expanded', 'true');
+  bar.append(toggle);
+
+  const body = document.createElement('div');
+  body.className = 'task-body';
+  body.append(...children);
+
+  toggle.addEventListener('click', () => {
+    const open = toggle.getAttribute('aria-expanded') === 'true';
+    toggle.setAttribute('aria-expanded', String(!open));
+    body.hidden = open;
+  });
+
+  block.append(bar, body);
+  return block;
+}
+
+/* A line in the task pane: a small icon and a label, activating to go somewhere. */
+function paneLink(entry) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'pane-link';
+  if (entry.icon) button.append(icon(entry.icon, 16));
+  const label = document.createElement('span');
+  label.textContent = entry.name;
+  button.append(label);
+  button.addEventListener('click', entry.onOpen);
+  return button;
+}

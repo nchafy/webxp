@@ -1,0 +1,196 @@
+/* The Explorer folder window: the task pane on the left, the icons on the right.
+ *
+ * Paired with `folderView` in `src/widgets.mjs`. Every folder in this project drew its own
+ * grid before this existed, so two folders meant two `repeat(auto-fill, …)` rules, two sheet
+ * overrides and two hover washes in two app stylesheets, kept in step by hand.
+ *
+ * Not linked from `index.html`. Two of this project's apps are folders and the other forty
+ * are not, so a folder app loads this through its own `styles` array — the same way a map app
+ * loads `shared/map/map.css`.
+ *
+ * ## Specificity
+ *
+ * Every selector here is one class, which is what it needs to be. `theme.css` styles bare
+ * `button` at one element (0,0,1) and `.btn` at one class (0,1,0); the two controls below
+ * are buttons and must shed that bevel, so `.pane-link` and `.task-toggle` at (0,1,0) beat
+ * the element rule and never meet `.btn`. Nothing here is scoped under a second class, so
+ * nothing here can win a comparison it should lose. `docs/apps.md` keeps the table of the
+ * times this project got that wrong.
+ *
+ * ## Colour
+ *
+ * The task pane's blue is Luna's, and it is the one place this file names colours that are
+ * not tokens: `theme.css` has the title-bar blues and the control bisque, and the Explorer
+ * pane is neither. The two steps below are measured against the ink that sits on them —
+ * `--ink` on `#eef3fd` is 18.1:1 and the heading blue `#1c3fa0` on `#dce4f7` is 7.4:1, both
+ * well clear of AA. A new value here needs the same arithmetic beside it.
+ */
+
+.folder-view {
+  display: grid;
+  /* The pane is a fixed column and the icons take the rest, because a task pane that
+     narrows with the window stops holding its own labels — XP's does not move either. */
+  grid-template-columns: 11.5rem 1fr;
+  gap: 0;
+  height: 100%;
+  min-height: 0;
+}
+
+/* The left pane.
+ *
+ * `min-height: 0` and its own scroll: the pane and the icons are siblings in a grid, and
+ * either can be the longer one. Without this the taller child pushes the window's body past
+ * its frame instead of scrolling inside it.
+ */
+.folder-pane {
+  overflow-y: auto;
+  min-height: 0;
+  padding: .5rem .4rem;
+  background: linear-gradient(to bottom, #eef3fd, #dce4f7);
+  border-right: 1px solid var(--rule);
+  font-size: 11px;
+}
+
+.task-block {
+  margin: 0 0 .5rem;
+  background: rgb(255 255 255 / 70%);
+  border: 1px solid #c3cde8;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.task-head {
+  margin: 0;
+  font-size: 11px;
+}
+
+/* The section header is the whole target, and it is a real button carrying `aria-expanded`:
+   collapsing a section is something a keyboard reaches in XP. The chevron is generated here
+   rather than in the DOM because it is a picture of the state, not content — a screen reader
+   gets the state from `aria-expanded` and should not hear a glyph as well. */
+.task-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .4rem;
+  width: 100%;
+  /* 24px, the SC 2.5.8 floor: an 11px line is a 16px box, so the padding is load-bearing
+     rather than taste. */
+  min-height: 24px;
+  padding: .25rem .45rem;
+  /* Sheds `theme.css`'s control bevel. A row of section headers wearing it would read as a
+     toolbar rather than as headings. */
+  background: linear-gradient(to bottom, #fbfcfe, #e3eaf8);
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  font: 700 11px/1.3 Tahoma, Verdana, sans-serif;
+  color: #1c3fa0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.task-toggle::after {
+  /* The chevron, pointing at where the body will go. */
+  content: '';
+  flex: 0 0 auto;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid #1c3fa0;
+}
+.task-toggle[aria-expanded='false']::after {
+  border-top: 0;
+  border-bottom: 5px solid #1c3fa0;
+}
+
+.task-body {
+  display: grid;
+  gap: .1rem;
+  padding: .35rem .3rem;
+}
+.task-body[hidden] { display: none; }
+
+/* A line in the pane: a small icon and a label. Underlined on hover only, as XP's were —
+   a pane of permanently underlined text reads as a wall of links. */
+.pane-link {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  width: 100%;
+  min-height: 24px;
+  padding: .15rem .25rem;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  font: inherit;
+  color: var(--accent);
+  text-align: left;
+  cursor: pointer;
+}
+.pane-link:hover,
+.pane-link:focus-visible { text-decoration: underline; }
+
+/* The Details block: label above value, because a folder's facts have long labels and a
+   two-column list of them wraps badly in an 11.5rem pane. */
+.folder-details {
+  margin: 0;
+  display: grid;
+  gap: .15rem;
+}
+.folder-details dt {
+  font-weight: 700;
+  color: var(--ink);
+}
+.folder-details dd {
+  margin: 0 0 .25rem;
+  color: var(--muted);
+}
+
+/* The icons.
+ *
+ * `--icon-tile-w` with a fallback: the token is upstream of this worktree, where
+ * `.icon-tile` still carries a literal `width: 5.5rem` (`shell.css:108`). The fallback is
+ * that same value, so this reads the token once it arrives and does not break before then.
+ */
+.folder-items {
+  display: grid;
+  /* `auto-fill` rather than `auto-fit`, so four icons in a wide window stay the width of
+     four icons instead of stretching across the row. */
+  grid-template-columns: repeat(auto-fill, var(--icon-tile-w, 5.5rem));
+  align-content: start;
+  gap: .35rem;
+  margin: 0;
+  padding: .5rem;
+  list-style: none;
+  overflow-y: auto;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.folder-item {
+  color: var(--ink);
+}
+.folder-item:hover,
+.folder-item:focus-visible {
+  /* Explorer's hover wash. Mixed from the title-bar blue rather than written as a literal,
+     so a folder cannot drift from the theme it is quoting. */
+  background: color-mix(in srgb, var(--title-b) 20%, transparent);
+  border-color: var(--sunken);
+}
+
+/* The window, not the screen: a 300px-wide window on a 1600px desktop has a 300px window's
+   problem and `@media` cannot see it. The pane goes above the icons rather than beside them,
+   which is what XP did when the window could not hold both. */
+@container window (max-width: 26rem) {
+  .folder-view {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  .folder-pane {
+    border-right: 0;
+    border-bottom: 1px solid var(--rule);
+  }
+}
