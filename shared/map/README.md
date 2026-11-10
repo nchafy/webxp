@@ -104,7 +104,7 @@ label is not finished.
 
 ## Licensing
 
-Two of the three need reading before this goes anywhere public.
+One of the three is still unresolved: Esri.
 
 - **OpenFreeMap** publishes no SLA and asks for no key. It is free for any use with
   attribution. Because there is no SLA, `basemap.mjs` carries a `FALLBACK_STYLE`: when
@@ -116,10 +116,23 @@ Two of the three need reading before this goes anywhere public.
   use ([master agreement](https://www.esri.com/en-us/legal/terms/full-master-agreement)).
   **Nobody here has confirmed this use is licensed.** It is documented rather than
   assumed. Attribution to Esri is required and is set on the source and in the credit.
-- **OpenTopoMap** is free for non-commercial use with attribution, under a tile usage
-  policy that forbids bulk downloading
-  ([usage](https://opentopomap.org/about#verwendung)). Panning a map is not bulk
-  downloading; a scripted sweep of a city at zoom 17 would be.
+- **OpenTopoMap** is CC-BY-SA, and that licence permits commercial use. The FAQ answers a
+  paid-guidebook question with "Die Lizenz CC-BY-SA der Online-Karte erlaubt deren
+  kommerzielle Nutzung … Lizenzgebühren werden nicht fällig"
+  ([FAQ](https://opentopomap.org/about#faq)). Two obligations come with the grant, and
+  share-alike is the half that gets dropped: a clear source notice ("BY"), **and** onward
+  distribution under the same terms ("SA"). The notice asked for is "Kartendaten: ©
+  OpenStreetMap-Mitwirkende, SRTM | Kartendarstellung: © OpenTopoMap (CC-BY-SA)", clearly
+  visible ([usage](https://opentopomap.org/about#verwendung)). `basemap.mjs` renders that
+  notice in English and the status bar below makes it uncoverable.
+
+  Their **tile server is a separate obligation, not a licence term.** Embedding the map is
+  welcome "sofern unser Server z.B. durch Massendownloads nicht zu stark beansprucht wird",
+  and "keinerlei Ausfallsicherheit" is guaranteed
+  ([FAQ](https://opentopomap.org/about#faq)). That is a request about load on someone else's
+  machine. The page states no numeric cap, so there is none to quote. Panning a map is not a
+  Massendownload; a scripted sweep of a city at zoom 17 would be. Nothing on that page
+  restricts who may use the map.
 
 Attribution is rendered by `basemap.mjs` into `.map-attrib`, not by MapLibre's own
 control, and `.map-attrib` lives in the map's **status bar** — a row of `.map-root`'s
@@ -142,6 +155,36 @@ check alone is not enough, and the gap is instructive. Floating the credit back 
 corner passed `elementFromPoint`, because the base map app docks nothing over it — the bug
 survived the check written for it. An assertion that only holds for the app that happens to
 be open is not an assertion about the invariant.
+
+### Before these tiles are served
+
+No Content-Security-Policy is written anywhere in this repository, and `README.md` §Before it
+is served carries that as a gate on deploying the tree at all. Two parts of it belong here.
+
+**The `connect-src` starts with these origins.** They are read out of
+`shared/map/basemap.mjs` rather than guessed:
+
+- `simple` fetches the liberty style document and every glyph from
+  `https://tiles.openfreemap.org`. Its tile and sprite URLs are named by that fetched style
+  document, not by this repository, so they MUST be read off the response rather than
+  assumed.
+- `satellite` fetches both raster layers from `https://server.arcgisonline.com`, and its
+  glyphs from `https://tiles.openfreemap.org`.
+- `geography` fetches tiles from `https://a.tile.opentopomap.org`,
+  `https://b.tile.opentopomap.org` and `https://c.tile.opentopomap.org`, and its glyphs from
+  `https://tiles.openfreemap.org`.
+
+`FALLBACK_STYLE` uses the same glyph origin, so a policy that omits it loses the map twice.
+
+**OpenTopoMap's licence is not the thing to check here; their server is.** §Licensing above
+carries the terms, and they do not restrict this use. What load the tile server can take is a
+separate question, and it got smaller: the roadmap records the render server moving to a
+smaller vServer on 05.01.2026
+([roadmap](https://opentopomap.org/about#roadmap)). The server courtesy in §Licensing was
+weighed for one static site behind a CDN. A public desktop with a map in it is not that, so a
+cache or CDN in front of `*.tile.opentopomap.org` SHOULD be in place before this tree is
+served from a public URL — not to satisfy a cap, because there is none, but because the
+request on that page is about load.
 
 ## Writing a map app
 

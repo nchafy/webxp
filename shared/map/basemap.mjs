@@ -63,10 +63,23 @@ const OPENFREEMAP = 'https://tiles.openfreemap.org/styles/liberty';
 //: Attribution to Esri is required and is set on the source.
 const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services';
 
-//: OpenTopoMap, raster. Free for non-commercial use with attribution, under a tile usage
-//: policy that forbids bulk downloading (https://opentopomap.org/about#verwendung). Style
-//: CC-BY-SA 3.0; data OSM contributors (ODbL) plus SRTM elevation.
+//: OpenTopoMap, raster. CC-BY-SA: commercial use permitted, attribution and share-alike
+//: both required (https://opentopomap.org/about#faq). They specify the notice to display
+//: (https://opentopomap.org/about#verwendung); `attribution` below renders it in English.
+//: Their tile server is a separate request, not a licence term: they ask that it not be
+//: strained by bulk downloading and guarantee no availability, with no numeric cap stated
+//: (https://opentopomap.org/about#faq). Both are quoted in shared/map/README.md §Licensing.
+//: Style CC-BY-SA 3.0; data OSM contributors (ODbL) plus SRTM elevation.
 const OPENTOPO = ['a', 'b', 'c'].map((s) => `https://${s}.tile.opentopomap.org/{z}/{x}/{y}.png`);
+
+//: Both halves of that notice carry `©` — the data half is OSM's and SRTM's, the rendering
+//: half is OpenTopoMap's own work (https://opentopomap.org/about#verwendung). Dropping
+//: either mark drops a required credit. One definition, because the raster source below is
+//: given this same string and a second copy would be hand-synced.
+const OPENTOPO_CREDIT =
+  'Map data &copy; <a href="https://www.openstreetmap.org/copyright" rel="noopener noreferrer">OpenStreetMap contributors</a>, ' +
+  'SRTM &middot; style &copy; <a href="https://opentopomap.org/" rel="noopener noreferrer">OpenTopoMap</a> ' +
+  '(<a href="https://creativecommons.org/licenses/by-sa/3.0/" rel="noopener noreferrer">CC-BY-SA</a>)';
 
 /* The satnav palette, over liberty.
  *
@@ -255,10 +268,7 @@ export const BASEMAPS = {
     label: 'Geography',
     //: OpenTopoMap's own ceiling. Past it the contours are interpolated rather than surveyed.
     maxZoom: 17,
-    attribution:
-      'Map data &copy; <a href="https://www.openstreetmap.org/copyright" rel="noopener noreferrer">OpenStreetMap contributors</a>, ' +
-      'SRTM &middot; style <a href="https://opentopomap.org/" rel="noopener noreferrer">OpenTopoMap</a> ' +
-      '(<a href="https://creativecommons.org/licenses/by-sa/3.0/" rel="noopener noreferrer">CC-BY-SA</a>)',
+    attribution: OPENTOPO_CREDIT,
     style() {
       return {
         version: 8,
@@ -269,7 +279,10 @@ export const BASEMAPS = {
             tiles: OPENTOPO,
             tileSize: 256,
             maxzoom: 17,
-            attribution: 'OpenTopoMap (CC-BY-SA), data OpenStreetMap contributors + SRTM',
+            //: Not what the reader sees: `attributionControl` is false below and the credit
+            //: is rendered from `BASEMAPS[active].attribution`. The same constant, so this
+            //: and the rendered notice cannot come to disagree.
+            attribution: OPENTOPO_CREDIT,
           },
         },
         layers: [{ id: 'topo', type: 'raster', source: 'topo' }],

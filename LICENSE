@@ -34,8 +34,10 @@ MapLibre GL JS v6.15.0 — BSD-3-Clause
   (BSD-3-Clause) and glfx.js (MIT) notices, at shared/map/vendor/LICENSE.txt.
 
 Map data and tiles — not redistributed here, fetched at runtime
-  OpenStreetMap contributors (ODbL), OpenFreeMap, OpenTopoMap (CC-BY-SA,
-  non-commercial use only), and Esri/Maxar/Earthstar Geographics imagery.
+  OpenStreetMap contributors (ODbL), OpenFreeMap, OpenTopoMap (CC-BY-SA:
+  commercial use permitted, attribution and share-alike both required —
+  https://opentopomap.org/about#faq), and Esri/Maxar/Earthstar Geographics
+  imagery.
   Credits are rendered in the interface, which the check suite asserts.
   shared/map/README.md records each source's terms, and is explicit that the
   Esri position has not been confirmed.

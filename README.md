@@ -168,7 +168,8 @@ MIT, in `LICENSE`, for this project's own code.
 Third-party work keeps its own terms and they are listed there: MapLibre GL JS v6.15.0 is
 redistributed under BSD-3-Clause with its notice beside it in `shared/map/vendor/`, and the
 map tiles are fetched at runtime rather than redistributed — OpenStreetMap (ODbL),
-OpenFreeMap, OpenTopoMap (CC-BY-SA, non-commercial only) and Esri imagery. Credits render in
+OpenFreeMap, OpenTopoMap ([CC-BY-SA](https://opentopomap.org/about#faq) — commercial
+use permitted, attribution and share-alike required) and Esri imagery. Credits render in
 the interface and `scripts/check.py` asserts nothing covers them.
 
 One term is openly unresolved: **nobody here has confirmed the Esri imagery use is
@@ -177,6 +178,30 @@ licensed.** `shared/map/README.md` §Licensing says so rather than assuming, and
 
 Windows XP, Luna, Bliss and Clippy are Microsoft's. This is an homage containing no Microsoft
 files — the wallpaper is CSS gradients, the assistant is hand-drawn SVG.
+
+## Before it is served: the policy is unwritten
+
+Nothing is deployed. There is no Pages site — `gh api repos/nchafy/webxp/pages` answers 404 —
+no workflow under `.github/`, and no `_headers`, `netlify.toml` or `vercel.json`. This is
+source you serve yourself, with the `http.server` above, and a public repository is not a
+served site. So none of what follows is a live exposure today. It becomes one the moment
+anyone enables Pages or points a static host at this tree, and the policy it needs does not
+exist yet. This gate is open, not passed.
+
+- **There is no Content-Security-Policy.** No response-header file, and no `<meta
+  http-equiv>` in `index.html` — which is the one route that works with no server config.
+  Writing it means enumerating what each program under `apps/` fetches, and the desktop
+  loads one per folder there. A policy lifted from a single-map site is the wrong shape: it
+  would block the rest of them. The part that can be read rather than guessed is the
+  basemaps, and `shared/map/README.md` §Before these tiles are served names their origins.
+- **The Esri term is a deploy blocker, not a footnote.** It is recorded above as
+  unconfirmed. Serving this publicly is the point at which it has to be answered rather than
+  labelled, and the `satellite` preset is what it holds up.
+- **OpenTopoMap's licence is settled; the load on their server is not.** The licence permits
+  this use, so it is not a blocker. Their tile server is a separate obligation with no
+  numeric cap, it moved to a smaller machine in January 2026, and the courtesy was weighed
+  for one static site behind a CDN rather than a public desktop. `shared/map/README.md`
+  §Before these tiles are served carries what that asks for.
 
 ## Read next
 
