@@ -55,6 +55,12 @@ export const MAX_TOTAL_SIZE = 1024 * 1024;
 //: more code than the data is worth.
 export const FORMAT_VERSION = 1;
 
+//: The mount index's schema version, written by `scripts/mount.py` and checked by
+//: `mountIndex`. Separate from `FORMAT_VERSION`: the saved tree and the generated index are
+//: two formats with two lifetimes, and tying them would mean a reseed every time the
+//: indexer's columns changed.
+export const MOUNT_FORMAT = 1;
+
 const MESSAGES = {
   ENOENT: 'No such file or directory',
   EEXIST: 'File exists',
@@ -70,6 +76,7 @@ const MESSAGES = {
   EBUSY: 'Device or resource busy',
   EFBIG: 'File too large',
   EAGAIN: 'Resource temporarily unavailable',
+  EIO: 'Input/output error',
 };
 
 /**
@@ -402,7 +409,10 @@ export class VFS {
           ? inode.target.length
           : inode.data === null ? inode.source.size : inode.data.length,
     };
-    if (inode.source) info.mounted = true;
+    // Both kinds. A mounted *directory* carries `mounted` and no `source` — it is grafted,
+    // not fetched — and reading only `source` meant every folder in the repository listed as
+    // an ordinary writable one while the files beside it said read-only.
+    if (inode.source || inode.mounted) info.mounted = true;
     if (inode.type === LINK) info.target = inode.target;
     return info;
   }
@@ -456,6 +466,12 @@ export class VFS {
         `File too large to read here — ${inode.source.size} characters, the limit is ${MAX_FILE_SIZE}`,
       );
     }
+    // A fetch was attempted and failed. Reported before the caller-defect message below,
+    // because blaming the caller for a 404 sends the reader to the wrong fix — the failure
+    // was the network's, and only the console knew.
+    if (inode.source.error) {
+      throw new FsError('EIO', path, `Could not be fetched — ${inode.source.error}`);
+    }
     // The caller reached a mounted file without fetching it. This is a defect in the
     // caller, not a state a reader should ever see, so it names the fix.
     throw new FsError(
@@ -463,6 +479,12 @@ export class VFS {
       path,
       'Mounted but not fetched yet — the caller must await hydrate() first',
     );
+  }
+
+  /** Record that a fetch failed, so the next read says so instead of blaming its caller. */
+  failed(path, reason, { cwd = '/' } = {}) {
+    const { inode } = this.#existing(path, { cwd });
+    if (inode.source) inode.source.error = String(reason);
   }
 
   readlink(path, options = {}) {
@@ -614,6 +636,13 @@ export class VFS {
     } else {
       if (inode.type === DIR) throw new FsError('EISDIR', path);
       this.#need(inode, W, path);
+      // Belt and braces behind the mode bits and the `chmod` guard: a mounted file's `data`
+      // is null until it is fetched, and arithmetic on that length is a TypeError rather
+      // than a refusal. Any path that reaches here has already defeated two other checks,
+      // so this one says what it is.
+      if (inode.source) {
+        throw new FsError('EACCES', path, 'Mounted read-only — the server cannot be written to');
+      }
     }
 
     // Measured before anything is created. A refusal that had already made the inode and
@@ -745,11 +774,26 @@ export class VFS {
     const source = this.#existing(from, { cwd });
     if (source.inode.type === DIR) throw new FsError('EISDIR', from);
     this.#need(source.inode, R, from);
-    this.writeFile(to, source.inode.data, { cwd, mode: source.inode.mode });
+    // The same refusal `readFile` gives. Without this, copying a mounted file that cannot be
+    // fetched passed `null` to `writeFile`, which stringified it: `cp` exited 0 and left a
+    // four-character file containing the word "null", which `file`, `wc` and Notepad all
+    // then treated as its real contents.
+    if (source.inode.data === null) this.#refuseUnhydrated(source.inode, from);
+    this.writeFile(to, source.inode.data, { cwd, mode: source.inode.mode & 0o777 });
   }
 
   chmod(path, mode, { cwd = '/' } = {}) {
     const { inode } = this.#existing(path, { cwd });
+    // A mounted name's mode is a property of the mount, not of this filesystem.
+    //
+    // Mounted inodes are created owned by this user, so the ownership check below let
+    // `chmod 644` strip the read-only bits off the repository — and the write that followed
+    // reached a file whose `data` is null and raised a raw TypeError instead of a refusal.
+    // The read-only guarantee has to be unconditional, because nothing here can write to
+    // the server whatever the bits say.
+    if (inode.source || inode.mounted) {
+      throw new FsError('EPERM', path, 'Mounted read-only — its mode is not this filesystem\'s to change');
+    }
     // Only the owner, as on Linux: a mode anyone may change is not a permission.
     if (this.uid !== 0 && inode.uid !== this.uid) throw new FsError('EPERM', path);
     inode.mode = mode & 0o7777;
@@ -789,12 +833,30 @@ export class VFS {
     if (!index || !Array.isArray(index.files)) {
       throw new FsError('EINVAL', at, 'mount index has no file list');
     }
+    // The version is checked by the only thing that reads the index at runtime.
+    // `scripts/mount.py --check` enforces it on disk, which does nothing for a stale copy
+    // served from a cache: a column-shifted row grafts happily and presents every text file
+    // as binary with a 1970 timestamp, where refusing the graft would let `df` say the mount
+    // is unavailable and why.
+    if (index.version !== MOUNT_FORMAT) {
+      throw new FsError(
+        'EINVAL',
+        at,
+        `mount index is version ${index.version}, this code reads ${MOUNT_FORMAT}`,
+      );
+    }
     let grafted = 0;
     this.batch('mount', () => {
       this.#mountDir(at);
       for (const row of index.files) {
         const [relative, size, mtimeSeconds, isText] = row;
-        if (typeof relative !== 'string' || !Number.isInteger(size)) {
+        // All four columns, not the two that happen to be load-bearing today. A row that is
+        // the wrong shape is a bad index, and saying so is cheaper than every size, date and
+        // text flag downstream being quietly wrong.
+        if (typeof relative !== 'string' || !relative
+            || !Number.isInteger(size) || size < 0
+            || !Number.isInteger(mtimeSeconds)
+            || (isText !== 0 && isText !== 1)) {
           throw new FsError('EINVAL', at, `mount index has a bad row: ${JSON.stringify(row)}`);
         }
         const full = `${at}/${relative}`;
@@ -847,6 +909,10 @@ export class VFS {
    */
   pending(paths, { cwd = '/' } = {}) {
     const need = [];
+    // By inode, not by path. Two operands can be two names for one file — `wc -l LICENSE
+    // LICENSE`, or a symlink beside its target — and fetching the same URL twice is the one
+    // measurement this design is judged on.
+    const seen = new Set();
     for (const path of paths) {
       let inode;
       try {
@@ -858,16 +924,41 @@ export class VFS {
       }
       if (inode.type !== FILE || inode.data !== null || !inode.source) continue;
       if (!inode.source.text || inode.source.size > MAX_FILE_SIZE) continue;
+      // A fetch that already failed is not retried on every command. The recorded
+      // reason is what the next read reports.
+      if (inode.source.error) continue;
+      if (seen.has(inode.ino)) continue;
+      seen.add(inode.ino);
       need.push({ path, url: inode.source.url });
     }
     return need;
   }
 
-  /** Put a fetched body in place. */
+  /**
+   * Put a fetched body in place, or record why it could not be fetched.
+   *
+   * The length is re-checked against the real text. The pre-fetch refusal uses the index's
+   * size, and `scripts/mount.py --check` deliberately tolerates size drift, so a file that
+   * has grown past the ceiling since it was indexed would otherwise be downloaded in full
+   * and accepted — defeating the one guarantee the ceiling offers.
+   */
   fill(path, text, { cwd = '/' } = {}) {
     const { inode } = this.#existing(path, { cwd });
     if (inode.type !== FILE || !inode.source) throw new FsError('EINVAL', path, 'not a mounted file');
-    inode.data = String(text);
+    const body = String(text);
+    if (body.length > MAX_FILE_SIZE) {
+      const indexed = inode.source.size;
+      // Corrected from what arrived, so the next read refuses before fetching rather than
+      // downloading it again to find out the same thing.
+      inode.source.size = body.length;
+      throw new FsError(
+        'EFBIG',
+        path,
+        `File too large to read here — ${body.length} characters on arrival, the limit is `
+        + `${MAX_FILE_SIZE}. The index said ${indexed}; run scripts/mount.py`,
+      );
+    }
+    inode.data = body;
     // No change event: the contents were always this, and a watcher that saved on every
     // `cat` of a mounted file would serialise the repository into `localStorage` one file at
     // a time.
@@ -963,9 +1054,7 @@ export class VFS {
     let files = 0;
     let dirs = 0;
     let links = 0;
-    let mounted = 0;
     for (const inode of this.inodes.values()) {
-      if (inode.source || inode.mounted) mounted += 1;
       if (inode.type === DIR) dirs += 1;
       else if (inode.type === LINK) links += 1;
       else files += 1;
@@ -974,9 +1063,10 @@ export class VFS {
       files,
       dirs,
       links,
-      // Counted separately because they are not the user's and do not use the quota: "126
-      // of these files are the repository" is the fact a reader needs to read the rest.
-      mounted,
+      // No `mounted` count here. `fs.mjs` publishes `mounted.files`, which is what `df`
+      // prints, and a second count of the same quantity disagreed with it — this one
+      // included the grafted directories, so the two differed by 55 and nothing read this
+      // one at all.
       inodes: this.inodes.size,
       used: this.usedBytes(),
       total: MAX_TOTAL_SIZE,
@@ -1001,6 +1091,29 @@ export class VFS {
     const skipped = new Set();
     for (const inode of this.inodes.values()) {
       if (inode.source || inode.mounted) skipped.add(inode.ino);
+    }
+
+    // Anything left unreachable once the mount is dropped goes with it.
+    //
+    // A name created inside a mounted directory loses its only parent when that parent is
+    // skipped. The image still loaded — `parse` checks entry → inode, not inode →
+    // reachable — so the inode survived every reload as something no path could reach,
+    // while still counting against the 1 MB quota and still being tallied by `df`. It was
+    // reclaimable only by `format`. Reachability is the invariant; the mount flag was only
+    // one way to break it.
+    const reachable = new Set([this.rootIno]);
+    const queue = [this.rootIno];
+    while (queue.length) {
+      const dir = this.inodes.get(queue.shift());
+      if (!dir || dir.type !== DIR) continue;
+      for (const ino of dir.entries.values()) {
+        if (skipped.has(ino) || reachable.has(ino)) continue;
+        reachable.add(ino);
+        queue.push(ino);
+      }
+    }
+    for (const ino of this.inodes.keys()) {
+      if (!reachable.has(ino)) skipped.add(ino);
     }
     return {
       version: FORMAT_VERSION,
