@@ -194,3 +194,25 @@
     border-bottom: 1px solid var(--rule);
   }
 }
+
+/* An item the caller will not let you pick.
+ *
+ * Greyed and refused rather than hidden, which is what XP did: a visitor can see the file is
+ * there and read why it cannot be chosen. Hiding it answers a different question — "does
+ * this exist" — with "no", which is a lie.
+ *
+ * 55%: `--ink` on `--bg` is 21:1, so this lands near 11.5:1 and stays legible. Greying to
+ * the point of illegibility would hide it by another means.
+ */
+.folder-item.is-refused {
+  opacity: .55;
+  cursor: not-allowed;
+}
+
+/* The selected item, in selecting mode. Luna's selection blue, which is the same pair the
+   Start menu and the title bar use; white on `--title-a` measures 14.25:1. */
+.folder-item[aria-selected='true'] {
+  background: var(--title-a);
+  color: #fff;
+  border-color: var(--title-a);
+}
