@@ -4,7 +4,11 @@
 Reported as "misaligned" from a screenshot. A screenshot says it is wrong; these numbers say
 which box is off and by how much, which is what a fix needs.
 
-    .venv/bin/python scripts/inspect_compass.py [--port 8281]
+    .venv/bin/python scripts/inspect_compass.py [--port PORT]
+
+Without `--port` the server takes a free port the kernel picks, which cannot collide with
+another run out of this checkout. A fixed port is what you pass when you want to attach to
+the page yourself.
 """
 
 from __future__ import annotations
@@ -12,15 +16,14 @@ from __future__ import annotations
 import argparse
 import base64
 import json
-import subprocess
 import sys
 import time
-import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from cdp import Browser  # noqa: E402
+from serve import ServeError, serve  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -66,23 +69,18 @@ PROBE = """(() => {
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", type=int, default=8281)
-    args = parser.parse_args(argv)
-    base = f"http://127.0.0.1:{args.port}"
-
-    server = subprocess.Popen(
-        [sys.executable, "-m", "http.server", str(args.port), "--bind", "127.0.0.1"],
-        cwd=REPO_ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    parser.add_argument(
+        "--port",
+        type=int,
+        help="serve on this port instead of a free one the kernel picks; for attaching to "
+        "the page yourself",
     )
-    try:
-        for _ in range(60):
-            try:
-                urllib.request.urlopen(base + "/", timeout=5)
-                break
-            except OSError:
-                time.sleep(0.1)
+    args = parser.parse_args(argv)
 
-        with Browser() as browser:
+    try:
+        # `serve` picks the port, proves the bytes on it are this tree's, and stops the
+        # server on the way out.
+        with serve(args.port) as base, Browser() as browser:
             page = browser.page()
             page.clear_cache()
             page.call(
@@ -111,9 +109,10 @@ def main(argv: list[str] | None = None) -> int:
                 out.parent.mkdir(exist_ok=True)
                 out.write_bytes(base64.b64decode(shot["data"]))
                 print(f"\nwrote {out}")
-    finally:
-        server.terminate()
-        server.wait(timeout=10)
+    except ServeError as error:
+        # No server, or not this tree's server. Nothing was measured.
+        print(error, file=sys.stderr)
+        return 1
     return 0
 
 
