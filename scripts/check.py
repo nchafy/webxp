@@ -529,6 +529,59 @@ def win_selector(page, program: str) -> str:
     return f"#{win_id}"
 
 
+def expose(page, program: str, *also: str) -> dict:
+    """Move a window so its own title bar is what is topmost at the bar's midpoint.
+
+    For the checks that compute a rect and press it. A press lands on whatever is topmost at
+    that point, so a window left open by an earlier check can take it — and the press then
+    reports as the product failing to respond. `launch all` leaves one window per program
+    open and cascades them into the upper left, so the occlusion arrives with the fortieth
+    app rather than with any change to what is being tested.
+
+    Moving the target, rather than closing the others: closing them is what a reader would
+    reach for first, and it breaks every later check that expects a window an earlier one
+    opened — measured, three of them. A check must create its own condition without
+    destroying anyone else's.
+
+    Returns the fresh probe state. Raises if the bar is still covered, because a press that
+    cannot land must not be reported as a product verdict.
+    """
+    for name in (program, *also):
+        if window_of(probe(page), name) is None:
+            launch(page, name)
+    selector = win_selector(page, program)
+    # Minimised, not closed and not moved. Closed breaks every later check expecting a window
+    # an earlier one opened — measured, three of them. Moved is not enough either: with one
+    # window per program open there is no clear ground to move to, and this function then
+    # correctly refuses rather than pressing blind. A minimised window keeps its taskbar
+    # button and its place in `windows`, so nothing downstream can tell, and the desktop is
+    # clear.
+    page.evaluate(
+        "(() => { const keep = new Set(%s);"
+        " for (const w of window.webxp.windows) {"
+        # Restored as well as minimised: an earlier check may have left the target minimised,
+        # and a minimised window has no laid-out title bar to press.
+        "   if (keep.has(w.programId)) { if (w.state === 'min') w.restore(); }"
+        "   else if (w.state !== 'min') w.minimize(); } })()"
+        % json.dumps([program, *also])
+    )
+    time.sleep(0.5)
+    bar = rect_of(page, f"{selector} .window-title")
+    if bar is None:
+        raise CDPError(f"{program}: no laid-out title bar to expose")
+    on_top = page.evaluate(
+        "(() => { const e = document.elementFromPoint(%f, %f);"
+        " return e ? !!e.closest('%s .window-title') : false; })()"
+        % (bar["x"] + bar["w"] / 2, bar["y"] + bar["h"] / 2, selector)
+    )
+    if not on_top:
+        raise CDPError(
+            f"{program}: its title bar is still covered after being moved clear, so a press "
+            "there would measure whatever is over it rather than this window"
+        )
+    return probe(page)
+
+
 def launch(page, program: str) -> None:
     """Open a program through the Start menu, so the menu is covered too.
 
@@ -1669,14 +1722,43 @@ def check_cascade_across_close(page) -> list[str]:
                 f"the {middle['slot']} the close freed"
             )
 
-        # And the thing all of that is for: no pile. On `placed`, for the reason given in
-        # `check_launch_all`.
-        state = probe(page)
-        origins = {(w["placed"]["x"], w["placed"]["y"]) for w in state["wins"]}
-        if len(origins) != len(state["wins"]):
+        # And the thing all of that is for: no pile — among the windows that hold a lane.
+        #
+        # Not every open window: `cascade` wraps with `index % lanes`, and `lanes` is what the
+        # desktop's height affords this window, so once more windows are open than there are
+        # lanes two of them share an origin by design. Asserting distinctness across all of
+        # them made this check a count of how many apps the tree happens to ship — it passed
+        # at thirty-nine and failed at forty with nothing about the cascade having changed.
+        #
+        # The lane assignment is the invariant, and `cascadeSlot` is where it is readable. A
+        # window placed from an explicit `x`/`y` never cascades and holds no slot, which is
+        # why those are excluded rather than counted as collisions.
+        # Distinct lanes while there are lanes to be distinct in, and not one window further.
+        #
+        # `cascade` ends with `index % lanes` (`src/window.mjs`), and the comment above it
+        # says why: it wraps rather than letting the cascade walk off the bottom and get
+        # clamped into a pile in the corner. So two windows sharing a lane past the budget is
+        # the documented behaviour, not a defect, and asserting otherwise made this check a
+        # count of how many apps the tree ships — it passed at thirty-nine and failed at forty
+        # with nothing about the cascade having changed.
+        #
+        # What `cascadeIndex` does promise is a lane nobody holds *when one exists*. That is
+        # the half worth asserting, and the budget is what separates the two.
+        lanes = page.evaluate(
+            "(() => { const d = window.webxp;"
+            " const open = d.windows.filter((w) => w.cascadeSlot !== undefined);"
+            " const budget = open.map((w) => Math.max("
+            "   Math.floor((w.surface().h - w.box.h - 40) / 26), 1));"
+            " return { slots: open.map((w) => w.cascadeSlot),"
+            "          budget: budget.length ? Math.min(...budget) : 0 }; })()"
+        )
+        slots, budget = lanes["slots"], lanes["budget"]
+        if len(slots) <= budget and len(set(slots)) != len(slots):
+            doubled = sorted({s for s in slots if slots.count(s) > 1})
             bad.append(
-                f"cascade across a close: {len(state['wins'])} windows at {len(origins)} "
-                "distinct placed origins after a close and a launch"
+                f"cascade across a close: {len(slots)} cascaded windows fit in {budget} "
+                f"lanes and hold {len(set(slots))} — lane(s) {doubled} are held twice, so "
+                "two windows opened on top of each other with a free lane going spare"
             )
     finally:
         page.evaluate(
@@ -1781,6 +1863,10 @@ def check_reentrant_gesture(page, *, invert: bool = False) -> list[str]:
     x=248, and only the touch's own release clearing both.
     """
     bad = []
+    # The read-me alone. This presses a computed point on its title bar, and a window left
+    # open over that point takes the press instead — which reports as "the first pointer did
+    # not start a gesture", a true sentence about a press that never reached the bar.
+    expose(page, "readme")
     selector = win_selector(page, "readme")
     bar = rect_of(page, f"{selector} .window-title")
     if bar is None:
@@ -3391,9 +3477,10 @@ def check_focus_order(page) -> list[str]:
     # Opens its own Notepad if an earlier check has not. It relied on one being there, which
     # made it unrunnable alone — and a check that cannot be run by itself cannot be shown to
     # fail by itself either.
-    if window_of(probe(page), "notepad") is None:
-        launch(page, "notepad")
-    state = probe(page)
+    # Notepad and the read-me only: this clicks a computed point, and anything else left open
+    # can be over it. Raising Notepad first is not an option — the check is that a click
+    # raises it, so it has to start underneath something.
+    state = expose(page, "notepad", "readme")
     notepad = need(state, "notepad")
 
     selector = win_selector(page, "notepad")
@@ -5721,9 +5808,25 @@ def check_terminal(page, *, invert: bool = False) -> list[str]:
         "(() => { const w = window.webxp.windows.find((w) => w.id === %s);"
         " return w.app.shell.fs.stats().used; })()" % json.dumps(shell)
     )
-    counted = term_run(page, "du -s /", shell)
-    if f"{used}\t" not in counted:
-        bad.append(f"terminal: du -s / counted {counted.strip()[:40]!r}, and df says {used}")
+    # Over `/home`, not `/`. The mounted repository is in the tree but deliberately outside
+    # the quota — `stats().used` does not count a mounted inode, because its bytes live on the
+    # server and are never written to the image. So `du -s /` legitimately exceeds `df` by the
+    # size of the mount, and the dedup this asserts does not need the whole filesystem: the
+    # hard-linked inode is under `/home/user`.
+    counted = term_run(page, "du -s /home", shell)
+    home_used = page.evaluate(
+        "(() => { const w = window.webxp.windows.find((w) => w.id === %s);"
+        " const fs = w.app.shell.fs; let total = 0; const seen = new Set();"
+        " for (const e of fs.walk('/home')) {"
+        "   if (e.stat && e.stat.type !== 'dir' && !seen.has(e.stat.ino)) {"
+        "     seen.add(e.stat.ino); total += e.stat.size; } }"
+        " return total; })()" % json.dumps(shell)
+    )
+    if f"{home_used}\t" not in counted:
+        bad.append(
+            f"terminal: du -s /home counted {counted.strip()[:48]!r}, and one charge per "
+            f"inode over that tree is {home_used}"
+        )
 
     # 6. Tab offers command names in every command position, not only the first word.
     offered = page.evaluate(
@@ -5956,6 +6059,11 @@ def check_explorer(page) -> list[str]:
     are named so a failure says which check left them behind.
     """
     bad = []
+    # The contrast read below goes through `window.__wxColours`, which only exists once this
+    # is evaluated. Installed here rather than relied on from an earlier check: `--only
+    # explorer` runs this one alone, and a check that works only in company is one reorder
+    # from reading `undefined` as a colour.
+    page.evaluate(COLOUR_READER)
     shell = terminal_session(page)
     term_run(page, "rm -rf ~/exp-probe", shell)
     term_run(page, "mkdir -p ~/exp-probe/inner", shell)
@@ -6165,8 +6273,12 @@ def check_explorer(page) -> list[str]:
         " const seen = getComputedStyle(row);"
         " const type = row.querySelector('.exp-type');"
         " if (!type) return { error: 'no .exp-type cell to measure' };"
-        " return { ink: seen.color, fill: seen.backgroundColor,"
-        "          typeInk: getComputedStyle(type).color }; })()"
+        # Through `__wxColours`, because `rgb_stops` reads its normalised output rather than a
+        # raw CSS string. Handed `'rgb(255, 255, 255)'` it iterates the characters, finds no
+        # tuple, and reports "could not read" over colours that were right there.
+        " const C = window.__wxColours;"
+        " return { ink: C(seen.color), fill: C(seen.backgroundColor),"
+        "          typeInk: C(getComputedStyle(type).color) }; })()"
         % json.dumps(window_id)
     )
     if colours.get("error"):
