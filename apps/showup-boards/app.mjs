@@ -3,25 +3,34 @@
  * Ported from the `/board/` index and the 59 board pages, the same way the councils program
  * was: the list and the facts were two routes and are now two panes.
  *
- * Three artifacts, because a board's answer comes from three places. `lookup.json` has the
+ * Four artifacts, because a board's answer comes from four places. `lookup.json` has the
  * names and what each board covers. `preview.json` has the office, the phone, the cadence in
- * the board's own words, the covering council districts and the budget requests.
- * `board-meetings.json` has each board's own calendar, with when it was fetched and how
- * stale it is — which matters more here than anywhere else on the site, because the City runs
- * no board meeting calendar and these are the boards' own feeds.
+ * the board's own words, the covering council districts and the first few budget requests.
+ * `detail.json` has every budget request the board filed, with the board's own explanation
+ * and the agency's reply. `board-meetings.json` has each board's own calendar, with when it
+ * was fetched and how stale it is — which matters more here than anywhere else on the site,
+ * because the City runs no board meeting calendar and these are the boards' own feeds.
  *
- * What the old pages had and this does not yet: the board's email and website, its public
- * members, and the prose on what a board can and cannot do. The first two are in the build's
- * board records but not in `preview.json`; naming that is better than letting it look
- * complete.
+ * What the old pages had and this does not yet: the board's public members, and the prose on
+ * what a board can and cannot do. Neither is in `preview.json` or `detail.json` — a board's
+ * entry in the second carries nothing but its budget — so naming them is better than letting
+ * the pane look complete.
  */
 
 import { group } from '../../src/widgets.mjs';
-import { boards, load, usableTable, PREVIEW, BOARD_MEETINGS } from '../../shared/showup/data.mjs';
+import {
+  boards, load, usableTable, PREVIEW, BOARD_MEETINGS, DETAIL,
+} from '../../shared/showup/data.mjs';
 
 //: How many of a board's upcoming entries to list. Its own feed carries office closures and
 //: screenings alongside meetings, so a long list is mostly not meetings.
 const UPCOMING = 6;
+
+//: The one name for the requests, used twice on purpose: as this program's own legend, and
+//: as the `preview.json` table it drops. That table caps the requests at a few rows of two
+//: columns, and a handful of requests above all of them is one fact with two renderers that
+//: a reader then has to choose between.
+const BUDGET_LEGEND = 'Budget requests';
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -42,6 +51,50 @@ function row(entry, onPick) {
   button.addEventListener('click', () => onPick(entry));
   item.append(button);
   return item;
+}
+
+/* One budget request as its own record.
+ *
+ * A record per request rather than one wide table. The explanation and the reply are
+ * paragraphs — the longest in `detail.json` run to 2,849 and 5,206 characters — and the
+ * detail pane measures 508 px at this window's default size, so six columns of those would
+ * be columns an inch wide. The group box is the shape the rest of this window already uses
+ * for "a thing with fields", so a reader meets nothing new.
+ *
+ * The reply is quoted as filed and never sorted into funded or not. The phrasing changes
+ * between editions, and it records the agency's position rather than an outcome. */
+function requestGroup(request, index) {
+  const lines = [];
+  if (request.priority) lines.push(['Priority', request.priority]);
+  if (request.category) lines.push(['Category', request.category]);
+  if (request.agency) lines.push(['Agency', request.agency]);
+  if (request.tracking_code) lines.push(['Tracking code', request.tracking_code]);
+  if (request.explanation) lines.push(['The board explained', request.explanation]);
+  if (request.response) lines.push(['The agency replied', request.response]);
+
+  // One of the 3,809 carries no request text, so the legend falls back to the one identifier
+  // that is always there rather than to an empty legend.
+  const legend = request.request || request.tracking_code || `Request ${index + 1}`;
+  return lines.length
+    ? group(legend, { columns: ['Field', 'Value'], rows: lines })
+    : group(legend, ['Nothing else is recorded for this request.']);
+}
+
+/** Every request a board filed, under a header saying for which year and how many. */
+function budgetSection(budget) {
+  const requests = budget.requests || [];
+  const wrap = el('div', 'budget');
+
+  const summary = [];
+  summary.push(requests.length
+    ? `${requests.length} request${requests.length === 1 ? '' : 's'}`
+      + `${budget.fiscal_year ? ` for fiscal ${budget.fiscal_year}` : ''}, every one below.`
+    : 'The City publishes no budget requests for this board.');
+  if (budget.publication) summary.push(`Published ${budget.publication}.`);
+  wrap.append(group(BUDGET_LEGEND, summary));
+
+  requests.forEach((request, index) => { wrap.append(requestGroup(request, index)); });
+  return wrap;
 }
 
 export default {
@@ -89,13 +142,19 @@ export default {
     let rows;
     let preview;
     let calendars;
+    let record;
+    // Named, not swallowed, and not fatal. The uncapped requests failing must not cost the
+    // contact details, which are what a reader most often came for — but a board whose
+    // requests are missing because a fetch failed must not read as a board that filed none.
+    let recordError = null;
     try {
-      [rows, preview, calendars] = await Promise.all([
+      [rows, preview, calendars, record] = await Promise.all([
         boards(),
         load(PREVIEW),
         // The calendars are a nicety: a failure here must not cost the contact details,
         // which are the thing a reader most often came for.
         load(BOARD_MEETINGS).catch(() => null),
+        load(DETAIL).catch((error) => { recordError = error.message; return null; }),
       ]);
     } catch (error) {
       win.setStatus(`The boards could not be loaded (${error.message}).`);
@@ -107,6 +166,8 @@ export default {
       const code = String(entry.code);
       const facts = (preview.boards || {})[code] || {};
       const calendar = calendars && calendars.boards ? calendars.boards[code] : null;
+      const full = (record && record.boards ? record.boards[code] : null) || {};
+      const budget = full.budget || null;
       const nodes = [];
 
       const lines = [];
@@ -177,7 +238,21 @@ export default {
       }
 
       for (const spec of facts.tables || []) {
+        if (budget && spec.legend === BUDGET_LEGEND) continue;
         nodes.push(group(spec.legend, usableTable(spec, desktop)));
+      }
+
+      if (budget) {
+        nodes.push(budgetSection(budget));
+      } else if (recordError) {
+        // Not `BUDGET_LEGEND`: the capped table above kept its own legend when the uncapped
+        // set did not arrive, and two boxes titled the same thing read as one of them being
+        // a duplicate rather than as a note about the other.
+        nodes.push(group('The rest of the budget requests', [
+          `${DETAIL} could not be loaded (${recordError}), so the few requests above are all `
+          + 'this pane can show. The board filed more; this is a failed fetch, not the whole '
+          + 'filing.',
+        ]));
       }
 
       detail.replaceChildren(...nodes);

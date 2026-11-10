@@ -2,6 +2,33 @@
  *
  * The two-pane shape — the list, the detail beside it, and the row styling — is shared with
  * the Community boards program and lives once in `assets/showup.css` under `.list-detail`,
- * which this program's root opts into. Nothing about this list is different enough to style
- * here, so this file holds nothing.
+ * which this program's root opts into. Nothing about the list is different enough to style
+ * here, so what is left is this program's own: the provenance disclosure, which no other
+ * Show Up program draws.
  */
+
+/* `details` has no theme of its own in `theme.css`, so the summary is styled as the link it
+   behaves like. Folded away because a reader wants the sources occasionally and never
+   first, and three lines of dataset ids above the member's phone number would make the pane
+   mostly provenance. */
+.app-showup-councils .provenance {
+  margin: .5rem 0 0;
+  font-size: 11px;
+}
+/* `.25rem` top and bottom, which is what takes the 16px line box to the 24px SC 2.5.8
+   floor. An 11px line of text is a 16px target, and this one is the only way into the
+   sources. */
+.app-showup-councils .provenance > summary {
+  width: fit-content;
+  padding: .25rem .15rem;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+/* The shell's ring, 2px, so this cannot drift from the rest of the desktop. */
+.app-showup-councils .provenance > summary:focus-visible {
+  outline: 2px solid var(--title-a);
+  outline-offset: 1px;
+}
+.app-showup-councils .provenance > .group-table { margin-top: .35rem; }
+.app-showup-councils .provenance-missing { margin: .35rem 0 0; color: var(--muted); }

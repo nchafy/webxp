@@ -3,7 +3,7 @@
  * The two-pane shape is shared with the City councils program and lives once in
  * `assets/showup.css` under `.list-detail`, which `.boards-panes` opts into. What is left
  * here is this program's own: the note above the panes, which the councils window has no
- * equivalent of.
+ * equivalent of, and the budget records' label column.
  */
 
 /* The note sits above the panes, so the grid is the second row of the window rather than the
@@ -23,3 +23,14 @@
   font-size: 11px;
 }
 .app-showup-boards .boards-panes { flex: 1 1 auto; min-height: 0; }
+
+/* Each budget request is its own table, so every one of them sizes its label column on its
+   own content. Measured on board 302 at an 860 px window with this rule forced back to
+   `auto`: 25 distinct widths across the 61 records, from 58 to 94 px, so the labels step in
+   and out all the way down the pane. With the rule, all 61 measure 152 px. Re-measurable by
+   forcing `width: auto` on this selector and reading `getBoundingClientRect().width` off
+   each `.budget > fieldset tbody > tr > th:first-child`.
+
+   Harmless in the stacked form below 26rem, where `theme.css` makes every cell a block and a
+   width on the label only sets the width of a box holding one short line. */
+.app-showup-boards .budget .group-table tbody th { width: 9.5rem; }
