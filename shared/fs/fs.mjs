@@ -169,6 +169,11 @@ export async function hydrate(fs, paths, { cwd = '/' } = {}) {
       fs.fill(path, await response.text(), { cwd });
       filled += 1;
     } catch (error) {
+      // Recorded on the file, not only in the console. Left unrecorded, the read that
+      // followed reported "the caller must await hydrate() first" — which blames the
+      // program for a 404 and sends the reader to the wrong fix, while the real reason sat
+      // in a console line nobody had open.
+      fs.failed(path, error.message, { cwd });
       console.error(`webxp: could not fetch ${url} for ${path}`, error);
     }
   }));

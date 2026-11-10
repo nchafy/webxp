@@ -24,7 +24,7 @@ tidiness, and there is deliberately no fallback to walking the working tree.
     {
       "version": 1,
       "root": "/usr/src/webxp",
-      "files": [[path, bytes, mtimeSeconds, isText], ...]
+      "files": [[path, size, mtimeSeconds, isText], ...]
     }
 
 `path` is relative to the repository root and is also the URL to fetch, so one string is both
@@ -32,6 +32,13 @@ the name and the address. Directories are not listed: they are implied by the pa
 keeps one fact in one place. `isText` is decided here, by extension, because the filesystem
 holds text and a `.png` is a file it can describe and cannot read — refusing it before the
 fetch costs nothing and says why.
+
+**`size` is a character count for text, and a byte count for everything else.** The
+filesystem it feeds measures files in characters — a JS string is the contents — so an index
+in bytes made `ls -l` print one number before a file was read and a different one after, for
+93 of this repository's 124 text files. Counting characters here costs one read per text file
+in a generator that already walks the tree, and makes the unit one thing. A non-text file is
+never read, so its byte size is the only figure available and the only one anybody sees.
 
 Sorted, and with no timestamp of its own, so regenerating on an unchanged tree produces no
 diff.
@@ -110,12 +117,26 @@ def indexed() -> list[list]:
             print(f"  skipped {name} — tracked but not on disk", file=sys.stderr)
             continue
         stat = path.stat()
-        rows.append([
-            name,
-            stat.st_size,
-            int(stat.st_mtime),
-            1 if path.suffix.lower() in TEXT_SUFFIXES else 0,
-        ])
+        is_text = path.suffix.lower() in TEXT_SUFFIXES
+        size = stat.st_size
+        if is_text:
+            try:
+                # Characters, not bytes — see the schema note above.
+                #
+                # Decoded from the bytes rather than read with `read_text`, which applies
+                # universal-newline translation and collapses every CRLF to one character.
+                # `response.text()` in the browser does not, so `read_text` undercounted
+                # `apps/day-02-lines/fixture/activities.csv` by exactly its 7 CRLFs — and the
+                # mismatch would have reappeared as a size that changes when the file is read,
+                # which is the defect this whole column is fixing.
+                size = len(path.read_bytes().decode("utf-8"))
+            except UnicodeDecodeError:
+                # A file with a text extension that is not valid UTF-8 cannot be held by a
+                # filesystem of strings. Indexed as unreadable rather than as a character
+                # count nobody can reproduce.
+                print(f"  {name} is not valid UTF-8 — indexed as unreadable", file=sys.stderr)
+                is_text = False
+        rows.append([name, size, int(stat.st_mtime), 1 if is_text else 0])
     rows.sort(key=lambda row: row[0])
     return rows
 
@@ -138,12 +159,25 @@ def render(rows: list[list]) -> str:
     )
 
 
+#: The filesystem's own per-file ceiling, from `MAX_FILE_SIZE` in `shared/fs/vfs.mjs`.
+#: Duplicated rather than imported — this is Python and that is JavaScript — and duplicated
+#: deliberately: a summary that computed the ceiling from the code it describes could not
+#: catch the ceiling changing. `check.py` duplicates `MIN_W` for the same reason.
+READ_CEILING = 256 * 1024
+
+
 def summarise(rows: list[list]) -> str:
     total = sum(row[1] for row in rows)
-    text = sum(row[1] for row in rows if row[3])
+    # Readable means a reader can actually `cat` it: text, and under the ceiling. Summing
+    # every text row called 1.5 MB of vendored MapLibre "readable" when both files are
+    # refused with EFBIG before they are even fetched — a 58% overstatement in the figure
+    # `shared/fs/README.md` points at as authoritative.
+    readable = sum(row[1] for row in rows if row[3] and row[1] <= READ_CEILING)
+    refused = sum(1 for row in rows if not row[3] or row[1] > READ_CEILING)
     return (
         f"{len(rows)} files, {total / 1_048_576:.1f} MB, "
-        f"of which {text / 1024:.0f} KB is readable text"
+        f"of which {readable / 1024:.0f} KB is readable text "
+        f"({refused} refused: not text, or over the {READ_CEILING // 1024} KB ceiling)"
     )
 
 

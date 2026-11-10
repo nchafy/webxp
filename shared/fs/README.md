@@ -30,8 +30,16 @@ constraint that forces `apps/manifest.mjs` to exist — so `scripts/mount.py` wr
 rows as names with no contents, and the body of a file is fetched the first time something
 reads it.
 
-The index is 6.8 KB for 126 files. The figures that decided the design are printed by
-`scripts/mount.py --check` rather than written down here.
+How many files, how much of it is readable, and how much is refused are printed by
+`scripts/mount.py --check`. No figures here: the one this sentence used to carry was wrong
+one commit after it was written.
+
+**Sizes are character counts, in the index as well as in the filesystem.** `scripts/mount.py`
+counts characters for text rather than recording `st_size`, because a JS string is what a
+file holds here: an index in bytes made `ls -l` print one number before a file was read and a
+different one after, for 93 of 124 text files. It decodes the bytes itself rather than using
+`read_text`, whose universal-newline translation collapses CRLF and undercounted one CSV by
+exactly its seven line endings.
 
 **Metadata is free, contents are not.** `ls`, `ls -l`, `du`, `find`, `stat` and `df` are
 answered from the index and fetch nothing — verified by `scripts/inspect_mount.py`, which
@@ -48,7 +56,8 @@ Three things a mounted file can refuse, each with its own answer:
 | Code | When |
 | --- | --- |
 | `EACCES` | Any write. Files are `444`, directories `555`; the mode bits do this, not a special case, because the browser genuinely cannot write to the server. |
-| `EFBIG` | Over the 256 KB ceiling. Refused before fetching, with the real size. |
+| `EFBIG` | Over the 256 KB ceiling. Refused before fetching, using the indexed size — and re-checked on arrival, because `--check` tolerates size drift and a file that grew since it was indexed would otherwise be downloaded in full and accepted. |
+| `EIO` | A fetch was attempted and failed. The reason is recorded on the file, so the next read reports the 404 rather than blaming its caller. |
 | `EINVAL` | Not a text file. The index decides by extension, so a `.gz` costs nothing to refuse. |
 
 **What may be indexed is decided by git.** `scripts/mount.py` reads `git ls-files` and has no
