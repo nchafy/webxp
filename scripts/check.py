@@ -2632,6 +2632,32 @@ OPENTOPO_CREDIT_MARKS = 2
 #: How many links it carries: OSM's copyright page, OpenTopoMap, and the CC-BY-SA deed.
 OPENTOPO_CREDIT_LINKS = 3
 
+#: The parties the satellite preset's two services name in their own `copyrightText`, which is
+#: where `ESRI_IMAGERY_CREDIT` and `ESRI_PLACES_CREDIT` in `shared/map/basemap.mjs` come from.
+#: Re-read with:
+#:   curl -s 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer?f=json'
+#:   curl -s 'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer?f=json'
+#: `World_Imagery` names Esri, Vantor, Earthstar Geographics and the GIS User Community;
+#: `World_Boundaries_and_Places` names Esri, HERE, Garmin, OpenStreetMap contributors and the
+#: GIS user community. Both layers are drawn, so a reader on this preset has to be shown both
+#: notices. Esri's own terms are unconfirmed (shared/map/README.md §Licensing), which makes a
+#: missing name the worse case and not the lesser one; OSM's half is ODbL and required outright.
+#: Cased as the services case it — "Community" in one notice, "community" in the other — so
+#: this tuple asserts the capitalised form once, where the imagery notice carries it.
+ESRI_CREDIT_PARTS = (
+    "Esri",
+    "Vantor",
+    "Earthstar Geographics",
+    "GIS User Community",
+    "HERE",
+    "Garmin",
+    "OpenStreetMap",
+)
+
+#: How many links it carries: Esri on each of the two notices, and OSM's copyright page for
+#: the reference layer's ODbL data.
+ESRI_CREDIT_LINKS = 3
+
 
 def switch_basemap(page, want: str) -> dict:
     """Click the Base map app's `want` preset and wait for that style to be installed.
@@ -2743,11 +2769,18 @@ def check_basemap_app(page) -> list[str]:
             " const hr = holder ? holder.getBoundingClientRect() : null;"
             " const ar = areaEl ? areaEl.getBoundingClientRect() : null;"
             " const tr = attribEl ? attribEl.getBoundingClientRect() : null;"
-            # What sits on top of the credit's own midpoint. If anything but the credit is
+            # What sits on top of the credit's own midpoint. If anything outside the credit is
             # there, it is covered — which is a licence problem, not a layout nit.
+            #
+            # Resolved through `closest`, for the reason spelled out on the same read in
+            # `day_02_panel_sweep`: the credit's own links are unclassed `<a>` elements, and
+            # reading `className` off one reports a cover that does not exist.
             " const onCredit = tr && tr.width"
-            "   ? (document.elementFromPoint(tr.left + tr.width / 2, tr.top + tr.height / 2)"
-            "      || {}).className || ''"
+            "   ? (() => { const top = document.elementFromPoint("
+            "        tr.left + tr.width / 2, tr.top + tr.height / 2);"
+            "      if (!top) return 'nothing';"
+            "      const owner = top.closest('.map-attrib') ? attribEl : top;"
+            "      return String(owner.className || owner.tagName); })()"
             "   : 'no credit';"
             " return { stage: map.loaded() ? 'ready' : 'style',"
             "   basemap: w.base.basemap,"
@@ -2890,6 +2923,26 @@ def check_basemap_app(page) -> list[str]:
             bad.append(
                 f"basemap app: overlay layers {sorted(missing)} were discarded by the basemap "
                 "switch — draw() was not re-run"
+            )
+        # Satellite's credit, read off the page, to the same standard as geography's below.
+        # This preset draws two Esri services with different party lists, and the two strings
+        # it used to carry had already drifted apart: the preset named the GIS User Community
+        # and linked esri.com, the imagery source named neither, and the reference layer drawn
+        # over the top named nobody at all. A `href`-is-present assertion passed throughout.
+        text = switched["creditText"]
+        absent = [part for part in ESRI_CREDIT_PARTS if part not in text]
+        if absent:
+            bad.append(
+                f"basemap app: the satellite credit reads {text!r}, with no "
+                f"{', '.join(absent)} — Esri's two services name every one of those in their "
+                "own copyrightText, and this preset draws both of them"
+            )
+        links = switched["creditHtml"].count("href")
+        if links < ESRI_CREDIT_LINKS:
+            bad.append(
+                f"basemap app: the satellite credit carries {links} link(s), want "
+                f"{ESRI_CREDIT_LINKS} — Esri on each notice, and OSM's copyright page for the "
+                "reference layer's ODbL data"
             )
 
     # Geography's credit, read off the page rather than out of the module.
@@ -3813,7 +3866,16 @@ def day_02_panel_sweep(page) -> list[str]:
             "   const r = e.getBoundingClientRect();"
             "   if (!r.width || !r.height) return 'zero';"
             "   const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);"
-            "   return top ? String(top.className || top.tagName) : 'nothing'; };"
+            "   if (!top) return 'nothing';"
+            # Resolved through `closest`, not read off the hit element. A credit carries links,
+            # and an unclassed `<a>` answers `className` with '' and `tagName` with 'A' — so a
+            # midpoint that lands on one of its own links reported 'A' covering the credit and
+            # failed a credit that nothing was touching. Which word a wrap puts under the
+            # midpoint is not the invariant; whether the pane or something outside it is on top
+            # is. Measured: at 420x140 the satellite credit wraps to three lines and the
+            # midpoint falls on its Esri link.
+            "   const owner = top.closest(sel) ? e : top;"
+            "   return String(owner.className || owner.tagName); };"
             " return { status: at('.map-status'), credit: at('.map-attrib') }; })()"
         )
         if "map-status" not in hit["status"]:

@@ -36,11 +36,14 @@ MapLibre GL JS v6.15.0 — BSD-3-Clause
 Map data and tiles — not redistributed here, fetched at runtime
   OpenStreetMap contributors (ODbL), OpenFreeMap, OpenTopoMap (CC-BY-SA:
   commercial use permitted, attribution and share-alike both required —
-  https://opentopomap.org/about#faq), and Esri/Maxar/Earthstar Geographics
-  imagery.
+  https://opentopomap.org/about#faq), and Esri's World_Imagery and
+  World_Boundaries_and_Places services, credited separately because they name
+  different parties. The second serves OpenStreetMap data, covered by the ODbL
+  credit above.
   Credits are rendered in the interface, which the check suite asserts.
-  shared/map/README.md records each source's terms, and is explicit that the
-  Esri position has not been confirmed.
+  shared/map/README.md records each source's terms and the parties each service
+  asks to be credited, and is explicit that the Esri position has not been
+  confirmed.
 
 Route geometry under apps/day-02-lines/
   Derived from the OpenStreetMap network via Valhalla, so ODbL attaches.

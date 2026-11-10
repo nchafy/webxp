@@ -115,7 +115,8 @@ One of the three is still unresolved: Esri.
   govern ArcGIS Online basemaps and generally contemplate an account for application
   use ([master agreement](https://www.esri.com/en-us/legal/terms/full-master-agreement)).
   **Nobody here has confirmed this use is licensed.** It is documented rather than
-  assumed. Attribution to Esri is required and is set on the source and in the credit.
+  assumed. Attribution to Esri is required and is set on both sources and in the credit.
+  The two services are credited separately because they name different parties.
 - **OpenTopoMap** is CC-BY-SA, and that licence permits commercial use. The FAQ answers a
   paid-guidebook question with "Die Lizenz CC-BY-SA der Online-Karte erlaubt deren
   kommerzielle Nutzung … Lizenzgebühren werden nicht fällig"

@@ -60,8 +60,40 @@ const OPENFREEMAP = 'https://tiles.openfreemap.org/styles/liberty';
 //: (https://www.esri.com/en-us/legal/terms/full-master-agreement). Nobody here has confirmed
 //: this use is licensed, so it is documented rather than assumed: shared/map/README.md
 //: §Licensing. The file that comment used to cite, docs/basemap.md, does not exist here.
-//: Attribution to Esri is required and is set on the source.
+//: Attribution to Esri is required and is set on both sources below and in the credit.
 const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services';
+
+/* Who the satellite preset has to credit, taken from each service's own `copyrightText`
+ * rather than from memory. Re-read either with:
+ *
+ *   curl -s '<service>/MapServer?f=json' |
+ *     python3 -c "import json,sys; print(json.load(sys.stdin)['copyrightText'])"
+ *
+ * Two constants and not one, because the preset draws two services and they name different
+ * parties. Merging them would credit HERE and Garmin for the imagery and Vantor for the
+ * boundaries, which is a wrong credit rather than a generous one.
+ *
+ * One definition each, because the raster sources below are given these same strings and a
+ * second copy would be hand-synced — which is how the imagery credit came to name the GIS
+ * User Community in one place and not the other.
+ */
+
+//: `World_Imagery` answers "Source: Esri, Vantor, Earthstar Geographics, and the GIS User
+//: Community". Those are the parties it asks to be credited; a credit naming any other party
+//: is not the credit asked for.
+const ESRI_IMAGERY_CREDIT =
+  'Imagery &copy; <a href="https://www.esri.com/" rel="noopener noreferrer">Esri</a>, ' +
+  'Vantor, Earthstar Geographics, and the GIS User Community';
+
+//: `Reference/World_Boundaries_and_Places` answers "Esri, HERE, Garmin, (c) OpenStreetMap
+//: contributors, and the GIS user community". This layer is drawn — it is the boundaries and
+//: labels over the imagery — so its notice is rendered too. Its OSM half is ODbL, which
+//: requires a credit on its own terms whatever Esri's turn out to be, so this one is not
+//: resting on the unconfirmed agreement above.
+const ESRI_PLACES_CREDIT =
+  'Boundaries and places &copy; <a href="https://www.esri.com/" rel="noopener noreferrer">Esri</a>, ' +
+  'HERE, Garmin, &copy; <a href="https://www.openstreetmap.org/copyright" rel="noopener noreferrer">OpenStreetMap contributors</a>, ' +
+  'and the GIS user community';
 
 //: OpenTopoMap, raster. CC-BY-SA: commercial use permitted, attribution and share-alike
 //: both required (https://opentopomap.org/about#faq). They specify the notice to display
@@ -229,9 +261,9 @@ export const BASEMAPS = {
   satellite: {
     label: 'Satellite',
     maxZoom: 19,
-    attribution:
-      'Imagery &copy; <a href="https://www.esri.com/" rel="noopener noreferrer">Esri</a>, ' +
-      'Maxar, Earthstar Geographics, and the GIS User Community',
+    //: Both notices, because both layers are drawn. `&middot;` separates the halves of a
+    //: notice here the way it does in `OPENTOPO_CREDIT`.
+    attribution: `${ESRI_IMAGERY_CREDIT} &middot; ${ESRI_PLACES_CREDIT}`,
     style() {
       return {
         version: 8,
@@ -244,13 +276,17 @@ export const BASEMAPS = {
             tiles: [`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`],
             tileSize: 256,
             maxzoom: 19,
-            attribution: 'Imagery &copy; Esri, Maxar, Earthstar Geographics',
+            //: Not what the reader sees — `attributionControl` is false below and the credit
+            //: is rendered from `BASEMAPS[active].attribution`. The same constants, so the
+            //: two cannot come to disagree.
+            attribution: ESRI_IMAGERY_CREDIT,
           },
           places: {
             type: 'raster',
             tiles: [`${ESRI}/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}`],
             tileSize: 256,
             maxzoom: 19,
+            attribution: ESRI_PLACES_CREDIT,
           },
         },
         layers: [
