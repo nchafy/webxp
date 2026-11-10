@@ -4836,7 +4836,7 @@ MOUNT_ASSERTIONS = """(async () => {
     return ['no terminal session to ask — nothing was tested'];
   }
   const fs = term.app.shell.fs;
-  const { mounted } = await import('/shared/fs/fs.mjs');
+  const { mounted, persistence } = await import('/shared/fs/fs.mjs');
   const index = await (await fetch('/shared/fs/mount.json')).json();
 
   const want = (label, got, expected) => {
@@ -4872,12 +4872,56 @@ MOUNT_ASSERTIONS = """(async () => {
 
   // The repository must not be saved into localStorage: it would go stale against the disk
   // and win on the next reload.
-  const saved = JSON.stringify(fs.serialize());
-  want('the mount is absent from what is saved', saved.includes('/usr/src'), false);
-  want('and so are its files', saved.includes('window.mjs'), false);
-  const stored = window.localStorage.getItem('webxp.fs.v1');
+  //
+  // The first version of this asserted that the image does not contain the string
+  // '/usr/src'. It never does, on any tree: directory rows carry `[name, ino]` pairs and no
+  // absolute path appears anywhere in the format. It was false by construction — the named
+  // pattern in `docs/review.md` — and the sibling assertion below carried the whole claim.
+  const image = fs.serialize();
+  const saved = JSON.stringify(image);
+  want('no mounted file is in what is saved', saved.includes('window.mjs'), false);
+  // Counted, so dropping the filter would fail rather than being invisible: every inode
+  // written has to be one the mount did not graft.
+  const expected = [...fs.inodes.values()].filter((each) => !each.source && !each.mounted).length;
+  want('only unmounted inodes are written', image.inodes.length, expected);
+  // The live key, not a copy of it. `fs.mjs` derives the key from the format version
+  // precisely so there is one, and a hand-written 'webxp.fs.v1' here would read null — and
+  // assert nothing — the moment that version changed.
+  const stored = window.localStorage.getItem(persistence.key);
   if (stored && stored.includes('maplibre')) {
     bad.push('the stored tree contains the repository');
+  }
+
+  // Metadata is free and contents are not — the design's headline claim, and until now it
+  // rested on a script the suite never runs.
+  //
+  // Driven through `shell.run` rather than through keystrokes: the claim is about how many
+  // requests a command makes, and `terminal` already covers the input plumbing.
+  const original = window.fetch;
+  let fetches = 0;
+  window.fetch = (...args) => { fetches += 1; return original.apply(window, args); };
+  const quiet = { write() {}, warn() {}, control() {} };
+  const cost = async (line) => {
+    const before = fetches;
+    await term.app.shell.run(line, quiet);
+    return fetches - before;
+  };
+  try {
+    const src = index.root + '/src';
+    want('ls -l fetches nothing', await cost(`ls -l ${src}`), 0);
+    want('du fetches nothing', await cost(`du -s ${src}`), 0);
+    want('find fetches nothing', await cost(`find ${src} -name '*.mjs'`), 0);
+    want('stat fetches nothing', await cost(`stat ${src}/webxp.mjs`), 0);
+    want('df fetches nothing', await cost('df'), 0);
+    want('reading one file fetches once', await cost(`head -n 1 ${src}/webxp.mjs`), 1);
+    want('reading it again fetches nothing', await cost(`head -n 1 ${src}/webxp.mjs`), 0);
+    want('two names for one file fetch once',
+         await cost(`wc -l ${src}/widgets.mjs ${src}/widgets.mjs`), 1);
+    // Refused before the download, not after: the whole point of carrying sizes.
+    want('an over-ceiling file fetches nothing',
+         await cost(`cat ${index.root}/shared/map/vendor/maplibre-gl.mjs`), 0);
+  } finally {
+    window.fetch = original;
   }
 
   // Nothing ignored is reachable. The same claim the index check makes on disk, made again
@@ -4891,6 +4935,7 @@ MOUNT_ASSERTIONS = """(async () => {
 
 def check_mount(page) -> list[str]:
     """The grafted repository, asked of the filesystem the apps hold."""
+    terminal_session(page)
     try:
         found = page.evaluate(MOUNT_ASSERTIONS, await_promise=True)
     except CDPError as error:
@@ -4973,6 +5018,20 @@ def raise_window(page, win_id: str) -> None:
     time.sleep(0.12)
 
 
+def terminal_session(page) -> str:
+    """The id of a terminal to drive, opening one if no check has left any.
+
+    Without this, `--only explorer` died in `term_parts` on a desktop with no terminal — the
+    documented way to exercise one check did not work for three of them.
+    """
+    open_now = page.evaluate(
+        "window.webxp.windows.filter((w) => w.programId === 'terminal').length"
+    )
+    if not open_now:
+        launch(page, "terminal")
+    return term_parts(page)["id"]
+
+
 def term_run(page, line: str, win_id: str | None = None, settle: float = 0.35) -> str:
     """Type a line into one terminal and return only what it printed.
 
@@ -4997,15 +5056,26 @@ def term_run(page, line: str, win_id: str | None = None, settle: float = 0.35) -
 
 def notepad_parts(page, win_id: str | None = None) -> dict | None:
     """One Notepad window's title, buffer, status and where its text area is."""
+    found = _notepad_parts(page, win_id)
+    if found and found.get("error"):
+        raise CDPError(found["error"])
+    return found
+
+
+def _notepad_parts(page, win_id: str | None = None) -> dict | None:
     return page.evaluate(
         "(() => { const pads = window.webxp.windows.filter((w) => w.programId === 'notepad');"
         " const w = %s ? pads.find((p) => p.id === %s) : pads[pads.length - 1];"
         " if (!w) return null;"
         " const area = w.el.querySelector('.notepad-area');"
-        " const r = area ? area.getBoundingClientRect() : null;"
-        " return { id: w.id, title: w.titleText, value: area ? area.value : null,"
+        # A missing text area is reported as itself. Returning null for `value` and 0 for
+        # the coordinates made a renamed class fail as 'Notepad overwrote an external change
+        # silently', which sends the reader after the wrong defect.
+        " if (!area) return { id: w.id, error: 'no .notepad-area in the Notepad window' };"
+        " const r = area.getBoundingClientRect();"
+        " return { id: w.id, title: w.titleText, value: area.value,"
         "          status: w.statusEl ? w.statusEl.textContent : '',"
-        "          x: r ? r.left + 20 : 0, y: r ? r.top + 10 : 0 }; })()"
+        "          x: r.left + 20, y: r.top + 10 }; })()"
         % (json.dumps(win_id) if win_id else "null", json.dumps(win_id) if win_id else "null")
     )
 
@@ -5540,9 +5610,20 @@ EXPLORER_PARTS = """(() => {
     address: address.value,
     upDisabled: up.disabled,
     note: (list.querySelector('.exp-note') || {}).textContent || '',
-    modifiedShown: head.querySelector('.exp-modified')
-      ? getComputedStyle(head.querySelector('.exp-modified')).display !== 'none'
-      : null,
+    // Measured on a *row's* cell, not the header's. The header is a sibling of the thing
+    // under test, so hiding only the heading passed while every row still rendered a fourth
+    // cell into a three-column grid. 'absent' rather than null, so a renamed class is a
+    // failed comparison instead of a falsy value that reads as a pass.
+    modifiedShown: (() => {
+      const cell = list.querySelector('.exp-row .exp-modified');
+      if (!cell) return 'absent';
+      return getComputedStyle(cell).display !== 'none';
+    })(),
+    headColumns: getComputedStyle(head).gridTemplateColumns.split(' ').length,
+    rowColumns: (() => {
+      const row = list.querySelector('.exp-row');
+      return row ? getComputedStyle(row).gridTemplateColumns.split(' ').length : 0;
+    })(),
     rows,
   };
 })()"""
@@ -5570,7 +5651,7 @@ def check_explorer(page) -> list[str]:
     are named so a failure says which check left them behind.
     """
     bad = []
-    shell = term_parts(page)["id"]
+    shell = terminal_session(page)
     term_run(page, "rm -rf ~/exp-probe", shell)
     term_run(page, "mkdir -p ~/exp-probe/inner", shell)
     term_run(page, "echo twenty-characters-x > ~/exp-probe/note.txt", shell)
@@ -5596,12 +5677,51 @@ def check_explorer(page) -> list[str]:
     if note is None:
         bad.append("explorer: the file this check created is not listed")
     else:
-        if note["size"] != "20 B":
-            bad.append(f"explorer: note.txt's size reads {note['size']!r}, want '20 B'")
+        # The Name cell, asserted. Rows are found by `data-name`, so a renamed `.exp-name`
+        # left every label reading 'MISSING' with the suite green.
+        if note["label"] != "note.txt":
+            bad.append(f"explorer: note.txt's Name cell reads {note['label']!r}")
+        if note["size"] != "20 chars":
+            bad.append(f"explorer: note.txt's size reads {note['size']!r}, want '20 chars'")
         if note["type"] != "File":
             bad.append(f"explorer: note.txt's type reads {note['type']!r}")
+        # The Modified cell had no assertion anywhere: `stamp()` could return
+        # 'undefined NaN:NaN' and every check passed.
+        if not re.match(r"^[A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}$", note["modified"]):
+            bad.append(f"explorer: note.txt's Modified cell reads {note['modified']!r}")
         if note["height"] < 8:
             bad.append(f"explorer: a row laid out {note['height']}px high — nothing to click")
+
+    # Selection, by real input, and the status bar that reports it. Both were collected and
+    # neither was asserted, which is why a keyboard that could never select a row was
+    # invisible to this check.
+    target = explorer_row(parts, "note.txt")
+    if target is not None:
+        raise_window(page, window_id)
+        mouse(page, "mousePressed", target["x"], target["y"], buttons=1)
+        mouse(page, "mouseReleased", target["x"], target["y"], buttons=0)
+        time.sleep(0.2)
+        picked = explorer_parts(page, window_id)
+        chosen = [row["name"] for row in picked["rows"] if row["selected"]]
+        if chosen != ["note.txt"]:
+            bad.append(f"explorer: clicking a row selected {chosen}")
+        if "note.txt" not in picked["status"]:
+            bad.append(f"explorer: the status bar after a click reads {picked['status']!r}")
+        # Space is the select key in a listbox, and it must not navigate.
+        page.press("Space")
+        time.sleep(0.3)
+        spaced = explorer_parts(page, window_id)
+        if spaced["address"] != "/home/user/exp-probe":
+            bad.append(f"explorer: Space navigated to {spaced['address']!r}")
+        if not any(row["selected"] for row in spaced["rows"]):
+            bad.append("explorer: Space left nothing selected — the keyboard cannot select")
+        # One tab stop for the listbox, not one per file.
+        stops = page.evaluate(
+            "window.webxp.windows.find((w) => w.id === %s)"
+            ".el.querySelectorAll('.exp-row[tabindex=\"0\"]').length" % json.dumps(window_id)
+        )
+        if stops != 1:
+            bad.append(f"explorer: {stops} rows are tab stops, want 1")
 
     link = explorer_row(parts, "shortcut")
     if link is None:
@@ -5720,6 +5840,56 @@ def check_explorer(page) -> list[str]:
     if sealed["rows"]:
         bad.append("explorer: an unreadable folder listed rows")
 
+    # The selection's colours, which `app.css` states as ratios and nothing asserted.
+    # `active styling` does this for the title bar; the same two lines of arithmetic cover
+    # the one other surface in this app that carries text on a filled background.
+    #
+    # It navigates somewhere with rows first rather than inheriting whatever the previous
+    # block left on screen — which was the sealed folder, with none. `docs/review.md` rule 4.
+    page.evaluate(
+        "window.webxp.windows.find((w) => w.id === %s).app.show('/home/user/exp-probe')"
+        % json.dumps(window_id)
+    )
+    time.sleep(0.3)
+    colours = page.evaluate(
+        "(() => { const w = window.webxp.windows.find((w) => w.id === %s);"
+        " const row = w.el.querySelector('.exp-row[aria-selected=\"true\"]')"
+        "   || w.el.querySelector('.exp-row');"
+        " if (!row) return { error: 'no row to measure' };"
+        " row.setAttribute('aria-selected', 'true');"
+        " const seen = getComputedStyle(row);"
+        " const type = row.querySelector('.exp-type');"
+        " if (!type) return { error: 'no .exp-type cell to measure' };"
+        " return { ink: seen.color, fill: seen.backgroundColor,"
+        "          typeInk: getComputedStyle(type).color }; })()"
+        % json.dumps(window_id)
+    )
+    if colours.get("error"):
+        bad.append(f"explorer: {colours['error']}")
+    else:
+        fill = rgb_stops(colours["fill"])
+        ink = rgb_stops(colours["ink"])
+        type_ink = rgb_stops(colours["typeInk"])
+        if not fill or not ink:
+            bad.append(f"explorer: could not read the selection's colours — {colours}")
+        else:
+            ratio = contrast(ink[0], fill[0])
+            if ratio < AA_NORMAL:
+                bad.append(
+                    f"explorer: selected text measures {ratio:.2f}:1 on the selection "
+                    f"background, below AA's {AA_NORMAL}"
+                )
+            # The type and date columns are `--muted`, which is chosen for white and
+            # measures 2.14:1 on the selection blue. They inherit the row's colour instead,
+            # and this is the assertion that keeps them inheriting.
+            if type_ink:
+                secondary = contrast(type_ink[0], fill[0])
+                if secondary < AA_NORMAL:
+                    bad.append(
+                        f"explorer: the Type column measures {secondary:.2f}:1 on a selected "
+                        f"row, below AA's {AA_NORMAL} — it is not inheriting the row's colour"
+                    )
+
     # The columns reflow. Both extremes, because a layout checked at one width is a layout
     # checked nowhere.
     page.evaluate(
@@ -5733,10 +5903,18 @@ def check_explorer(page) -> list[str]:
     )
     time.sleep(0.3)
     narrow = explorer_parts(page, window_id)
-    if not wide["modifiedShown"]:
-        bad.append("explorer: the Modified column is hidden in a 660px window")
-    if narrow["modifiedShown"]:
-        bad.append("explorer: the Modified column is still shown in a 320px window")
+    if wide["modifiedShown"] is not True:
+        bad.append(f"explorer: the Modified column reads {wide['modifiedShown']!r} in a 660px window")
+    if narrow["modifiedShown"] is not False:
+        bad.append(f"explorer: the Modified column reads {narrow['modifiedShown']!r} in a 320px window")
+    # The header and the rows must agree about how many columns there are, at both widths —
+    # the drift that hiding one and not the other produces.
+    for label, parts_at in (("660px", wide), ("320px", narrow)):
+        if parts_at["headColumns"] != parts_at["rowColumns"]:
+            bad.append(
+                f"explorer: at {label} the header has {parts_at['headColumns']} columns and "
+                f"the rows have {parts_at['rowColumns']}"
+            )
 
     term_run(page, "chmod 755 ~/exp-probe/sealed", shell)
     term_run(page, "rm -rf ~/exp-probe", shell)
@@ -5750,7 +5928,7 @@ def check_open_across_apps(page) -> list[str]:
     reads. Anything less is two apps that each work.
     """
     bad = []
-    shell = term_parts(page)["id"]
+    shell = terminal_session(page)
     term_run(page, "echo bridge-one > /tmp/bridge.txt", shell)
     opened = term_run(page, "open /tmp/bridge.txt", shell, settle=1.2)
     if "opened /tmp/bridge.txt in Notepad" not in opened:

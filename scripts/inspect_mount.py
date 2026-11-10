@@ -148,6 +148,18 @@ def main(argv: list[str] | None = None) -> int:
                 "   r.querySelector('.exp-type').textContent.trim()].join(' | ')); })()"
             )
             print("\nExplorer at /usr/src/webxp/src:")
+            if not rows:
+                # An inspector that prints nothing and exits 0 is the `inspect_noise.py`
+                # defect recorded in `docs/review.md`: it queried a class that exists nowhere
+                # and reported an empty legend as a result. `src/` has nine files, so zero
+                # rows means the selector moved or the folder failed to list — either way
+                # there is nothing here to look at, and saying so is the only honest exit.
+                print(
+                    "  no .exp-row in the Explorer window — the selector moved, or the "
+                    "folder did not list",
+                    file=sys.stderr,
+                )
+                return 1
             for row in rows:
                 print(f"  {row}")
             data = page.call("Page.captureScreenshot", format="png")
