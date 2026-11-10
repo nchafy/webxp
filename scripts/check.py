@@ -23,12 +23,14 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import re
 import shutil
 import subprocess
 import sys
 import time
+import traceback
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -43,6 +45,19 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 #: stylesheet's is, and the narrow case that does matter — content inside a small window —
 #: is exercised by resizing a window rather than by shrinking the screen.
 VIEWPORT = (1280, 820)
+
+#: The viewport `check_viewport_shrink` forces, small enough that a window parked at x=1000
+#: is entirely off the desktop. Named rather than inlined because that check has to assert
+#: the shrink arrived at the surface, not merely that it was requested.
+SHRUNK_VIEWPORT = (520, 420)
+
+#: How much of a window must stay reachable, from `src/window.mjs`'s `MIN_VISIBLE`.
+#:
+#: Asserted at the documented figure. Both clamp checks previously allowed 60 while the
+#: product and `docs/windows.md` promise 72, so twelve pixels of the guarantee could be lost
+#: with nothing failing — `verification.md` §"Harness honesty": a check must not be weakened
+#: to make it pass.
+MIN_VISIBLE = 72
 
 #: The minimums `src/window.mjs` exports. Duplicated here because a check that imports the
 #: value it is checking cannot catch the value changing.
@@ -121,9 +136,12 @@ IGNORED: tuple[str, ...] = (
 #: The desktop's whole observable state, read in one round trip.
 #:
 #: `window.webxp` is the Desktop instance `demo/boot.mjs` publishes for the devtools
-#: console. Geometry is read from `w.box`, which is what the window actually believes, and
-#: from `getBoundingClientRect`, which is what the browser laid out. Both, because a box
-#: the code updated and the layout ignored is exactly the bug a screenshot misses.
+#: console. Geometry comes back three ways, and the distinction between them is the point:
+#: `box` is what the last gesture asked for, `placed` is `box` held inside the desktop that
+#: exists now and is what reaches `--win-x/y/w/h`, and `rect` is what the browser actually
+#: laid out. All three, because a geometry the code updated and the layout ignored is
+#: exactly the bug a screenshot misses — and because a clamp check reading the request where
+#: it means the placement measures the window the user cannot see.
 PROBE = """(() => {
   const d = window.webxp;
   if (!d) return { error: 'window.webxp missing' };
@@ -141,7 +159,24 @@ PROBE = """(() => {
         title: w.titleText,
         state: w.state,
         hidden: w.el.hidden,
+        id: w.id,
+        // Holes named here rather than left for Python to trip over.
+        //
+        // `in`, never a truth test: `0` is a legitimate coordinate, so `if (!w.placed.x)`
+        // calls a window at the left edge broken. And `JSON.stringify` drops a key whose
+        // value is `undefined` rather than sending `null`, so a field read before it was
+        // set arrives with the key *absent* — which is how `KeyError: 'w'` presented, at a
+        // subscript hundreds of lines away from the early read. The page knows which field
+        // was not there; by the time Python has the object, that is gone.
+        holes: ['box', 'placed'].flatMap((name) => {
+          const source = w[name];
+          if (!source || typeof source !== 'object') return [name + ' is ' + String(source)];
+          return ['x', 'y', 'w', 'h']
+            .filter((axis) => !(axis in source))
+            .map((axis) => name + '.' + axis);
+        }),
         box: { ...w.box },
+        placed: { ...w.placed },
         rect: { x: Math.round(rect.left), y: Math.round(rect.top),
                 w: Math.round(rect.width), h: Math.round(rect.height) },
         z: Number(w.el.style.getPropertyValue('--win-z')) || 0,
@@ -175,6 +210,19 @@ def console_errors(page) -> list[str]:
             if entry.get("level") == "error":
                 found.append(f"log: {entry.get('text')} {entry.get('url') or ''}".strip())
     return [m for m in found if not any(skip in m for skip in IGNORED)]
+
+
+#: Console output drained before the end-of-run sweep, kept rather than discarded.
+#:
+#: `cdp.py`'s `consume_events` is destructive, so a bare `console_errors(page)` mid-run wiped
+#: the buffer and every error raised by a later check vanished. Anything drained for a reason
+#: lands here and is folded into the run's failures.
+PENDING: list[str] = []
+
+
+def drain(page) -> None:
+    """Take the console buffer and keep it, for a check that must clear it to do its job."""
+    PENDING.extend(console_errors(page))
 
 
 def drain_expecting(page, needle: str, label: str) -> list[str]:
@@ -249,7 +297,8 @@ def shoot(page, target: Path) -> int:
 ARROWS = {"ArrowLeft": 37, "ArrowUp": 38, "ArrowRight": 39, "ArrowDown": 40}
 
 
-def mouse(page, event_type: str, x: float, y: float, *, buttons: int = 0) -> None:
+def mouse(page, event_type: str, x: float, y: float, *, buttons: int = 0,
+          clicks: int = 1) -> None:
     page.call(
         "Input.dispatchMouseEvent",
         type=event_type,
@@ -257,8 +306,21 @@ def mouse(page, event_type: str, x: float, y: float, *, buttons: int = 0) -> Non
         y=float(y),
         button="left",
         buttons=buttons,
-        clickCount=1,
+        clickCount=clicks,
     )
+
+
+def double_click(page, x: float, y: float) -> None:
+    """A real double-click: two presses, the second carrying `clickCount: 2`.
+
+    The count is what makes it one. Two presses that both say `clickCount: 1` are two single
+    clicks and the browser never fires `dblclick` — which looks exactly like an app that
+    ignores double-clicks, and is how this helper came to exist.
+    """
+    for count in (1, 2):
+        mouse(page, "mousePressed", x, y, buttons=1, clicks=count)
+        mouse(page, "mouseReleased", x, y, buttons=0, clicks=count)
+    time.sleep(0.1)
 
 
 def drag(page, x0: float, y0: float, dx: float, dy: float, steps: int = 4) -> None:
@@ -294,11 +356,138 @@ def arrow(page, key: str, *, shift: bool = False) -> None:
 # ---------------------------------------------------------------------------
 
 
+class HarnessError(CDPError):
+    """The harness could not reach, or could not read, what it was pointed at.
+
+    The distinction this exists to make: a check's returned list says *what was measured is
+    wrong*, and this says *the measurement did not happen*. The suite had one word for both
+    — a bare `CDPError` out of `probe` — and `verification.md` §"Harness honesty" makes the
+    second the worse of the two, because a run that could not measure must not report clean.
+
+    A `CDPError` subclass so the one existing `except CDPError` keeps catching it. Caught by
+    the check loop in `main`, which reports it as a failed check under that check's name.
+    """
+
+
+#: The four numbers every geometry reading carries.
+GEOMETRY_KEYS = ("x", "y", "w", "h")
+
+#: The three readings `PROBE` returns per window. The names, and the reason they differ, are
+#: at `PROBE`.
+GEOMETRY_READINGS = ("box", "placed", "rect")
+
+
+#: How long `probe` waits before deciding a geometry that was not there is not coming.
+#:
+#: The wait is what separates "the probe was early" from "the field is gone". One re-read is
+#: enough to tell them apart and neither answer is a pass, so this is short.
+PROBE_RETRY_S = 0.3
+
+
 def probe(page) -> dict:
-    state = page.evaluate(PROBE)
-    if state.get("error"):
-        raise CDPError(f"probe failed: {state['error']}")
+    """The desktop's state, with the keys every check indexes into proved present.
+
+    Validated rather than trusted. A peer ran the suite mid-edit and hit `KeyError: 'w'` on
+    `after["placed"]["w"]`: it killed the run inside the check loop while the log still read
+    14 passes, so the 26 checks after it were never measured and nothing said so. A probe
+    that hands back a dict missing a key it promises turns a harness defect into a product
+    verdict two frames later, in whichever check indexes it first.
+
+    So the failure is raised here, where the shape is known and the message can name the
+    window and the key, rather than wherever the first subscript happens to land.
+
+    Three outcomes, not two, because they send a reader to three different places:
+
+    - *not yet* — the field was not populated when the probe ran and is there a moment
+      later. That is this harness reading too early, and the fix is here.
+    - *absent* — it is still not there after `PROBE_RETRY_S`. That is the product: a renamed
+      field, or a window that never finished being built.
+    - *wrong* — the key is there holding something that is not a number. That is arithmetic,
+      and it is what the checks themselves are about.
+
+    None of the three is a pass.
+    """
+    state, missing = _probe_once(page)
+    if missing:
+        # One re-read, which is the only thing that can tell "early" from "gone".
+        time.sleep(PROBE_RETRY_S)
+        _, still = _probe_once(page)
+        if not still:
+            raise HarnessError(
+                "probe: the geometry was not populated when the probe ran and is there "
+                f"{PROBE_RETRY_S}s later — this harness read too early: "
+                + "; ".join(missing)
+            )
+        raise HarnessError(
+            f"probe: the geometry PROBE promises is not all there, still, after "
+            f"{PROBE_RETRY_S}s — " + "; ".join(still)
+        )
     return state
+
+
+def _probe_once(page) -> tuple[dict, list[str]]:
+    """One read of the desktop's state, and everything wrong with its shape.
+
+    Split from `probe` so the re-read that distinguishes "early" from "gone" is the same
+    code path as the first read. A second, looser reader would be a second definition of
+    what a valid geometry is.
+    """
+    state = page.evaluate(PROBE)
+    if not isinstance(state, dict):
+        raise HarnessError(f"probe: the desktop answered {state!r}, not a state object")
+    if state.get("error"):
+        raise HarnessError(f"probe: {state['error']}")
+    for key in ("surface", "wins"):
+        if key not in state:
+            raise HarnessError(f"probe: no {key!r} in the state — PROBE and the checks disagree")
+    if not isinstance(state["wins"], list):
+        raise HarnessError(f"probe: 'wins' is {state['wins']!r}, not a list")
+
+    missing: list[str] = []
+    for index, win in enumerate(state["wins"]):
+        # The window id, because that is what names it in the DOM and in the shell's own
+        # logs. The program id is the friendlier name, so both when both are there.
+        who = win.get("id") or f"wins[{index}]"
+        if win.get("program"):
+            who = f"{who} ({win['program']})"
+        # What the page itself said was not there. Kept first because it is the only report
+        # that distinguishes an absent key from a key the serialiser dropped: `PROBE` tested
+        # with `in`, before `JSON.stringify` erased the difference.
+        for hole in win.get("holes") or []:
+            missing.append(f"{who}: the page reports no {hole}")
+        for reading in GEOMETRY_READINGS:
+            geometry = win.get(reading)
+            if not isinstance(geometry, dict):
+                missing.append(f"{who}: {reading} is {geometry!r}, not a geometry")
+                continue
+            # An absent key and a present one holding something that is not a number point
+            # at different places, so they are reported differently. Every axis absent means
+            # the object `PROBE` spread was `undefined` — the field has been renamed, or the
+            # browser is running a different `window.mjs` from the one on disk. A present
+            # key holding `None` is a number that did not survive JSON: `NaN` or an
+            # infinity, which is arithmetic. Reported as one line when the whole reading is
+            # gone, because four identical lines bury the fact that it is all four.
+            absent = [axis for axis in GEOMETRY_KEYS if axis not in geometry]
+            if len(absent) == len(GEOMETRY_KEYS):
+                missing.append(
+                    f"{who}: {reading} came back as {{}} — whatever PROBE spread was "
+                    "undefined, so this is a renamed field or a stale module, not a bad number"
+                )
+                continue
+            for axis in GEOMETRY_KEYS:
+                if axis in absent:
+                    missing.append(f"{who}: {reading}[{axis!r}] is absent")
+                    continue
+                value = geometry[axis]
+                # `bool` first: it is an `int` in Python, and a geometry that came back
+                # `True` is not a measurement.
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    missing.append(
+                        f"{who}: {reading}[{axis!r}] is {value!r}, not a number"
+                        + (" (NaN or an infinity does not survive JSON)"
+                           if value is None else "")
+                    )
+    return state, missing
 
 
 def window_of(state: dict, program: str) -> dict | None:
@@ -383,20 +572,208 @@ def near(got: float, want: float, slack: float = 2.0) -> bool:
     return abs(got - want) <= slack
 
 
+#: Files the whole suite is built on, fetched over HTTP and compared to disk before anything
+#: is measured. The page itself, plus the two modules whose fields every geometry assertion
+#: indexes into.
+TREE_WITNESSES = ("index.html", "src/window.mjs", "src/desktop.mjs", "src/icons.mjs")
+
+
+def serving_this_tree(base: str) -> list[str]:
+    """Prove the server answering on this port is serving *this* working tree.
+
+    The readiness loop in `main` is satisfied by anything that answers 200 on the port, and
+    `http.server` exits with `Address already in use` rather than failing loudly where the
+    harness can see it. So a second process already on that port — a peer's temp checkout at
+    another revision, a leftover server from an earlier run, another agent in the same tree —
+    silently becomes the thing every check in this file measures. `docs/review.md`: testing
+    a stale copy and reporting clean is the worst outcome available.
+
+    Checking the subprocess is still alive is not enough and was tried: the loop breaks on
+    the first 200, which the *other* server can answer while ours is still on its way to
+    exiting, so `poll()` is `None` and the inference is wrong. Measured against a decoy on
+    the port — it passed the process check and the run went on to report `window.webxp
+    missing`, blaming the page for a server mix-up.
+
+    So this measures instead of inferring: fetch the bytes and compare them to the file on
+    disk. That also catches an HTTP cache serving a stale module, which is the same defect
+    arriving by a different route.
+
+    This is the diagnosis for one run that was never explained at the time: `placed` came
+    back `{}`, `cascadeSlot` undefined, `Desktop.destroy` not a function and zero `var()`
+    fills in the icon set — four independent symptoms of a page built from older modules —
+    while every file on disk was newer than the failure and the next run was clean.
+    """
+    bad = []
+    for name in TREE_WITNESSES:
+        path = REPO_ROOT / name
+        if not path.is_file():
+            bad.append(f"{name} is not in {REPO_ROOT} — the harness is pointed at the wrong tree")
+            continue
+        try:
+            with urllib.request.urlopen(f"{base}/{name}", timeout=10) as answer:
+                served = answer.read()
+        except OSError as error:
+            bad.append(f"{base}/{name} could not be fetched — {error}")
+            continue
+        on_disk = path.read_bytes()
+        if served != on_disk:
+            bad.append(
+                f"{base}/{name} served {len(served)} bytes "
+                f"(sha256 {hashlib.sha256(served).hexdigest()[:12]}) but {name} on disk is "
+                f"{len(on_disk)} bytes (sha256 {hashlib.sha256(on_disk).hexdigest()[:12]}). "
+                "Something other than this tree is answering on that port, or a cache is "
+                "between the two. Every check would measure that copy, not this one — "
+                "re-run with --port on a free port."
+            )
+    return bad
+
+
+def set_viewport(page, width: int, height: int, settle: float = 0.4) -> None:
+    """Force the layout viewport and wait out `watchViewport`'s coalescing frame.
+
+    One definition, because four checks resize the browser and a resize that is not waited
+    out measures the desktop before the re-clamp rather than after it.
+    """
+    page.call(
+        "Emulation.setDeviceMetricsOverride",
+        width=width, height=height, deviceScaleFactor=1, mobile=False,
+    )
+    time.sleep(settle)
+
+
+#: Collect what the shell's live region says, per mutation, into `window.__said`.
+#:
+#: Per mutation and not by reading `textContent` afterwards: `announce` clears the region and
+#: writes it in the same turn, so two announcements inside one task are one final value and a
+#: reader that polls the text sees only the last. Measured — polling the text reported
+#: `['Read me restored']` for a minimise followed by a restore, losing the minimise the
+#: assertion is about.
+WATCH_LIVE = """(() => {
+  const live = document.getElementById('webxp-live');
+  if (!live) return false;
+  window.__said = [];
+  const observer = new MutationObserver((records) => {
+    for (const record of records) {
+      for (const node of record.addedNodes) {
+        const text = (node.textContent || '').trim();
+        if (text) window.__said.push(text);
+      }
+    }
+  });
+  observer.observe(live, { childList: true, characterData: true, subtree: true });
+  window.__saidStop = () => { observer.disconnect(); delete window.__saidStop; };
+  return true;
+})()"""
+
+
+def watch_live(page) -> None:
+    """Start recording the live region. A missing region is a failure, never a skip."""
+    if not page.evaluate(WATCH_LIVE):
+        raise HarnessError(
+            "no #webxp-live element — every announcement assertion below would pass on its "
+            "absence"
+        )
+
+
+def said(page) -> list[str]:
+    return page.evaluate("window.__said || []")
+
+
+def stop_watching_live(page) -> None:
+    page.evaluate("(() => { if (window.__saidStop) window.__saidStop(); return true; })()")
+
+
 # ---------------------------------------------------------------------------
 # Contrast. The stylesheets claim specific ratios in their comments, as the reason for
 # departing from Luna's own values; these turn the claim into something that fails.
 # ---------------------------------------------------------------------------
 
-RGB = re.compile(r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)")
+RGB = re.compile(r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*[,/]\s*([\d.]+))?")
+
+#: Installed in the page before the contrast sweep, and used by its probe.
+#:
+#: `getComputedStyle` hands back whatever notation the stylesheet used — Chrome does not
+#: convert `oklch()` to `rgb()` — so a regex over `rgb()` reads nothing from a modern palette
+#: and every assertion built on it vanishes. A canvas `fillStyle` round trip normalises any
+#: colour the browser can parse, which is the set that matters: if the browser cannot parse
+#: it, it is not painted either.
+#:
+#: Gradient stops are split at top-level commas so a nested `rgb(1, 2, 3)` or
+#: `color-mix(in oklab, a, b)` is not torn apart by its own separators.
+COLOUR_READER = """
+window.__wxColours = (css) => {
+  if (!css || css === 'none') return [];
+  const ctx = document.createElement('canvas').getContext('2d');
+  const read = (token) => {
+    const probe = token.trim().replace(/\s+(-?[\d.]+(%|px|r?em)|calc\(.*\))$/, '').trim();
+    if (!probe) return null;
+    ctx.fillStyle = '#000';
+    const before = ctx.fillStyle;
+    ctx.fillStyle = probe;
+    if (ctx.fillStyle === before && probe !== '#000' && probe !== 'black') return null;
+    return ctx.fillStyle;
+  };
+  // The wrapper comes off first. Splitting before stripping it treated a bare
+  // `rgb(255, 255, 255)` as three parts, because a colour function opens a depth too.
+  const wrapper = /^\s*(repeating-)?(linear|radial|conic)-gradient\(([\s\S]*)\)\s*$/i.exec(css);
+  const body = wrapper ? wrapper[3] : css;
+
+  // Top-level comma split, so nested colour functions survive.
+  const parts = [];
+  let depth = 0;
+  let current = '';
+  for (const ch of body) {
+    if (ch === '(') depth += 1;
+    if (ch === ')') depth -= 1;
+    if (ch === ',' && depth === 0) { parts.push(current); current = ''; continue; }
+    current += ch;
+  }
+  parts.push(current);
+
+  const out = [];
+  for (const part of parts) {
+    // A gradient's geometry, not a colour.
+    if (/^\s*(to\b|-?[\d.]+(deg|rad|turn|grad)|in\b|from\b|circle|ellipse|at\b|closest|farthest)/i.test(part)) continue;
+    if (!part.trim()) continue;
+    const got = read(part);
+    if (got) out.push(got);
+    else out.push('UNREADABLE:' + part.trim());
+  }
+  return out;
+};
+"""
 
 #: WCAG 2.2 SC 1.4.3 for text below 18.66px bold / 24px regular.
 AA_NORMAL = 4.5
 
 
-def rgb_stops(css: str) -> list[tuple[int, int, int]]:
-    """Every colour in a resolved `background-image` or `background-color`."""
-    return [(int(r), int(g), int(b)) for r, g, b in RGB.findall(css or "")]
+def rgb_stops(values) -> list[tuple[int, int, int]]:
+    """Opaque colours out of `__wxColours`' normalised output.
+
+    A fully transparent colour is dropped: it is not a surface anything sits on. An entry the
+    page could not read is kept as `None` by `unreadable` below, which is what makes an
+    unparseable palette a failure rather than an empty list.
+    """
+    out = []
+    for value in values or []:
+        if not isinstance(value, str) or value.startswith("UNREADABLE:"):
+            continue
+        if value.startswith("#"):
+            hexed = value.lstrip("#")
+            out.append(tuple(int(hexed[i:i + 2], 16) for i in (0, 2, 4)))
+            continue
+        found = RGB.findall(value)
+        for r, g, b, a in found:
+            if a and float(a) == 0:
+                continue
+            out.append((int(r), int(g), int(b)))
+    return out
+
+
+def unreadable(values) -> list[str]:
+    """Colours the page could not parse. Any entry here is a failure, never a skip."""
+    return [v[len("UNREADABLE:"):] for v in (values or [])
+            if isinstance(v, str) and v.startswith("UNREADABLE:")]
 
 
 def luminance(colour: tuple[int, int, int]) -> float:
@@ -494,9 +871,29 @@ def check_launch_all(page) -> list[str]:
 
     # The cascade. Two windows at the same origin is a pile, which is the thing the cascade
     # exists to prevent.
-    origins = {(w["box"]["x"], w["box"]["y"]) for w in state["wins"]}
+    #
+    # On `placed`, because the pile is what the reader sees: `placed` is what reaches
+    # `--win-x/y`, and two windows whose requests differ while their placements coincide are
+    # one window as far as anyone looking at the screen is concerned.
+    #
+    # Measured, because the reason given for the change was not the reason it is right.
+    # `clampBox` cannot collapse two *cascade* origins: the y cap is `surface.h - barHeight`
+    # and `cascade` only ever writes `CASCADE_TOP + slot * CASCADE_STEP`, which needs a
+    # window shorter than 12px to reach it, and `cascade` caps its own x below the clamp's.
+    # Swept at five viewports (1280x820, 520x420, 300x820, 1280x300, 820x1400) the two
+    # readings agreed on every one, including the two where the cascade itself collapses —
+    # 5 origins of 7 at 520x420 and 1 of 7 at 1280x300. So this is not a defect `box` was
+    # hiding here.
+    #
+    # It is still the reading the invariant wants, and it catches a pile `box` cannot see:
+    # two programs declaring `x: 5000, y: 5000` and `x: 6000, y: 6000` — explicit origins
+    # never cascade — come back as 2 distinct `box` origins and 1 distinct `placed` origin,
+    # both at (1208, 762). That measurement is the control for this line.
+    origins = {(w["placed"]["x"], w["placed"]["y"]) for w in state["wins"]}
     if len(origins) != len(state["wins"]):
-        bad.append(f"launch: {len(state['wins'])} windows at {len(origins)} distinct origins")
+        bad.append(
+            f"launch: {len(state['wins'])} windows at {len(origins)} distinct placed origins"
+        )
 
     # Launch order is z order, and the last one opened is the active one.
     if state["active"] != "about":
@@ -512,8 +909,10 @@ def check_active_styling(page) -> list[str]:
     states resolve to the same gradient looks finished and tells the reader nothing. Read
     from `getComputedStyle`, so a rule that lost its specificity battle is caught.
     """
+    page.evaluate(COLOUR_READER)
     bars = page.evaluate(
         "(() => { const d = window.webxp;"
+        " const C = window.__wxColours;"
         " const pick = (want) => {"
         "   const w = d.windows.find((w) => (d.active === w) === want && w.state !== 'min');"
         "   if (!w) return null;"
@@ -521,14 +920,19 @@ def check_active_styling(page) -> list[str]:
         "   const heading = bar.querySelector('h2');"
         "   const boxes = [...w.el.querySelectorAll('.title-box')].map((b) => {"
         "     const s = getComputedStyle(b);"
-        "     return { label: b.getAttribute('aria-label'), colour: s.color,"
-        "              fill: s.backgroundImage + ' ' + s.backgroundColor }; });"
+        "     return { label: b.getAttribute('aria-label'), colour: C(s.color),"
+        # Read apart, not concatenated. The transparent-black skip below used to test a
+        # substring of the two joined, so a genuine black gradient stop beside a transparent
+        # background colour was skipped — and a black glyph on it is 1:1.
+        "              image: C(s.backgroundImage), fill: C(s.backgroundColor) }; });"
+        "   const bs = getComputedStyle(bar);"
         "   return { program: w.programId,"
-        "            bar: getComputedStyle(bar).backgroundImage,"
+        "            bar: C(bs.backgroundImage), barFill: C(bs.backgroundColor),"
+        "            barRaw: bs.backgroundImage,"
         # The white text lives on the heading, not on the bar. Reading `color` off the bar
         # returns the inherited black and compares black to black, which is a check that
         # cannot fail — the first version of this did exactly that.
-        "            textColour: getComputedStyle(heading).color,"
+        "            textColour: C(getComputedStyle(heading).color),"
         "            boxes }; };"
         " return { active: pick(true), idle: pick(false) }; })()"
     )
@@ -536,21 +940,36 @@ def check_active_styling(page) -> list[str]:
         return ["active styling: need one focused and one unfocused window to compare"]
 
     bad = []
-    if bars["active"]["bar"] == bars["idle"]["bar"]:
+    if bars["active"]["barRaw"] == bars["idle"]["barRaw"]:
         bad.append(
             "active styling: the focused and unfocused title bars resolve to the same "
-            f"gradient ({bars['active']['bar'][:60]}…)"
+            f"gradient ({bars['active']['barRaw'][:60]}…)"
         )
 
     # Luna's own unfocused bar kept near-white text on a pale blue and measured about
     # 2.3:1. Both of these carry white text, so every stop of both gradients has to hold it
     # — including the stop in the middle, which is where a four-stop gradient is lightest.
     for state in ("active", "idle"):
+        surfaces = (bars[state]["bar"] or []) + (bars[state]["barFill"] or [])
+        broken = unreadable(bars[state]["textColour"]) + unreadable(surfaces)
+        if broken:
+            bad.append(
+                f"contrast: could not read these {state} title colours: {broken} — the "
+                "sweep asserts nothing it cannot parse, so this is a failure, not a skip"
+            )
         text = rgb_stops(bars[state]["textColour"])
         if not text:
             bad.append(f"contrast: could not read the {state} title colour")
             continue
-        for stop in rgb_stops(bars[state]["bar"]):
+        stops = rgb_stops(surfaces)
+        if not stops:
+            # The hole this check shipped with: an empty stop list ran the loop zero times
+            # and returned clean over white text on a near-white bar, measured at 1.04:1.
+            bad.append(
+                f"contrast: no readable surface colour behind the {state} title text — "
+                "nothing was measured"
+            )
+        for stop in stops:
             ratio = contrast(text[0], stop)
             if ratio < AA_NORMAL:
                 bad.append(
@@ -560,18 +979,44 @@ def check_active_styling(page) -> list[str]:
         for box in bars[state]["boxes"]:
             glyph = rgb_stops(box["colour"])
             if not glyph:
+                bad.append(
+                    f"contrast: could not read the {state} {box['label']!r} glyph colour "
+                    f"({box['colour']})"
+                )
                 continue
-            for stop in rgb_stops(box["fill"]):
-                # A fully transparent background resolves to rgba(0,0,0,0) and is not a
-                # surface the glyph sits on.
-                if stop == (0, 0, 0) and "rgba(0, 0, 0, 0)" in box["fill"]:
-                    continue
+            # The image's stops, plus the background colour only when it is not transparent.
+            box_stops = rgb_stops(box["image"]) + rgb_stops(box["fill"])
+            if not box_stops:
+                bad.append(
+                    f"contrast: no readable surface behind the {state} {box['label']!r} glyph"
+                )
+            for stop in box_stops:
                 ratio = contrast(glyph[0], stop)
                 if ratio < AA_NORMAL:
                     bad.append(
                         f"contrast: {state} {box['label']!r} glyph {glyph[0]} on {stop} is "
                         f"{ratio:.2f}:1, below {AA_NORMAL}:1"
                     )
+
+    # Which bar is which, not merely that they differ.
+    #
+    # `inspect_titlebars.py` recorded this gap in writing: a focused window wearing the
+    # unfocused gradient passes a difference assertion and is still wrong. Exchange the two
+    # rule bodies — gradient and heading colour together — and every window reads backwards
+    # while the difference and both contrast assertions still pass. Luna's focused bar is the
+    # saturated dark one; the unfocused is the pale wash. Darkness is the property a reader
+    # uses to tell them apart, so that is what is pinned.
+    active_stops = rgb_stops(bars["active"]["bar"]) + rgb_stops(bars["active"]["barFill"])
+    idle_stops = rgb_stops(bars["idle"]["bar"]) + rgb_stops(bars["idle"]["barFill"])
+    if active_stops and idle_stops:
+        active_mean = sum(luminance(c) for c in active_stops) / len(active_stops)
+        idle_mean = sum(luminance(c) for c in idle_stops) / len(idle_stops)
+        if active_mean >= idle_mean:
+            bad.append(
+                f"active styling: the focused bar (mean luminance {active_mean:.3f}) is not "
+                f"darker than the unfocused one ({idle_mean:.3f}) — the two states are "
+                "swapped, so every window reads backwards"
+            )
 
     # The taskbar buttons carry window titles, which is text a reader has to pick a window
     # out of. Both states, because the pressed one is a different gradient.
@@ -580,18 +1025,30 @@ def check_active_styling(page) -> list[str]:
     # measures 2.16:1 and is the one place the imitation is kept over the correction;
     # `docs/windows.md` records that with the number.
     buttons = page.evaluate(
-        "[...document.querySelectorAll('.task-button')].map((b) => {"
+        "(() => { const C = window.__wxColours;"
+        " return [...document.querySelectorAll('.task-button')].map((b) => {"
         " const s = getComputedStyle(b);"
-        " return { pressed: b.getAttribute('aria-pressed'), colour: s.color,"
-        "          fill: s.backgroundImage + ' ' + s.backgroundColor }; })"
+        " return { pressed: b.getAttribute('aria-pressed'), colour: C(s.color),"
+        "          image: C(s.backgroundImage), fill: C(s.backgroundColor) }; }); })()"
     )
+    # No buttons means no windows, which is not a clean taskbar — it is a sweep over nothing.
+    if not buttons:
+        bad.append("contrast: no taskbar buttons to measure; the sweep asserted nothing")
     for button in buttons:
         text = rgb_stops(button["colour"])
         if not text:
+            bad.append(
+                f"contrast: could not read a taskbar button's text colour "
+                f"({button['colour']}) — a failure, not a skip"
+            )
             continue
-        for stop in rgb_stops(button["fill"]):
-            if stop == (0, 0, 0) and "rgba(0, 0, 0, 0)" in button["fill"]:
-                continue
+        stops = rgb_stops(button["image"]) + rgb_stops(button["fill"])
+        if not stops:
+            bad.append(
+                f"contrast: no readable surface behind a taskbar button "
+                f"(pressed={button['pressed']})"
+            )
+        for stop in stops:
             ratio = contrast(text[0], stop)
             if ratio < AA_NORMAL:
                 bad.append(
@@ -672,8 +1129,15 @@ def check_drag(page, *, invert: bool = False) -> list[str]:
     drag(page, bar["x"] + 40, bar["y"] + bar["h"] / 2, dx, dy)
 
     after = need(probe(page), "readme")
-    want_x = before["box"]["x"] + dx
-    want_y = before["box"]["y"] + dy
+    # `after["box"]` against `before["placed"]`, which is the move gesture's own contract:
+    # `beginGesture` seeds `start` from `placed` and `applyGesture` writes `start + delta`
+    # straight into `box` (`src/window.mjs`). Reading `before["box"]` instead measures a
+    # position the gesture never started from, and it fires on a correct drag whenever a
+    # clamp is live. Measured from a y-clamped start (`box.y=-50`, `placed.y=0`):
+    # `drag: box went to (550, 90), want (550, 40)` — a pass that depended on nothing ahead
+    # of this check in `CHECKS` leaving a clamp on.
+    want_x = before["placed"]["x"] + dx
+    want_y = before["placed"]["y"] + dy
     moved = near(after["box"]["x"], want_x) and near(after["box"]["y"], want_y)
 
     if invert:
@@ -732,19 +1196,48 @@ def check_resize_corner(page) -> list[str]:
         return ["resize: no south-east grip laid out"]
 
     dx, dy = 130, 70
-    drag(page, grip["x"] + grip["w"] / 2, grip["y"] + grip["h"] / 2, dx, dy)
+    press_x, press_y = grip["x"] + grip["w"] / 2, grip["y"] + grip["h"] / 2
+    # A press outside the viewport hits nothing, and `beginGesture` never runs. Without this
+    # the assertions below still read `box` and `placed` and report the arithmetic of a
+    # gesture that never started — "the origin moved", for a window nobody touched. This
+    # check takes whatever geometry the previous one left, so the grip's reachability is not
+    # something it can assume.
+    if not (0 <= press_x < VIEWPORT[0] and 0 <= press_y < VIEWPORT[1]):
+        return [
+            f"resize se: the grip's centre is at {round(press_x)},{round(press_y)}, outside "
+            f"the {VIEWPORT[0]}x{VIEWPORT[1]} viewport — the press cannot land, so nothing "
+            "below would be measuring a resize"
+        ]
+    drag(page, press_x, press_y, dx, dy)
 
     after = need(probe(page), "readme")
-    if not near(after["box"]["w"], before["box"]["w"] + dx):
-        bad.append(f"resize se: width {before['box']['w']} -> {after['box']['w']}, want +{dx}")
-    if not near(after["box"]["h"], before["box"]["h"] + dy):
-        bad.append(f"resize se: height {before['box']['h']} -> {after['box']['h']}, want +{dy}")
-    if after["box"]["x"] != before["box"]["x"] or after["box"]["y"] != before["box"]["y"]:
-        bad.append("resize se: the origin moved, so the window slid instead of growing")
-    # The layout has to follow the state.
-    if not near(after["rect"]["w"], after["box"]["w"]) or not near(after["rect"]["h"], after["box"]["h"]):
+    # `after["box"]` against `before["placed"]`, which is the gesture's own contract with
+    # neither end of it clamped: `beginGesture` seeds `start` from `placed` and
+    # `applyGesture` writes the result straight into `box` (`src/window.mjs`).
+    #
+    # Both of the other pairings are wrong, in opposite directions. `before["box"]` fires on
+    # a correct resize whenever a clamp is live, because the gesture never started from it —
+    # it passes here only because nothing ahead of this check in `CHECKS` leaves a clamp on.
+    # `after["placed"]` hides a real defect: with the window against the y clamp at 762, an
+    # SE drag that wrongly slid the top edge down by 70 writes `box.y = 832`, which clamps
+    # straight back to 762 and compares equal.
+    if not near(after["box"]["w"], before["placed"]["w"] + dx):
         bad.append(
-            f"resize se: believed {after['box']['w']}x{after['box']['h']} but laid out "
+            f"resize se: width {before['placed']['w']} -> {after['box']['w']}, want +{dx}"
+        )
+    if not near(after["box"]["h"], before["placed"]["h"] + dy):
+        bad.append(
+            f"resize se: height {before['placed']['h']} -> {after['box']['h']}, want +{dy}"
+        )
+    if after["box"]["x"] != before["placed"]["x"] or after["box"]["y"] != before["placed"]["y"]:
+        bad.append(
+            f"resize se: the origin moved from {before['placed']['x']},{before['placed']['y']}"
+            f" to {after['box']['x']},{after['box']['y']} — the window slid instead of growing"
+        )
+    # The layout has to follow the state, and the element is written from `placed`.
+    if not near(after["rect"]["w"], after["placed"]["w"]) or not near(after["rect"]["h"], after["placed"]["h"]):
+        bad.append(
+            f"resize se: believed {after['placed']['w']}x{after['placed']['h']} but laid out "
             f"{after['rect']['w']}x{after['rect']['h']}"
         )
     return bad
@@ -768,11 +1261,16 @@ def check_resize_west(page) -> list[str]:
     drag(page, grip["x"] + grip["w"] / 2, grip["y"] + grip["h"] / 2, dx, 0)
 
     after = need(probe(page), "readme")
-    if not near(after["box"]["x"], before["box"]["x"] + dx):
-        bad.append(f"resize w: left edge {before['box']['x']} -> {after['box']['x']}, want +{dx}")
-    if not near(after["box"]["w"], before["box"]["w"] - dx):
-        bad.append(f"resize w: width {before['box']['w']} -> {after['box']['w']}, want -{dx}")
-    right_before = before["box"]["x"] + before["box"]["w"]
+    # `after["box"]` against `before["placed"]`, the pairing `resize se` documents: the
+    # gesture starts from `placed` and lands in `box`. This check takes whatever geometry the
+    # one before it left, so it cannot assume the window is unclamped on the way in — reading
+    # `before["box"]` made it depend on the order of `CHECKS` for its correctness.
+    start = before["placed"]
+    if not near(after["box"]["x"], start["x"] + dx):
+        bad.append(f"resize w: left edge {start['x']} -> {after['box']['x']}, want +{dx}")
+    if not near(after["box"]["w"], start["w"] - dx):
+        bad.append(f"resize w: width {start['w']} -> {after['box']['w']}, want -{dx}")
+    right_before = start["x"] + start["w"]
     right_after = after["box"]["x"] + after["box"]["w"]
     if not near(right_after, right_before):
         bad.append(f"resize w: the right edge drifted {right_before} -> {right_after}")
@@ -805,9 +1303,17 @@ def check_resize_north_at_edge(page) -> list[str]:
 
     after = need(probe(page), "readme")
     bad = []
+    # `box`, not `placed`. `applyGesture` stops the dragged top edge at 0 itself — `if (top <
+    # 0) top = 0` in `src/window.mjs` — so the request is where the guarantee lives. Reading
+    # `placed` would pass on a gesture that wrote `box.y = -200` and let `clampBox` tidy it
+    # up, which is the defect this check exists for wearing a different hat: the clamp would
+    # be holding the top while the height kept the 200px and the bottom slid.
     if after["box"]["y"] != 0:
         bad.append(f"resize n: top is {after['box']['y']}, want 0 at the desktop edge")
-    bottom_before = before["box"]["y"] + before["box"]["h"]
+    # `before["placed"]` because the gesture seeds from it. The `moveTo`/`sizeTo` above puts
+    # the window fully inside the desktop, so the two agree here today; naming `placed`
+    # removes the dependency on that setup staying in bounds.
+    bottom_before = before["placed"]["y"] + before["placed"]["h"]
     bottom_after = after["box"]["y"] + after["box"]["h"]
     if not near(bottom_after, bottom_before):
         bad.append(
@@ -843,25 +1349,30 @@ def check_offscreen_clamp(page) -> list[str]:
             return [f"clamp {label}: no title bar laid out"]
         drag(page, bar["x"] + 40, bar["y"] + bar["h"] / 2, dx, dy, steps=10)
         win = need(probe(page), "readme")
-        box = win["box"]
+        # `placed`, not `box`: the clamp is the subject, and `box` keeps the 4000px the drag
+        # asked for. Reading the request here measures a window nobody can see.
+        placed = win["placed"]
 
         # Horizontally: some of the window has to remain over the desktop.
-        visible = min(box["x"] + box["w"], surface["w"]) - max(box["x"], 0)
-        if visible < 60:
+        visible = min(placed["x"] + placed["w"], surface["w"]) - max(placed["x"], 0)
+        if visible < MIN_VISIBLE - 2:
             bad.append(
-                f"clamp {label}: only {round(visible)}px of the window is over the desktop"
+                f"clamp {label}: only {round(visible)}px of the window is over the desktop, below the {MIN_VISIBLE}px `docs/windows.md` promises"
             )
-        if box["y"] < 0:
-            bad.append(f"clamp {label}: title bar is at y={box['y']}, above the desktop")
+        if placed["y"] < 0:
+            bad.append(f"clamp {label}: title bar is at y={placed['y']}, above the desktop")
         # And the title bar has to be on the desktop, not under the taskbar.
-        if box["y"] > surface["h"] - 20:
+        if placed["y"] > surface["h"] - 20:
             bad.append(
-                f"clamp {label}: title bar at y={box['y']} is below the desktop's "
+                f"clamp {label}: title bar at y={placed['y']} is below the desktop's "
                 f"{round(surface['h'])}px"
             )
-        # The drag must not have resized anything.
-        if box["w"] != 400 or box["h"] != 260:
-            bad.append(f"clamp {label}: the window resized to {box['w']}x{box['h']}")
+        # The drag must not have resized anything. On `box`, because this asks what the move
+        # gesture wrote: the clamp is allowed to cap a size to the desktop, a move is not.
+        if win["box"]["w"] != 400 or win["box"]["h"] != 260:
+            bad.append(
+                f"clamp {label}: the window resized to {win['box']['w']}x{win['box']['h']}"
+            )
     return bad
 
 
@@ -898,7 +1409,12 @@ def check_resize_oversize(page) -> list[str]:
         return bad + ["resize oversize: no north grip laid out"]
     drag(page, grip["x"] + grip["w"] / 2, grip["y"] + grip["h"] / 2, 0, -480, steps=10)
     after = need(probe(page), "readme")
-    bottom_before = before["box"]["y"] + before["box"]["h"]
+    # `before["placed"]` on the left of every comparison below, `after["box"]` on the right:
+    # the anchored edge is where the gesture started from, and the gesture starts from
+    # `placed`. The `moveTo`/`sizeTo` setups keep `box` and `placed` equal on the way in —
+    # both origins are inside the desktop — so this is the choice made explicit rather than a
+    # behaviour change. The setup guard above is what would catch the day they diverge.
+    bottom_before = before["placed"]["y"] + before["placed"]["h"]
     bottom_after = after["box"]["y"] + after["box"]["h"]
     if not near(bottom_after, bottom_before):
         bad.append(
@@ -919,7 +1435,7 @@ def check_resize_oversize(page) -> list[str]:
         return bad + ["resize oversize: no west grip laid out"]
     drag(page, grip["x"] + grip["w"] / 2, grip["y"] + grip["h"] / 2, -1000, 0, steps=12)
     after = need(probe(page), "readme")
-    right_before = before["box"]["x"] + before["box"]["w"]
+    right_before = before["placed"]["x"] + before["placed"]["w"]
     right_after = after["box"]["x"] + after["box"]["w"]
     if not near(right_after, right_before):
         bad.append(
@@ -994,6 +1510,674 @@ def check_mount_failure(page) -> list[str]:
     return bad + drain_expecting(page, "mount exploded", "mount failure")
 
 
+#: A program that comes up fine and then rejects, long after a reader could have shut it.
+#:
+#: 1500 ms because the close has to land inside the rejection, and the close cannot happen
+#: until the window exists — which is past the mount, the loading floor and the two frames
+#: `launch` waits before calling `ready`. Measured: the window is up and filled at 750 ms.
+LATE_READY = """(() => {
+  window.webxp.register({ id: 'late', name: 'Late', icon: 'info', width: 300, height: 200,
+    mount: () => { const p = document.createElement('p'); p.textContent = 'up'; return p; },
+    ready: () => new Promise((resolve, reject) => {
+      setTimeout(() => reject(new Error('ready exploded after the close')), 1500);
+    }) });
+  return true;
+})()"""
+
+
+def check_ready_after_close(page) -> list[str]:
+    """A `ready` that throws after its own window closed reports it, and writes nothing.
+
+    `ready` is awaited across two frames and then across whatever the program does inside
+    it, so it can throw after the reader has already shut the window. `failStart` is written
+    for that: the console line is unconditional, because a swallowed failure is a defect and
+    the program really did fail, and the window and the live region are touched only while
+    the window is still there. Without the guard the reader is told "Late failed to start"
+    about a window they closed, and content is written into a frame nobody can see.
+
+    Three assertions, because each covers a different half of the guard. "No announcement"
+    alone passes on a shell that reports nothing at all; "the console line is there" alone
+    passes on a shell that also shouts at the reader.
+    """
+    bad = []
+    before = page.evaluate("window.webxp.windows.map((w) => w.id)")
+    page.evaluate(LATE_READY)
+    try:
+        watch_live(page)
+        page.evaluate("window.webxp.launch('late').then(() => true)")
+        # Past the mount and the loading floor, and well inside the rejection.
+        time.sleep(0.75)
+        up = page.evaluate(
+            "(() => { const w = window.webxp.windows.find((w) => w.programId === 'late');"
+            " if (!w) return null;"
+            " return { loading: w.bodyEl.classList.contains('is-loading'),"
+            "          text: w.bodyEl.textContent.slice(0, 40) }; })()"
+        )
+        # The setup is the check. If the window is not up and filled at this point the close
+        # below lands before `ready` was ever entered, the rejection has nothing to race,
+        # and every assertion after it passes on a sequence that never happened.
+        if up is None:
+            return ["ready after close: the window never opened, so nothing closed during ready"]
+        if up["loading"]:
+            return [
+                "ready after close: the window is still on its loading marquee at 750ms, so "
+                f"`ready` has not been entered yet and the close cannot race it ({up['text']!r})"
+            ]
+        page.evaluate(
+            "(() => { const w = window.webxp.windows.find((w) => w.programId === 'late');"
+            " if (w) w.close(); })()"
+        )
+        # Past the rejection, which is 1500ms from the launch.
+        time.sleep(1.6)
+
+        announced = said(page)
+        if any("failed to start" in message for message in announced):
+            bad.append(
+                f"ready after close: the live region said {announced!r} — a reader who shut "
+                "the window was told the program they are no longer looking at failed"
+            )
+        # And it did keep talking, or "no announcement about the failure" is satisfied by a
+        # live region that stopped working.
+        if not any("closed" in message for message in announced):
+            bad.append(
+                f"ready after close: the live region said {announced!r} and never mentioned "
+                "the close — the assertion above would pass on a region that says nothing"
+            )
+        still = page.evaluate(
+            "window.webxp.windows.filter((w) => w.programId === 'late').length"
+        )
+        if still:
+            bad.append(
+                f"ready after close: {still} 'late' windows are still open — the throwing "
+                "`ready` put its window back"
+            )
+    finally:
+        stop_watching_live(page)
+        page.evaluate(
+            "(() => { const keep = new Set(%s);"
+            " for (const w of [...window.webxp.windows]) if (!keep.has(w.id)) w.close();"
+            " window.webxp.programs.delete('late');"
+            " window.webxp.renderStartMenu(); window.webxp.renderDesktopIcons(); })()"
+            % json.dumps(before)
+        )
+        time.sleep(0.4)
+    # The report is the other half of the guard: `failStart` logs before it looks at
+    # `win.closed`, because the program did fail and a dropped error is a defect.
+    return bad + drain_expecting(page, "ready failed for program late", "ready after close")
+
+
+#: A program that can be launched more than once, for the cascade. Three windows of one
+#: program, so every lane budget in `cascade` is the same number and the slots are
+#: comparable — `lanes` is computed from the window's own height.
+CASCADE_PROGRAM = """(() => {
+  window.webxp.register({ id: 'lane', name: 'Lane', icon: 'info', width: 260, height: 180,
+    mount: () => { const p = document.createElement('p'); p.textContent = 'lane'; return p; } });
+  return true;
+})()"""
+
+
+def check_cascade_across_close(page) -> list[str]:
+    """A cascade lane freed by a close is handed out again, and no two open windows share one.
+
+    `cascadeIndex` reads the lanes off the open windows rather than counting launches,
+    because a count is not the question. A counter only `launch` advances gives the same
+    lane to a window built directly and to the next launched one; a count of open windows
+    gives back the lane of a window that is still on screen as soon as an earlier one
+    closes. Either way two windows open at one origin, which is the pile the cascade exists
+    to prevent — and a fresh desktop cannot tell the two implementations apart, because
+    both are right until something closes.
+
+    Deliberately *not* asserted: that two bare `new XPWindow(...)` calls get different
+    lanes. They cannot. A window never handed to the desktop is not in `windows`, so it is
+    invisible to `cascadeIndex`, and `cascadeIndex`'s own docstring names that as one of the
+    two cases it cannot answer. Asserting it would be asserting against the contract.
+    """
+    bad = []
+    before = page.evaluate("window.webxp.windows.map((w) => w.id)")
+    page.evaluate(CASCADE_PROGRAM)
+    try:
+        # Through `launch` on the desktop rather than the Start-menu helper: the helper
+        # matches a menu item by its window title, and three windows of one program all
+        # carry the same one.
+        for _ in range(3):
+            page.evaluate("window.webxp.launch('lane').then(() => true)")
+            time.sleep(0.7)
+        opened = page.evaluate(
+            "window.webxp.windows.filter((w) => w.programId === 'lane')"
+            ".map((w) => ({ id: w.id, slot: w.cascadeSlot }))"
+        )
+        if len(opened) != 3:
+            return bad + [
+                f"cascade across a close: {len(opened)} 'lane' windows opened, want 3 — "
+                "there is no middle one to close"
+            ]
+        slots = [row["slot"] for row in opened]
+        if len(set(slots)) != 3:
+            bad.append(
+                f"cascade across a close: three windows took lanes {slots} — two are in one "
+                "lane before anything has even closed"
+            )
+
+        middle = opened[1]
+        page.evaluate(
+            "(() => { const w = window.webxp.windows.find((w) => w.id === %s);"
+            " if (w) w.close(); })()" % json.dumps(middle["id"])
+        )
+        time.sleep(0.6)
+
+        # The invariant, stated as the set question `cascadeIndex` is written to answer.
+        offered = page.evaluate("window.webxp.cascadeIndex()")
+        taken = page.evaluate(
+            "window.webxp.windows.map((w) => w.cascadeSlot).filter((s) => s !== undefined)"
+        )
+        if offered in taken:
+            bad.append(
+                f"cascade across a close: the next lane offered is {offered}, which is "
+                f"already occupied — open lanes are {sorted(taken)}, and the next window "
+                "will open on top of one that is there"
+            )
+        if offered != middle["slot"]:
+            bad.append(
+                f"cascade across a close: lane {middle['slot']} was freed by the close and "
+                f"the next lane offered is {offered} — the freed lane is not being reused, "
+                "which is a counter rather than a reading of what is open"
+            )
+
+        page.evaluate("window.webxp.launch('lane').then(() => true)")
+        time.sleep(0.7)
+        fourth = page.evaluate(
+            "(() => { const w = window.webxp.windows.filter((w) => w.programId === 'lane');"
+            " const last = w[w.length - 1];"
+            " return last ? { id: last.id, slot: last.cascadeSlot } : null; })()"
+        )
+        if fourth is None:
+            bad.append("cascade across a close: the fourth window did not open")
+        elif fourth["slot"] != middle["slot"]:
+            bad.append(
+                f"cascade across a close: the fourth window took lane {fourth['slot']}, not "
+                f"the {middle['slot']} the close freed"
+            )
+
+        # And the thing all of that is for: no pile. On `placed`, for the reason given in
+        # `check_launch_all`.
+        state = probe(page)
+        origins = {(w["placed"]["x"], w["placed"]["y"]) for w in state["wins"]}
+        if len(origins) != len(state["wins"]):
+            bad.append(
+                f"cascade across a close: {len(state['wins'])} windows at {len(origins)} "
+                "distinct placed origins after a close and a launch"
+            )
+    finally:
+        page.evaluate(
+            "(() => { const keep = new Set(%s);"
+            " for (const w of [...window.webxp.windows]) if (!keep.has(w.id)) w.close();"
+            " window.webxp.programs.delete('lane');"
+            " window.webxp.renderStartMenu(); window.webxp.renderDesktopIcons(); })()"
+            % json.dumps(before)
+        )
+        time.sleep(0.4)
+    return bad
+
+
+def check_announce_states(page) -> list[str]:
+    """Every state a window lands in is announced, and a race ends on the one it is in.
+
+    `stateChanged` is the only place a transition is said out loud, synchronously and before
+    any animation. Announced after an awaited zoom instead, it describes a state the window
+    has already left: minimise, then restore inside the zoom, and the reader is told the
+    window was minimised while it is back on screen.
+
+    Both halves, because either alone is satisfied by a defect. Ending on `restored` passes
+    on a shell that announces nothing but the last transition; "all three states announce"
+    passes on a shell that announces them in the order they finish animating rather than the
+    order they happened.
+    """
+    bad = []
+    title = page.evaluate(
+        "(window.webxp.windows.find((w) => w.programId === 'readme') || {}).titleText || ''"
+    )
+    if not title:
+        return ["announce: no Read me window to change the state of"]
+    watch_live(page)
+    try:
+        # Both inside one turn, so `restore` lands while `minimize`'s zoom is still awaited.
+        page.evaluate(
+            "(() => { const w = window.webxp.windows.find((w) => w.programId === 'readme');"
+            " w.minimize(); w.restore(); })()"
+        )
+        time.sleep(SETTLE_S + 0.3)
+        race = said(page)
+        if len(race) < 2 or "minimized" not in race[0]:
+            bad.append(
+                f"announce: a minimise followed by a restore said {race!r} — the minimise "
+                "went unsaid, so a reader who cannot see the taskbar was not told"
+            )
+        if not race or "restored" not in race[-1]:
+            bad.append(
+                f"announce: the race ended on {race!r} — the last thing said is not the "
+                "state the window is in, which is the announcement arriving after the zoom"
+            )
+        # And the window is really back, or "ends on restored" is a lie the region is telling.
+        win = need(probe(page), "readme")
+        if win["state"] != "normal" or win["hidden"]:
+            bad.append(
+                f"announce: the region says restored but the window is {win['state']!r} "
+                f"hidden={win['hidden']} — the zoom's late `hidden` landed after the restore"
+            )
+
+        page.evaluate("window.__said = []")
+        title_click(page, "readme", "Maximize")
+        title_click(page, "readme", "Restore")
+        both = said(page)
+        for state_name in ("maximized", "restored"):
+            if not any(state_name in message for message in both):
+                bad.append(
+                    f"announce: a maximise and a restore said {both!r}, with nothing for "
+                    f"{state_name!r} — `SAID` has an entry for every state so that no "
+                    "transition passes unsaid"
+                )
+        if both and title not in both[0]:
+            bad.append(
+                f"announce: {both[0]!r} does not name the window — on a desktop of five "
+                "cascaded windows, which one changed is the whole message"
+            )
+    finally:
+        stop_watching_live(page)
+    return bad
+
+
+def check_reentrant_gesture(page, *, invert: bool = False) -> list[str]:
+    """A second pointer arriving mid-drag takes the gesture over; only its release ends it.
+
+    `beginGesture` ends the gesture in flight before starting the new one, because its three
+    listeners only answer to their own pointer id — left attached they leak three per
+    re-entry for the window's lifetime. What the reader must not be able to reach is a
+    window still carrying `is-moving`, or a `drag` that outlives every pointer, because the
+    window is then stuck to a pointer that is not there.
+
+    Driven with a real second pointer, through touch emulation, and this is the only check
+    in the suite that is. A synthetic `PointerEvent` cannot stand in: its `pointerId` is not
+    an active pointer, so `setPointerCapture` throws `NotFoundError` out of `beginGesture`
+    halfway through, and the measurement that comes back — `drag === null`, no `is-moving` —
+    is the crash tidying up rather than the re-entry being handled. Measured: that route
+    reports exactly the state a correct re-entry would, with an uncaught exception beside it.
+
+    What is *not* asserted, because the measurement says otherwise: that releasing the
+    first pointer ends the gesture. It does not, and it should not — the second pointer is
+    still down and the window correctly follows it. Measured at each step, with the title
+    bar grabbed by the mouse and then by a touch: `drag.id` 1 -> 2, the mouse released with
+    `drag.id` still 2 and `is-moving` still on, the window following the touch from x=148 to
+    x=248, and only the touch's own release clearing both.
+    """
+    bad = []
+    selector = win_selector(page, "readme")
+    bar = rect_of(page, f"{selector} .window-title")
+    if bar is None:
+        return ["re-entrant gesture: Read me has no laid-out title bar"]
+    x, y = bar["x"] + 40, bar["y"] + bar["h"] / 2
+    second_x = bar["x"] + bar["w"] / 2
+
+    def gesture_state() -> dict:
+        return page.evaluate(
+            "(() => { const w = window.webxp.windows.find((w) => w.programId === 'readme');"
+            " return { drag: w.drag ? w.drag.id : null,"
+            "          moving: w.el.classList.contains('is-moving'),"
+            "          box: { ...w.box } }; })()"
+        )
+
+    page.call("Emulation.setTouchEmulationEnabled", enabled=True, maxTouchPoints=5)
+    try:
+        mouse(page, "mousePressed", x, y, buttons=1)
+        mouse(page, "mouseMoved", x + 40, y, buttons=1)
+        first = gesture_state()
+        # The setup is an assertion: without a live gesture there is nothing to re-enter,
+        # and every line below would be measuring a window nobody is holding.
+        if first["drag"] is None or not first["moving"]:
+            return [
+                f"re-entrant gesture: the first pointer did not start a gesture ({first!r}) "
+                "— there is nothing for a second pointer to re-enter"
+            ]
+
+        page.call(
+            "Input.dispatchTouchEvent", type="touchStart",
+            touchPoints=[{"x": float(second_x), "y": float(y), "id": 7}],
+        )
+        time.sleep(0.1)
+        second = gesture_state()
+        if second["drag"] is None or second["drag"] == first["drag"]:
+            bad.append(
+                f"re-entrant gesture: a second pointer left the gesture on "
+                f"{second['drag']!r} (it was {first['drag']!r}) — the re-entry did not take "
+                "the window over, so the first pointer's listeners are still the live ones"
+            )
+
+        # Releasing the pointer that no longer owns the gesture must change nothing. This is
+        # the `endEvent.pointerId !== gesture.id` guard: without it, lifting one finger of
+        # two drops the window mid-drag.
+        mouse(page, "mouseReleased", x + 40, y, buttons=0)
+        time.sleep(0.15)
+        handed = gesture_state()
+        if handed["drag"] != second["drag"] or not handed["moving"]:
+            bad.append(
+                f"re-entrant gesture: releasing the pointer that does not own the gesture "
+                f"ended it ({handed!r}) — the second pointer is still down and the window "
+                "stopped following it"
+            )
+        page.call(
+            "Input.dispatchTouchEvent", type="touchMove",
+            touchPoints=[{"x": float(second_x + 100), "y": float(y + 30), "id": 7}],
+        )
+        time.sleep(0.15)
+        followed = gesture_state()
+        if followed["box"] == handed["box"]:
+            bad.append(
+                f"re-entrant gesture: the window did not follow the second pointer — box is "
+                f"still {followed['box']!r} after a 100px move"
+            )
+
+        page.call("Input.dispatchTouchEvent", type="touchEnd", touchPoints=[])
+        time.sleep(0.15)
+        done = gesture_state()
+        if invert:
+            # --prove-failure. The gesture did end; asserting that it did not must fail.
+            if done["drag"] is None and not done["moving"]:
+                bad.append(
+                    "re-entrant gesture[--prove-failure]: the owning pointer's release "
+                    f"cleared the gesture as it should ({done!r}) — the inverted assertion "
+                    "failed, so this check can fail"
+                )
+            return bad
+        if done["drag"] is not None or done["moving"]:
+            bad.append(
+                f"re-entrant gesture: every pointer is up and the window is still held "
+                f"({done!r}) — it is stuck to a pointer that is not there"
+            )
+    finally:
+        # Whatever happened above, no pointer may be left down: the next check drags the same
+        # window.
+        try:
+            page.call("Input.dispatchTouchEvent", type="touchEnd", touchPoints=[])
+        except CDPError:
+            pass
+        mouse(page, "mouseReleased", x + 40, y, buttons=0)
+        page.call("Emulation.setTouchEmulationEnabled", enabled=False)
+        time.sleep(0.1)
+    return bad
+
+
+#: Two desktops in scratch roots: one destroyed, one left running.
+#:
+#: `.desktop` is `position: fixed; inset: 0 0 var(--taskbar-h) 0`, so a scratch desktop's
+#: surface tracks the viewport whatever its root is — which is what makes the resize
+#: observable. The roots are `visibility: hidden` so neither paints or hit-tests over the
+#: real desktop, and both are removed before the check returns: a second desktop builds its
+#: own `#webxp-live`, `#start` and `.task-button`s, and `PROBE` counts task buttons
+#: document-wide.
+SCRATCH_DESKTOPS = """(async () => {
+  // The class off the instance the page is running, not a fresh `import()` of
+  // `/src/webxp.mjs`. Two reasons, and the second is the one that matters: an import is a
+  // fetch against the single-threaded `http.server` and has been seen to fail
+  // intermittently for one module while `curl` served it 200, and a module reached any way
+  // other than the one the page used is not necessarily the one the page is using. A check
+  // that destroys a `Desktop` the shell never built would pass on a shell whose own
+  // `destroy` is broken.
+  const Desktop = window.webxp.constructor;
+  if (typeof Desktop !== 'function') return { error: 'window.webxp has no constructor' };
+  const make = (id) => {
+    const root = document.createElement('div');
+    root.id = id;
+    root.style.visibility = 'hidden';
+    document.body.append(root);
+    const desktop = new Desktop({ root, name: id, minLoadMs: 0 });
+    desktop.register({ id: 'scratch', name: 'Scratch', icon: 'info', width: 240, height: 160,
+      mount: () => { const p = document.createElement('p'); p.textContent = id; return p; } });
+    return { root, desktop };
+  };
+  window.__scratch = [make('scratch-destroyed'), make('scratch-running')];
+  await Promise.all(window.__scratch.map((s) => s.desktop.launch('scratch')));
+  for (const s of window.__scratch) {
+    if (!s.desktop.windows.length) return { error: 'a scratch desktop opened no window' };
+    s.desktop.windows[0].moveTo(1000, 600);
+    s.desktop.windows[0].sizeTo(240, 160);
+  }
+  window.__scratch[0].desktop.destroy();
+  return { error: '', ...window.__readScratch() };
+})()"""
+
+READ_SCRATCH = """window.__readScratch = () => {
+  const read = (s) => ({
+    surface: Math.round(s.desktop.surface.getBoundingClientRect().width),
+    placed: { ...s.desktop.windows[0].placed },
+  });
+  return { destroyed: read(window.__scratch[0]), running: read(window.__scratch[1]) };
+};
+true"""
+
+
+def check_desktop_destroy(page) -> list[str]:
+    """`Desktop.destroy()` stops the resize listener, and nothing else stops it.
+
+    A desktop reaches `window` and `document` for the resize and for the clicks that close
+    the Start menu, and runs a timer for the clock. None of that goes away with the root
+    element, so a page that builds a second desktop otherwise leaves the first re-clamping
+    its windows on every resize for as long as the page lives — moving windows in a desktop
+    nobody is looking at, and holding every node in it alive.
+
+    Nothing in this suite built a second `Desktop` before this check, which is why the
+    teardown had no cover at all.
+
+    The second desktop is the negative control and it is inside the check, not beside it: a
+    destroyed desktop whose windows do not move proves nothing unless a desktop that was
+    *not* destroyed does move. Without it the check passes on a resize that never reached
+    either of them. Measured on a 1280x820 -> 520x420 shrink: the destroyed desktop's window
+    stayed at placed (1000, 600) and the running one's moved to (448, 362), with both
+    surfaces reporting the new 520px width.
+    """
+    bad = []
+    width, height = VIEWPORT
+    small_w, small_h = SHRUNK_VIEWPORT
+    # Inside the `try`, both of them: the builder appends two roots to the document before
+    # it can fail, and a leaked scratch desktop puts a second `#webxp-live` and a second set
+    # of `.task-button`s in the page for every check after this one.
+    try:
+        page.evaluate(READ_SCRATCH)
+        built = page.evaluate(SCRATCH_DESKTOPS, await_promise=True)
+        if built.get("error"):
+            return [f"desktop destroy: {built['error']}"]
+        set_viewport(page, small_w, small_h)
+        after = page.evaluate("window.__readScratch()")
+        # The shrink has to have reached both surfaces, or neither half below means anything.
+        for which in ("destroyed", "running"):
+            if abs(after[which]["surface"] - small_w) > 20:
+                return bad + [
+                    f"desktop destroy: the {which} desktop's surface is "
+                    f"{after[which]['surface']}px after the viewport was forced to {small_w} "
+                    "— the shrink never reached it, so nothing here measures what it names"
+                ]
+        if after["running"]["placed"] == built["running"]["placed"]:
+            return bad + [
+                "desktop destroy: the desktop that was NOT destroyed left its window at "
+                f"{after['running']['placed']!r} too — the resize reached neither desktop, "
+                "so the destroyed one standing still proves nothing"
+            ]
+        if after["destroyed"]["placed"] != built["destroyed"]["placed"]:
+            bad.append(
+                "desktop destroy: the destroyed desktop moved its window from "
+                f"{built['destroyed']['placed']!r} to {after['destroyed']['placed']!r} — "
+                "`destroy()` left the resize listener attached, so a replaced desktop keeps "
+                "re-clamping windows nobody can see"
+            )
+    finally:
+        page.evaluate(
+            "(() => { for (const s of window.__scratch || []) {"
+            " s.desktop.destroy(); s.root.remove(); }"
+            " delete window.__scratch; delete window.__readScratch; return true; })()"
+        )
+        set_viewport(page, width, height)
+    return bad
+
+
+#: Render every icon and every filetype icon, and report each `var()` presentation
+#: attribute next to the token it names and the value the browser computed for it.
+#:
+#: `icons.mjs` states the premise as a fact — "a presentation attribute is parsed as CSS, so
+#: `var()` resolves in it" — and nine of the set's fills and strokes are written that way.
+#: Nothing measured it. If it were false the icons would draw in `fill`'s initial value,
+#: which is black on black, and every icon in the shell would be a silhouette.
+#:
+#: The control is in the same round trip: a `fill` naming a token that does not exist. If
+#: that does not come back black then an unresolved `var()` is not black here, and the
+#: assertions this returns are void rather than passing.
+ICON_TOKENS = """(async () => {
+  // An `import()`, and the only one in the new checks. There is no global for the icon set
+  // — `window.webxp` publishes the desktop, not `icons.mjs` — and the names are what let
+  // this cover an icon no open window happens to be showing. It is a registry hit rather
+  // than a fetch, because `window.mjs` already loaded this exact URL, which is why it is
+  // acceptable here: a fresh fetch against the single-threaded `http.server` is the thing
+  // that has been seen to fail intermittently. If this check ever fails intermittently,
+  // that is the first cause to rule out, not the assertions below.
+  //
+  // The icons already in the document are swept as well, so the check still says something
+  // about the nodes the reader is actually looking at and not only about a set built here.
+  const icons = await import('/src/icons.mjs');
+  const ctx = document.createElement('canvas').getContext('2d');
+  //: One notation for every colour, via a `fillStyle` round trip, so `rgb(10, 36, 106)` off
+  //: `getComputedStyle` and `#0a246a` off a custom property compare equal.
+  //:
+  //: The sentinel is `#010203` and not black on purpose. An unparseable value leaves
+  //: `fillStyle` untouched, which is the only signal the canvas gives — so a black sentinel
+  //: reports *black itself* as unparseable, and black is precisely the value this check
+  //: exists to catch. Measured: with `#000` as the sentinel the control's own
+  //: `rgb(0, 0, 0)` came back unreadable and the check failed on its own premise.
+  //: `COLOUR_READER` above has the same narrowness; it is left alone here because changing
+  //: it changes what `active styling` reads.
+  const UNPARSEABLE = '#010203';
+  const norm = (value) => {
+    const text = String(value || '').trim();
+    if (!text) return null;
+    ctx.fillStyle = UNPARSEABLE;
+    ctx.fillStyle = text;
+    return ctx.fillStyle === UNPARSEABLE && text !== UNPARSEABLE ? null : ctx.fillStyle;
+  };
+  const host = document.createElement('div');
+  host.style.position = 'fixed';
+  host.style.left = '-9999px';
+  host.style.top = '0';
+  const control = document.createElement('div');
+  control.style.cssText = host.style.cssText;
+  // Marked so the live-desktop sweep below can tell the shell's own icons from the two
+  // containers this check puts in the document. Without it the control's deliberately
+  // broken token is reported as a defect on the live desktop.
+  host.dataset.iconProbe = '1';
+  control.dataset.iconProbe = '1';
+  document.body.append(host, control);
+  try {
+    const names = [...icons.ICON_NAMES,
+                   ...icons.FILETYPE_NAMES.map((f) => icons.iconFor({ filetype: f }))];
+    for (const name of names) host.append(icons.icon(name, 16));
+
+    const probe = icons.icon('window', 16);
+    probe.firstChild.setAttribute('fill', 'var(--webxp-no-such-token)');
+    control.append(probe);
+
+    const root = getComputedStyle(document.documentElement);
+    const rows = [];
+    const sweep = (nodes, where) => {
+      for (const node of nodes) {
+        const computed = getComputedStyle(node);
+        for (const property of ['fill', 'stroke']) {
+          const attribute = node.getAttribute(property);
+          if (!attribute || !attribute.startsWith('var(')) continue;
+          const token = attribute.slice(4, attribute.indexOf(')')).trim();
+          rows.push({
+            node: node.tagName, property, attribute, token, where,
+            declared: norm(root.getPropertyValue(token)),
+            computed: norm(computed[property]) || String(computed[property]),
+          });
+        }
+      }
+    };
+    sweep(host.querySelectorAll('*'), 'the icon set');
+    sweep([...document.querySelectorAll('.xp-icon *')]
+            .filter((node) => !node.closest('[data-icon-probe]')), 'the live desktop');
+    const black = norm('#000');
+    return { icons: names.length,
+             live: document.querySelectorAll('.xp-icon').length, rows, black,
+             control: norm(getComputedStyle(probe.firstChild).fill)
+                      || String(getComputedStyle(probe.firstChild).fill) };
+  } finally {
+    host.remove();
+    control.remove();
+  }
+})()"""
+
+
+def check_icon_tokens(page) -> list[str]:
+    """Every `var()` in an icon's fill or stroke resolves to the token it names.
+
+    `icons.mjs` takes its palette from `theme.css` by writing `fill="var(--title-a)"` on the
+    shapes, so a colour the theme already names is not retyped. That rests on `var()` being
+    substituted in an SVG presentation attribute — which the file asserts in a comment and
+    nothing measured. An engine that does not substitute paints `fill`'s initial value, and
+    the whole icon set goes black on black: legible as a shape, wrong in every colour, and
+    invisible to any assertion that an icon is present and has a box.
+
+    The premise holds here and is now asserted rather than assumed: Chrome does substitute
+    `var()` in a presentation attribute — `var(--title-a)` computes to `rgb(10, 36, 106)`.
+
+    Measured with Read me and Notepad open: 160 `var()` fills and strokes over 7 tokens
+    (`--muted`, `--panel`, `--raised`, `--rule`, `--start-a`, `--title-a`, `--title-b`), 46
+    of them in the 18 icons rendered here and 114 across the 70 `.xp-icon`s already on the
+    desktop. Both halves, because `--panel` is the `readme` and `notepad` papers and neither
+    is in the DOM unless that program is open — and because a set built inside this check
+    says nothing about the nodes the reader is looking at.
+    """
+    found = page.evaluate(ICON_TOKENS, await_promise=True)
+    bad = []
+    if not found["rows"]:
+        # Never a skip. A renamed attribute or a palette that stopped using tokens leaves
+        # nothing to compare, and an empty comparison is not a passing one.
+        return [
+            f"icon tokens: none of the {found['icons']} icons in the set and none of the "
+            f"{found['live']} on the desktop carries a `var()` fill or stroke — either the "
+            "palette stopped coming from the theme or the attribute names changed, and there "
+            "is nothing here to check"
+        ]
+    if not any(row["where"] == "the live desktop" for row in found["rows"]):
+        return [
+            f"icon tokens: the {found['live']} icons on the desktop carry no `var()` fill or "
+            "stroke, so only the set built inside this check was measured — the nodes the "
+            "reader is looking at went unasserted"
+        ]
+    # The premise, in the same round trip as the assertions that rest on it.
+    if found["control"] != found["black"]:
+        return [
+            f"icon tokens: a fill of `var(--webxp-no-such-token)` computed to "
+            f"{found['control']!r}, not {found['black']!r} — an unresolved `var()` is not "
+            "black in this engine, so the comparisons below are not measuring what they claim"
+        ]
+    for row in found["rows"]:
+        where = f"{row['node']} {row['property']}={row['attribute']} in {row['where']}"
+        if row["declared"] is None:
+            bad.append(
+                f"icon tokens: {where} names {row['token']}, which `theme.css` does not "
+                f"declare as a colour — it computed to {row['computed']!r}"
+            )
+            continue
+        if row["computed"] != row["declared"]:
+            bad.append(
+                f"icon tokens: {where} computed to {row['computed']!r} but {row['token']} is "
+                f"{row['declared']!r}"
+                + (
+                    " — the engine is not substituting `var()` in a presentation attribute, "
+                    "so the icon set is drawing in black"
+                    if row["computed"] == found["black"]
+                    else ""
+                )
+            )
+    return bad
+
+
 def check_viewport_shrink(page) -> list[str]:
     """Shrinking the desktop pulls windows back into reach.
 
@@ -1007,34 +2191,120 @@ def check_viewport_shrink(page) -> list[str]:
         " w.moveTo(1000, 600); w.sizeTo(240, 160); })()"
     )
     time.sleep(0.1)
+    before = need(probe(page), "readme")
     width, height = VIEWPORT
+    small_w, small_h = SHRUNK_VIEWPORT
     try:
-        page.call(
-            "Emulation.setDeviceMetricsOverride",
-            width=520, height=420, deviceScaleFactor=1, mobile=False,
-        )
-        # Past the coalescing frame.
-        time.sleep(0.4)
+        set_viewport(page, small_w, small_h)
         state = probe(page)
         win = need(state, "readme")
         surface = state["surface"]
-        visible = min(win["box"]["x"] + win["box"]["w"], surface["w"]) - max(win["box"]["x"], 0)
-        if visible < 60:
+        # The shrink has to have reached the desktop. `setDeviceMetricsOverride` forces the
+        # layout viewport; it does not stop an element from exceeding it, so a `min-width` on
+        # `.desktop` would leave the surface its old size and every assertion below would be
+        # measured against the viewport this check was trying to leave — passing whether the
+        # resize listener exists or not.
+        #
+        # Width exactly, height only as "smaller than it was": the surface is the viewport
+        # less the taskbar, and copying the taskbar's height here would be a second
+        # definition of a token this check does not otherwise need.
+        if abs(surface["w"] - small_w) > 20 or surface["h"] >= height:
+            return bad + [
+                f"viewport shrink: the desktop is {round(surface['w'])}x{round(surface['h'])} "
+                f"after the viewport was forced to {small_w}x{small_h} — the shrink never "
+                "reached the surface, so nothing here measures what it names"
+            ]
+        # `placed`, not `box`. `box` is still the 1000,600 the setup asked for — `apply()`
+        # never writes it back — so measuring it reports -480px whether the listener ran or
+        # not, which is the one number `docs/review.md` records as the signature of the
+        # listener being *absent*. The check could not tell the two apart in either
+        # direction.
+        placed, was = win["placed"], before["placed"]
+        visible = min(placed["x"] + placed["w"], surface["w"]) - max(placed["x"], 0)
+        # Two defects reach these assertions and they want different reading, so the message
+        # names which. The discriminator is `placed` against where it was *before the
+        # shrink*, not against `box`: compared to `box` the "nothing ran" branch is
+        # unreachable at any viewport where the window was already clamped on the way in —
+        # at a 1280x600 `VIEWPORT` the setup's y=600 is clamped to 542 before the shrink, so
+        # a deleted listener would be reported as the clamp's arithmetic. Within a pixel
+        # rather than equal, because `clampBox` rounds.
+        #
+        # The probe cannot see *why* nothing ran, so that branch names both candidates
+        # rather than picking one.
+        untouched = abs(placed["x"] - was["x"]) <= 1 and abs(placed["y"] - was["y"]) <= 1
+        cause = (
+            f"the placement has not moved off {was['x']},{was['y']} since the desktop shrank "
+            "— either the resize listener never fired or the clamp is a no-op"
+            if untouched
+            else f"the clamp moved it from {was['x']},{was['y']} and still left it there"
+        )
+        if visible < MIN_VISIBLE - 2:
             bad.append(
-                f"viewport shrink: only {round(visible)}px of the window is over a "
-                f"{round(surface['w'])}px desktop — it cannot be dragged back"
+                f"viewport shrink: the window sits at x={placed['x']} with {round(visible)}px "
+                f"of {MIN_VISIBLE} over a {round(surface['w'])}px desktop; {cause}"
             )
-        if win["box"]["y"] > surface["h"] - 20:
+        if placed["y"] > surface["h"] - 20:
             bad.append(
-                f"viewport shrink: title bar at y={win['box']['y']} is below the "
-                f"{round(surface['h'])}px desktop"
+                f"viewport shrink: the title bar sits at y={placed['y']}, below the "
+                f"{round(surface['h'])}px desktop; {cause}"
             )
     finally:
-        page.call(
-            "Emulation.setDeviceMetricsOverride",
-            width=width, height=height, deviceScaleFactor=1, mobile=False,
-        )
-        time.sleep(0.4)
+        set_viewport(page, width, height)
+    return bad
+
+
+def check_viewport_round_trip(page) -> list[str]:
+    """A desktop that shrinks and grows back returns the window to where it was put.
+
+    The counterpart to `viewport shrink`, and the reason `apply()` derives `placed` from
+    `box` instead of writing the clamp back into it: the clamp belongs to the surface the
+    window happens to be on, not to the window. Baking it in destroys the position the
+    reader chose and there is no undo — and dragging a browser's corner in and out again is
+    one gesture, not two deliberate ones.
+
+    Asserted on `rect`. `box` is the intent and would come back unchanged whether the
+    element followed it or not; `placed` is recomputed from `box` by the same line this
+    check is about, so reading it is the assertion agreeing with itself. `rect` is the only
+    one of the three that answers "is the window back where the reader left it".
+    """
+    bad = []
+    width, height = VIEWPORT
+    small_w, small_h = SHRUNK_VIEWPORT
+    page.evaluate(
+        "(() => { const w = window.webxp.windows.find((w) => w.programId === 'readme');"
+        " w.moveTo(900, 520); w.sizeTo(300, 200); })()"
+    )
+    time.sleep(0.1)
+    before = need(probe(page), "readme")
+    try:
+        set_viewport(page, small_w, small_h)
+        squeezed = need(probe(page), "readme")
+        # The negative control, and it has to be inside the check rather than beside it: if
+        # the narrow desktop does not move the window, the return proves nothing, because
+        # nothing went anywhere. A `SHRUNK_VIEWPORT` wide enough to hold the setup, or a
+        # clamp that stopped firing, would otherwise leave this reporting a clean round trip
+        # over a window that never left.
+        if near(squeezed["rect"]["x"], before["rect"]["x"]) and near(
+            squeezed["rect"]["y"], before["rect"]["y"]
+        ):
+            return bad + [
+                f"viewport round trip: the window is still laid out at "
+                f"{squeezed['rect']['x']},{squeezed['rect']['y']} on a "
+                f"{small_w}x{small_h} viewport — the narrow desktop did not move it, so "
+                "the return below would prove nothing"
+            ]
+    finally:
+        set_viewport(page, width, height)
+
+    after = need(probe(page), "readme")
+    for axis in GEOMETRY_KEYS:
+        if not near(after["rect"][axis], before["rect"][axis]):
+            bad.append(
+                f"viewport round trip: {axis} came back {after['rect'][axis]}, left from "
+                f"{before['rect'][axis]} (it was squeezed to {squeezed['rect'][axis]}) — the "
+                "clamp was written into the window instead of derived from the desktop, so "
+                "shrinking the browser and widening it again lost the position"
+            )
     return bad
 
 
@@ -1114,12 +2384,15 @@ def check_app_filetypes(page) -> list[str]:
     result = page.evaluate(
         "(async () => {"
         " const { validate } = await import('/src/apps.mjs');"
-        " const { iconFor, FILETYPES, FILETYPE_NAMES } = await import('/src/icons.mjs');"
+        " const { iconFor, FILETYPES, FILETYPE_NAMES, ICON_NAMES } = await import('/src/icons.mjs');"
         " return {"
         "   byFiletype: iconFor({ filetype: 'map' }),"
         "   override: iconFor({ filetype: 'map', icon: 'check' }),"
         "   neither: iconFor({}),"
         "   filetypes: FILETYPE_NAMES,"
+        "   iconByFiletype: Object.fromEntries("
+        "     Object.entries(FILETYPES).map(([k, v]) => [k, v.icon])),"
+        "   shapeNames: ICON_NAMES,"
         "   mapIcon: FILETYPES.map.icon,"
         "   badFiletype: validate({ id: 'x', name: 'X', mount(){}, filetype: 'nope' }, 'x'),"
         "   goodFiletype: validate({ id: 'x', name: 'X', mount(){}, filetype: 'map' }, 'x'),"
@@ -1128,8 +2401,24 @@ def check_app_filetypes(page) -> list[str]:
         await_promise=True,
     )
     bad = []
-    if result["byFiletype"] != result["mapIcon"]:
-        bad.append(f"app filetypes: filetype 'map' gave {result['byFiletype']!r}, want the map icon")
+    # Pinned to the literal, not to the table being tested.
+    #
+    # This read `result["mapIcon"]`, which `iconFor` returns by reading the same entry — the
+    # two sides were one expression. Typo `FILETYPES.map.icon` to `'mapp'` and `SHAPES[name]
+    # || SHAPES.window` silently draws the generic window for every map app, while this
+    # assertion and the set comparison below both pass.
+    if result["byFiletype"] != "map":
+        bad.append(
+            f"app filetypes: filetype 'map' gave {result['byFiletype']!r}, want 'map'"
+        )
+    # And every registered filetype must name a shape that exists, which is what the
+    # `|| SHAPES.window` fallback would otherwise hide.
+    for name, icon_name in (result.get("iconByFiletype") or {}).items():
+        if icon_name not in (result.get("shapeNames") or []):
+            bad.append(
+                f"app filetypes: filetype {name!r} names icon {icon_name!r}, which is not a "
+                "drawn shape — it would silently fall back to the generic window"
+            )
     # An explicit icon has to win, or an app cannot be an exception to its own filetype.
     if result["override"] != "check":
         bad.append(f"app filetypes: an explicit icon lost to the filetype — got {result['override']!r}")
@@ -1588,10 +2877,23 @@ def check_min_size(page) -> list[str]:
 
     after = need(probe(page), "readme")
     bad = []
+    # `box`, because the minimum is the gesture's own: `applyGesture` stops the edge under
+    # the pointer at `MIN_W`/`MIN_H` before anything is clamped. `placed` would pass on a
+    # gesture that wrote a 20px box and let `clampBox`'s own floor repair it, which is a
+    # window that snaps away from the pointer mid-drag.
     if after["box"]["w"] != MIN_W:
         bad.append(f"min size: width clamped to {after['box']['w']}, want {MIN_W}")
     if after["box"]["h"] != MIN_H:
         bad.append(f"min size: height clamped to {after['box']['h']}, want {MIN_H}")
+    # And `rect`, because the minimum is a promise about the window the reader is looking at:
+    # below it the title bar loses its buttons. The two assertions above both read state the
+    # code wrote; a `min-width` in `window.css` disagreeing with `MIN_W` is invisible to
+    # them and is exactly the gap between "the code believes" and "the browser laid out".
+    if not near(after["rect"]["w"], MIN_W) or not near(after["rect"]["h"], MIN_H):
+        bad.append(
+            f"min size: believed {after['box']['w']}x{after['box']['h']} but laid out "
+            f"{after['rect']['w']}x{after['rect']['h']}"
+        )
     return bad
 
 
@@ -1715,6 +3017,168 @@ def check_maximize(page) -> list[str]:
     return bad
 
 
+def check_title_double_click(page) -> list[str]:
+    """Double-clicking the title bar maximises, and again restores; the buttons are exempt.
+
+    `src/window.mjs` has carried a `dblclick` listener on the bar since it was written and
+    nothing had ever double-clicked, because a double click needs `clickCount: 2` on the
+    second press and the harness sent 1 on every event. Two presses that both say 1 are two
+    single clicks — the browser never synthesises `dblclick`, the handler never runs, and a
+    check built on them reports exactly what an app that ignores double clicks would.
+
+    So the first thing asserted is that two single clicks do *nothing*. That is the control
+    for the helper rather than for the product, and it belongs inside the check: without it,
+    "the double click maximised" is satisfied by any pair of clicks that happens to toggle.
+    """
+    bad = []
+    state = probe(page)
+    win = need(state, "readme")
+    if win["state"] != "normal":
+        return [f"title double click: Read me is {win['state']!r}, want 'normal' to start"]
+    bar = rect_of(page, f"{win_selector(page, 'readme')} .window-title")
+    if bar is None:
+        return ["title double click: Read me has no laid-out title bar"]
+    # Left of the title boxes, so neither click lands on one.
+    x, y = bar["x"] + 40, bar["y"] + bar["h"] / 2
+    started = win["box"]
+
+    # The control. Two clicks that do not claim to be a double must leave the state alone.
+    for _ in range(2):
+        mouse(page, "mousePressed", x, y, buttons=1)
+        mouse(page, "mouseReleased", x, y, buttons=0)
+    time.sleep(SETTLE_S)
+    single = need(probe(page), "readme")
+    if single["state"] != "normal":
+        bad.append(
+            f"title double click: two single clicks left the window {single['state']!r} — "
+            "the browser is treating them as a double, so the assertions below would pass "
+            "whether `double_click` sets a click count or not"
+        )
+
+    double_click(page, x, y)
+    time.sleep(SETTLE_S)
+    maxed = need(probe(page), "readme")
+    if maxed["state"] != "max":
+        return bad + [
+            f"title double click: the window is {maxed['state']!r} after a double click on "
+            "the title bar, want 'max' — the `dblclick` listener in `src/window.mjs` did "
+            "not run"
+        ]
+    # And the window actually moved. A state flag that flips while the frame stays put is
+    # the half `state` alone cannot see, and it is the failure a screenshot would catch and
+    # an assertion on `state` would not.
+    surface = state["surface"]
+    if not near(maxed["rect"]["w"], surface["w"]) or not near(maxed["rect"]["h"], surface["h"]):
+        bad.append(
+            f"title double click: the state says 'max' but the frame is laid out at "
+            f"{maxed['rect']['w']}x{maxed['rect']['h']} on a "
+            f"{round(surface['w'])}x{round(surface['h'])} desktop"
+        )
+
+    # Re-read the bar: a maximised window's title bar is at the top of the desktop, not
+    # where the window used to be, so the point the first double click was aimed at is now
+    # somewhere in the body. Aiming at the stale point reported `a second double click left
+    # it 'max'` — a true statement about a click that never reached the bar.
+    bar = rect_of(page, f"{win_selector(page, 'readme')} .window-title")
+    if bar is None:
+        return bad + ["title double click: the maximised window has no laid-out title bar"]
+    x, y = bar["x"] + 40, bar["y"] + bar["h"] / 2
+    double_click(page, x, y)
+    time.sleep(SETTLE_S)
+    back = need(probe(page), "readme")
+    if back["state"] != "normal":
+        bad.append(f"title double click: a second double click left it {back['state']!r}")
+    if back["box"] != started:
+        bad.append(
+            f"title double click: came back at {back['box']}, left from {started} — the "
+            "double click lost the geometry a maximise is supposed to keep"
+        )
+    if not near(back["rect"]["w"], started["w"]) or not near(back["rect"]["h"], started["h"]):
+        bad.append(
+            f"title double click: the state says 'normal' but the frame is still "
+            f"{back['rect']['w']}x{back['rect']['h']}, not the {started['w']}x{started['h']} "
+            "it left from"
+        )
+
+    # The exemption, which is the half worth having: `startMove` and the `dblclick` handler
+    # both ignore a target inside `.title-buttons`, so a double click that lands among the
+    # boxes does not also maximise. Delete that `closest` line and only this assertion
+    # notices.
+    #
+    # Aimed at the 2px `gap` between two boxes (`src/window.css`), not at a box.
+    #
+    # A box is the obvious target and it cannot work: its own click handler maximises on the
+    # first click, which moves the whole title bar, so the second click lands in the body of
+    # a now-maximised window and `dblclick` never reaches the bar at all. Measured — aiming
+    # at the Maximize box reported `left the window 'max'` for exactly that reason, which is
+    # a true sentence about a click that tested nothing. In the gap no box handler fires, the
+    # window does not move between the two clicks, and the guard is the only thing deciding
+    # the outcome.
+    gap = page.evaluate(
+        "(() => { const w = window.webxp.windows.find((w) => w.programId === 'readme');"
+        " const boxes = [...w.el.querySelectorAll('.title-box')]"
+        "   .map((b) => b.getBoundingClientRect())"
+        "   .filter((r) => r.width).sort((a, b) => a.left - b.left);"
+        " for (let i = 1; i < boxes.length; i += 1) {"
+        "   const x = (boxes[i - 1].right + boxes[i].left) / 2;"
+        "   const y = boxes[i].top + boxes[i].height / 2;"
+        "   const hit = document.elementFromPoint(x, y);"
+        "   if (hit && hit.classList.contains('title-buttons')) return { x, y };"
+        " }"
+        " return null; })()"
+    )
+    if gap is None:
+        # Never a skip: the guard would then be unreachable by a pointer and unasserted, and
+        # saying so is the only honest outcome.
+        bad.append(
+            "title double click: found no point inside `.title-buttons` that is not on a "
+            "box, so the `closest('.title-buttons')` guard could not be exercised — "
+            "deleting that line would go unnoticed"
+        )
+        return bad
+    double_click(page, gap["x"], gap["y"])
+    time.sleep(SETTLE_S)
+    on_box = need(probe(page), "readme")
+    if on_box["state"] != "normal":
+        bad.append(
+            f"title double click: a double click between the title boxes left the window "
+            f"{on_box['state']!r} — the bar's `dblclick` handler ran on a target inside "
+            "`.title-buttons`, which it is written not to"
+        )
+        # Put it back, so the next check does not inherit a maximised window.
+        if on_box["state"] == "max":
+            title_click(page, "readme", "Restore")
+
+    # A window that may not be maximised must not be, by this route either. `about` is the
+    # one fixed-size program.
+    #
+    # The guard is in `maximize()` — `if (!this.maximizable || …) return` — and not in the
+    # `dblclick` handler, which calls `toggleMaximize` unconditionally. So this asserts a
+    # guarantee that holds one call further down than where a reader of the handler would
+    # look for it, which is the third defect shape `docs/review.md` names: the handler is
+    # the entry point, and reading it does not tell you whether the rule holds.
+    fixed = window_of(probe(page), "about")
+    if fixed is None:
+        bad.append(
+            "title double click: no About window open, so the fixed-size case went "
+            "unchecked — every assertion above is about a maximizable window"
+        )
+        return bad
+    fixed_bar = rect_of(page, f"{win_selector(page, 'about')} .window-title")
+    if fixed_bar is None:
+        return bad + ["title double click: the About window has no laid-out title bar"]
+    double_click(page, fixed_bar["x"] + 40, fixed_bar["y"] + fixed_bar["h"] / 2)
+    time.sleep(SETTLE_S)
+    after_fixed = need(probe(page), "about")
+    if after_fixed["state"] != "normal":
+        bad.append(
+            f"title double click: About is {after_fixed['state']!r} after a double click — "
+            "a window that hides its maximise box was maximised anyway, and the only route "
+            "back is a box that is not there"
+        )
+    return bad
+
+
 def check_keyboard(page) -> list[str]:
     """The title bar is focusable and the arrow keys are the drag's keyboard equivalent."""
     bad = []
@@ -1735,11 +3199,16 @@ def check_keyboard(page) -> list[str]:
     for _ in range(2):
         arrow(page, "ArrowDown")
     after = need(probe(page), "readme")
-    if not near(after["box"]["x"], before["box"]["x"] + 30) or not near(
-        after["box"]["y"], before["box"]["y"] + 20
+    # `after["box"]` against `before["placed"]`, for the same reason the drag check reads
+    # `placed`: `onBarKey` steps from `placed` — `moveTo(this.placed.x + kx * KEY_STEP, …)`
+    # in `src/window.mjs` — because an arrow moves the window from where it is, not from a
+    # remembered position it was clamped out of. Measured from a y-clamped start
+    # (`box.y=-50`, `placed.y=0`): `keyboard move: 400,-50 -> 430,20, want +30,+20`.
+    if not near(after["box"]["x"], before["placed"]["x"] + 30) or not near(
+        after["box"]["y"], before["placed"]["y"] + 20
     ):
         bad.append(
-            f"keyboard move: {before['box']['x']},{before['box']['y']} -> "
+            f"keyboard move: {before['placed']['x']},{before['placed']['y']} -> "
             f"{after['box']['x']},{after['box']['y']}, want +30,+20"
         )
 
@@ -1747,10 +3216,19 @@ def check_keyboard(page) -> list[str]:
     for _ in range(3):
         arrow(page, "ArrowRight", shift=True)
     grown = need(probe(page), "readme")
-    if not near(grown["box"]["w"], sized["box"]["w"] + 30):
+    # `sized["placed"]["w"]` for the same reason: `sizeTo(this.placed.w + kx * KEY_STEP, …)`.
+    # Masked today, because only the position clamp can separate `box` from `placed` on the
+    # width — `clampBox` floors `w` at `MIN_W` and caps it at nothing — but reading the
+    # request where the code reads the placement is the defect either way, and a size cap
+    # returning to `clampBox` would make it bite without this line changing.
+    if not near(grown["box"]["w"], sized["placed"]["w"] + 30):
         bad.append(
-            f"keyboard resize: width {sized['box']['w']} -> {grown['box']['w']}, want +30"
+            f"keyboard resize: width {sized['placed']['w']} -> {grown['box']['w']}, want +30"
         )
+    # `box` on both sides, deliberately: `sizeTo` writes `{...this.box, w, h}` and never
+    # touches `x`, so the question "did shift+arrow also move the window" is a question about
+    # the request. Reading `placed` here would fire on a correct resize, because widening a
+    # window against the left clamp legitimately moves its placement.
     if grown["box"]["x"] != sized["box"]["x"]:
         bad.append("keyboard resize: shift and an arrow moved the window as well as sizing it")
     return bad
@@ -2031,7 +3509,93 @@ def check_map_challenge_folder(page) -> list[str]:
 #:
 #: Three, not the sixty-four a full sweep covers: the short-and-wide corner is where the
 #: overhang was largest, and a check that takes a minute gets run.
+#: Where day 02's measured directories live. `private/` is a real export and is gitignored;
+#: `data/` is the committed synthetic fixture. Both are checked when present, because a
+#: clean clone has only the second and a working machine has both.
+DAY_02_DATA_DIRS = ("private", "data")
+
+#: The overlay files whose crossings index into the per-activity documents.
+DAY_02_OVERLAYS = ("street-noise.json", "area-noise.json")
+
+#: The floor under a disagreement between the two ladder implementations, in metres.
+#:
+#: `prepare.LENGTH_DP` writes lengths to three decimals, so half a millimetre is rounding
+#: rather than disagreement. Measured: 4,835 of 4,836 rungs across the committed fixture and
+#: a 397-activity export fall inside this.
+LADDER_FLOOR_M = 0.0005
+
+#: The relative bar the one rung over the floor has to clear.
+#:
+#: That rung is a Douglas-Peucker decision flipped by a last-bit difference between
+#: `math.cos` and `Math.cos` at the frame origin. Measured worst 6.5e-6 relative, so this
+#: has 1.5x headroom. Relative and not scaled by trace length on purpose: a flip's size
+#: comes from local geometry, and the measurement says so — 72 mm on an 11.1 km trace and
+#: 8.5 mm on a 14.8 km one. An earlier `0.0005 + 1e-6 * L` form was withdrawn for that.
+LADDER_REL_BAR = 1e-5
+
+#: The two ladders for the selected run: the one the browser computes and the one
+#: `prepare.py` wrote into that run's document.
+#:
+#: A named constant rather than a literal inside the check, so a control can perturb one
+#: side of the pair and the comparison can be shown to fail. Rows are `[tolerance, length,
+#: kept]` on both sides.
+DAY_02_LADDERS = """(() => {
+  const w = window.webxp.windows.find((x) => x.programId === 'day-02-lines');
+  if (!w || !w.lines) return { mine: null, written: null };
+  return { mine: w.lines.ladder(), written: w.lines.writtenLadder() };
+})()"""
+
 PANEL_SIZES = ((420, 140), (240, 200), (820, 200))
+
+#: Fill `.detail-foot` until it carries more text than the panel can show, and report the
+#: four heights that decide whether this size is stressing anything.
+#:
+#: Grown against `.detail`'s own height, not written once. A fixed `repeat(24)` is the same
+#: 384 characters at every window size, so the widest size in `PANEL_SIZES` got roughly a
+#: third of the lines the narrowest did and was the least stressed of the three: 820x200
+#: takes 32 repeats to reach the pressure 420x140 reaches at 8. The old test was `height >
+#: 0`, which one line of text satisfies at any size and which therefore said nothing about
+#: how much there was to overflow.
+#:
+#: `panelWanted` against `panelGiven` is the assertion that carries the sweep, and the
+#: footer's own length is not what moves it. Measured at the three sizes, across 8 to 1024
+#: repeats: `footGiven` is 14 px and `panelWanted` is 91 px, both flat. `max-height: 50%`
+#: plus `min-height: 0` let flex shrink `.detail-body` and `.detail-foot` to zero content
+#: height, so what overflows the panel is the part that cannot shrink — the head, plus the
+#: two paddings — and `.detail { overflow: hidden }` is what keeps it off the bar. A change
+#: that lets that minimum fit (dropping the body or foot padding, or letting the head
+#: shrink) makes the clipping dead and the hit tests below unable to tell a contained panel
+#: from a clipped one. The footer is still filled: it is the stress the sizes were chosen
+#: for, and it is what would overflow again if the foot stopped being held.
+#:
+#: The outcomes that are not a measurement are named rather than collapsed into one falsy
+#: answer: `missing` is a renamed or deleted `.detail-foot`, `closed` is a panel that is shut
+#: — `.detail` carries `hidden`, so every child measures 0x0 — `no-panel` is no `.detail` at
+#: all, and `no-window` is the day gone from the desktop. They send a reader to different
+#: places, and none of them is a skip.
+FOOT_STRESS = """(() => {
+  const w = window.webxp.windows.find((x) => x.programId === 'day-02-lines');
+  if (!w || !w.bodyEl) return { state: 'no-window' };
+  const detail = w.bodyEl.querySelector('.detail');
+  if (!detail) return { state: 'no-panel' };
+  if (detail.hidden || !detail.getBoundingClientRect().width) return { state: 'closed' };
+  const foot = w.bodyEl.querySelector('.detail-foot');
+  if (!foot) return { state: 'missing' };
+  let repeats = 8;
+  foot.textContent = 'Overflow probe. '.repeat(repeats);
+  // Re-read the panel every round. In the bottom-sheet branch `.detail` is content-sized up
+  // to its 48% cap, so filling the footer can move the height the loop is aiming at, and a
+  // target captured before the first fill is a different number from the one asserted on.
+  let panelGiven = detail.clientHeight;
+  if (!panelGiven) return { state: 'closed' };
+  while (foot.scrollHeight < panelGiven && repeats < 4096) {
+    repeats *= 2;
+    foot.textContent = 'Overflow probe. '.repeat(repeats);
+    panelGiven = detail.clientHeight;
+  }
+  return { state: 'ok', repeats, footWanted: foot.scrollHeight, footGiven: foot.clientHeight,
+           panelWanted: detail.scrollHeight, panelGiven };
+})()"""
 
 
 def day_02_panel_sweep(page) -> list[str]:
@@ -2042,40 +3606,51 @@ def day_02_panel_sweep(page) -> list[str]:
     positioned, so anything overflowing the panel paints over the credit and the live region.
     """
     bad = []
-    opened = page.evaluate(
-        "(() => { const w = window.webxp.windows.find((x) => x.programId === 'day-02-lines');"
-        " if (!w || !w.lines) return 'no day 02 window';"
-        " const cell = w.lines.firstCellWithPasses();"
-        " if (!cell) return 'no segment with crossings in the loaded data';"
-        " w.lines.openSegment(cell); return ''; })()"
-    )
-    if opened:
-        # Not a product failure and not silence: the committed synthetic data carries no
-        # street file, so this cannot run on a clean clone. Say which it was.
-        return [f"day 02 panel: skipped — {opened}. Not a layout result either way."]
-    time.sleep(1.0)
-
-    # The stress, created rather than assumed.
+    # Awaited, not slept through.
     #
-    # These window sizes were picked because a long footer pushed panel content past the
-    # sheet's cap and over the status bar. The footers are empty now — the copy pass removed
-    # them and `.detail-foot:empty { display: none }` drops the element — so the sizes no
-    # longer stress anything and the check passed without exercising the overflow. Writing a
-    # footer here makes the condition a property of the check instead of a property of this
-    # week's copy.
-    stressed = page.evaluate(
-        "(() => { const w = window.webxp.windows.find((x) => x.programId === 'day-02-lines');"
-        " const foot = w.bodyEl.querySelector('.detail-foot');"
-        " if (!foot) return false;"
-        " foot.textContent = 'Overflow probe. '.repeat(24);"
-        " return foot.getBoundingClientRect().height > 0; })()"
-    )
-    if not stressed:
-        bad.append(
-            "day 02 panel: no .detail-foot to stress — the sweep's window sizes were chosen "
-            "for a long footer and would assert nothing without one"
+    # `openSegment` is `async` (`apps/day-02-lines/lines.mjs`) and `await drawGhosts(...)`
+    # sits before the `panel.open(...)` that ends it, fanning out one full-resolution fetch
+    # per crossing. Discarding the promise and sleeping a second meant the fetches could
+    # finish *after* the footer was stressed, and `panel.open` ends with
+    # `this.foot.textContent = foot || ''` (`shared/map/panel.mjs`) — so the stress was
+    # erased, `.detail-foot:empty { display: none }` dropped the element, and all three sizes
+    # swept with nothing to overflow and reported clean. The guard could not catch it: it ran
+    # before the thing that erases it.
+    # Wait for the street file before concluding there is no street data.
+    #
+    # `street-noise.json` is 1.58 MB and fetched after the window is already usable, so a
+    # single read right after the earlier assertions is a race. It lost: the suite reported
+    # "no segment with crossings in the loaded data" on an export that has 351 of them, and
+    # said so in the words reserved for a clean clone. Impatience wearing the costume of a
+    # legitimate skip is worse than either a pass or a failure.
+    deadline = time.monotonic() + 30
+    opened = "no day 02 window"
+    while time.monotonic() < deadline:
+        opened = page.evaluate(
+            "(async () => { const w = window.webxp.windows.find((x) => x.programId === 'day-02-lines');"
+            " if (!w || !w.lines) return 'no day 02 window';"
+            " const cell = w.lines.firstCellWithPasses();"
+            " if (!cell) return 'no segment with crossings in the loaded data';"
+            " await w.lines.openSegment(cell); return ''; })()",
+            await_promise=True,
         )
-    time.sleep(0.2)
+        if not opened:
+            break
+        time.sleep(0.5)
+    if opened:
+        # Still nothing after waiting: that is the clean-clone case, where the committed
+        # synthetic data carries no street file. Returned as a finding, so it is counted and
+        # printed as a failure — and worded as one. Calling it "skipped" on a `[FAIL]` line
+        # invites exactly the reading this wait exists to prevent: a reader who clears it as
+        # nothing to see. Measured with the data forced absent: 30.4s, then one failure.
+        return [
+            f"day 02 panel: nothing to measure after 30s — {opened}. The panel's layout went "
+            "unasserted; this is not a clean result."
+        ]
+    # Past the panel's slide: `SLIDE_MS` in `shared/map/panel.mjs` is 220 ms and `.detail` is
+    # transformed clear of the map area until it finishes, so a hit test taken mid-slide finds
+    # the panel covering nothing wherever it is pointed.
+    time.sleep(SETTLE_S)
 
     for width, height in PANEL_SIZES:
         page.evaluate(
@@ -2086,6 +3661,66 @@ def day_02_panel_sweep(page) -> list[str]:
             % (width, height)
         )
         time.sleep(0.15)
+
+        # The stress, created at the size it is asserted at.
+        #
+        # It used to be written once, before this loop, at the 1040x680 launch size — so it
+        # verified the stress at a size the sweep never visits and asserted nothing about the
+        # three it does. The panel's geometry is what changes between the sizes, so the
+        # footer has to be re-filled and re-measured at each of them.
+        stress = page.evaluate(FOOT_STRESS)
+        if stress["state"] == "no-window":
+            return bad + [
+                f"day 02 panel: the day-02-lines window is gone by {width}x{height} — the "
+                "sweep cannot measure a panel that has no window"
+            ]
+        if stress["state"] == "no-panel":
+            bad.append(
+                f"day 02 panel: no .detail in the window at {width}x{height} — there is no "
+                "panel to measure, and the hit tests below would pass on its absence"
+            )
+            continue
+        if stress["state"] == "closed":
+            bad.append(
+                f"day 02 panel: the panel is shut at {width}x{height} — `.detail` measures "
+                "0x0, so nothing it holds can cover anything and the hit tests below would "
+                "report clean on a panel that never opened"
+            )
+            continue
+        if stress["state"] == "missing":
+            bad.append(
+                f"day 02 panel: no .detail-foot at {width}x{height} — the sweep's window "
+                "sizes were chosen for a long footer and assert nothing without one"
+            )
+            continue
+        # The panel has to be overflowing something, or the hit tests below cannot tell a
+        # panel that is being clipped from one that fits. This is the assertion the sweep
+        # rests on: `.detail { overflow: hidden }` is only doing work while its content
+        # exceeds it.
+        if stress["panelWanted"] <= stress["panelGiven"]:
+            bad.append(
+                f"day 02 panel: at {width}x{height} the panel's {stress['panelWanted']}px of "
+                f"content fits its {stress['panelGiven']}px box — nothing is being clipped, "
+                "so the hit tests below pass whether `.detail` clips or not"
+            )
+            continue
+        if stress["footWanted"] < stress["panelGiven"]:
+            bad.append(
+                f"day 02 panel: at {width}x{height} the footer took {stress['repeats']} "
+                f"repeats of the probe text and still wants only {stress['footWanted']}px "
+                f"against the panel's {stress['panelGiven']}px — there is not enough in it "
+                "to reach the panel's edge, so the footer is not part of the stress"
+            )
+            continue
+        if stress["footWanted"] <= stress["footGiven"]:
+            bad.append(
+                f"day 02 panel: at {width}x{height} the footer's {stress['footWanted']}px of "
+                f"content fits the {stress['footGiven']}px box it was given — the foot is no "
+                "longer being held to a share of the panel"
+            )
+            continue
+        time.sleep(0.2)
+
         hit = page.evaluate(
             "(() => { const w = window.webxp.windows.find((x) => x.programId === 'day-02-lines');"
             " const at = (sel) => { const e = w.bodyEl.querySelector(sel);"
@@ -2094,12 +3729,8 @@ def day_02_panel_sweep(page) -> list[str]:
             "   if (!r.width || !r.height) return 'zero';"
             "   const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);"
             "   return top ? String(top.className || top.tagName) : 'nothing'; };"
-            " return { status: at('.map-status'), credit: at('.map-attrib'),"
-            "   panelShut: !!w.bodyEl.querySelector('.detail').hidden }; })()"
+            " return { status: at('.map-status'), credit: at('.map-attrib') }; })()"
         )
-        if hit["panelShut"]:
-            bad.append(f"day 02 panel: the panel closed itself at {width}x{height}")
-            continue
         if "map-status" not in hit["status"]:
             bad.append(
                 f"day 02 panel: at {width}x{height} the panel's {hit['status']!r} covers the "
@@ -2320,6 +3951,43 @@ def check_day_02(page) -> list[str]:
                 f"{measured['coarse']:.0f} m — a coarser measurement must be shorter"
             )
 
+        # The two ladders held against each other: the one `geo.mjs` computes in the browser
+        # and the one `prepare.py` wrote into the selected run's document. Two
+        # implementations of Douglas-Peucker over one trace, in two languages, and until now
+        # nothing compared them — `shared/map/README.md` recorded the gap.
+        #
+        # Reached through the window, not through a fresh import, for the reason the icon
+        # check records: `w.lines` is the instance the app is drawing with.
+        pair = page.evaluate(DAY_02_LADDERS)
+        if not pair["mine"] or not pair["written"]:
+            bad.append("day 02: no ladder to compare — nothing selected, or the document carries none")
+        elif len(pair["mine"]) != len(pair["written"]):
+            bad.append(f"day 02: {len(pair['mine'])} rungs in the browser, {len(pair['written'])} written")
+        else:
+            over_floor = 0
+            for (t_js, len_js, kept_js), (t_py, len_py, kept_py) in zip(pair["mine"], pair["written"]):
+                if t_js != t_py:
+                    bad.append(f"day 02: rung {t_js} m vs {t_py} m — different tolerances measured")
+                    break
+                # The strong half: exact on all 4,836 rungs measured, no tolerance wanted.
+                if kept_js != kept_py:
+                    bad.append(f"day 02: at {t_py} m the browser kept {kept_js} points, prepare.py "
+                               f"kept {kept_py} — the two Douglas-Peucker implementations disagree")
+                gap = abs(len_js - len_py)
+                if gap > LADDER_FLOOR_M:
+                    over_floor += 1
+                    rel = gap / len_py
+                    if rel > LADDER_REL_BAR:
+                        bad.append(f"day 02: at {t_py} m the lengths are {gap * 1000:.2f} mm apart "
+                                   f"({rel:.1e} relative), past the {LADDER_REL_BAR:.0e} bar")
+            # One rung over the rounding floor is the known libm flip. Two or more is
+            # arithmetic: a real divergence moves every rung, which is how the
+            # one-decimal-place bug presented.
+            if over_floor > 1:
+                bad.append(f"day 02: {over_floor} of {len(pair['written'])} rungs exceed the "
+                           f"{LADDER_FLOOR_M * 1000:.1f} mm rounding floor — a single flipped "
+                           "decision affects one rung, so this is the arithmetic")
+
     # Both panes of the status bar have to be where a reader can see them: below the map area,
     # and with nothing on top. The status line was inside the scrolling overlay column once,
     # where four cards pushed it out of view while it still held the right text.
@@ -2364,6 +4032,115 @@ def check_day_02(page) -> list[str]:
     )
     if still_open:
         bad.append(f"day 02: the window did not close ({closed or 'close() returned'})")
+    return bad
+
+
+def check_day_02_segment_spans(page) -> list[str]:
+    """Every segment crossing must address the activity document it names.
+
+    Both overlay files store a crossing as an index span `[i0, i1]` into one activity's
+    `recorded` array, and `lines.mjs` slices that array to draw the ghost worm. So an
+    overlay is only meaningful against the per-activity documents it was built from, and
+    re-measuring the export with a different `--trim-m` shifts every index.
+
+    The failure is silent in both directions, which is why it needs a check rather than a
+    glance. A span past the end slices short, the crossing is dropped, and a noisy street
+    reads as a quiet one. A span still in range after a shift points at a different stretch
+    of road and is drawn with no indication that anything is wrong.
+
+    Counted apart because they need different fixes: a crossing naming an activity that is
+    gone means the export lost a run, and a span past the end means the run was shortened.
+
+    Needs no browser. It reads the files `lines.mjs` would fetch, which is the point — this
+    fails on a checkout with stale data, before anything is rendered.
+    """
+    bad: list[str] = []
+    app = REPO_ROOT / "apps" / "day-02-lines"
+    examined: list[str] = []
+    for name in DAY_02_DATA_DIRS:
+        data_dir = app / name
+        index = data_dir / "index.json"
+        if not index.is_file():
+            continue
+        points = {a["id"]: a["points"] for a in json.loads(index.read_text())["activities"]}
+        for overlay in DAY_02_OVERLAYS:
+            path = data_dir / overlay
+            if not path.is_file():
+                continue
+            examined.append(f"{name}/{overlay}")
+            doc = json.loads(path.read_text())
+            total = past_end = unknown = 0
+            for feature in doc.get("features", []):
+                for crossing in feature["properties"].get("passes", []):
+                    total += 1
+                    n = points.get(crossing["activity"])
+                    if n is None:
+                        unknown += 1
+                    elif crossing["i1"] >= n:
+                        past_end += 1
+            if past_end or unknown:
+                bad.append(
+                    f"day 02: {name}/{overlay} has {past_end} of {total} crossings indexing "
+                    f"past the end of their run and {unknown} naming a run that is gone — "
+                    "the overlay predates the activity documents beside it, so the "
+                    "drill-down draws the wrong road. Rebuild it."
+                )
+    # Named, never silent. `data/` carries no overlay files at all — the committed fixture
+    # has `index.json` and six activity documents and nothing else — so on a clean clone
+    # every loop above skips and this check would otherwise report ok having read nothing.
+    # That is the shape `docs/review.md` calls a check whose precondition can go false
+    # without failing, and it is the one outcome this file may not produce.
+    if not examined:
+        bad.append(
+            "day 02: no overlay file was found under "
+            + " or ".join(f"apps/day-02-lines/{name}/" for name in DAY_02_DATA_DIRS)
+            + f" ({', '.join(DAY_02_OVERLAYS)}), so no crossing was checked against any "
+            "activity document. Not a clean result — nothing was measured."
+        )
+    return bad
+
+
+def check_day_02_report(page) -> list[str]:
+    """`report.py` runs to completion over every measured directory on the machine.
+
+    It is the documented reproduction path for the day's figures, so a crash there makes
+    every citation to it dangling. It crashed once for a reason worth guarding: `have_all`
+    required a Strava distance as well as a matched one, and cropping makes the Strava
+    column unresolvable — so the set came out empty, the totals printed as zeroes and
+    `+nan%`, and `np.percentile` then raised. A tool that cannot answer must say which
+    input it is missing.
+
+    `-I` because the day's tools are run that way everywhere else: it keeps the script's
+    own directory off `sys.path` so a stray module beside the data cannot be imported.
+    """
+    bad: list[str] = []
+    app = REPO_ROOT / "apps" / "day-02-lines"
+    tool = app / "tools" / "report.py"
+    if not tool.is_file():
+        return [f"day 02: no {tool.relative_to(REPO_ROOT)} to run"]
+    ran: list[str] = []
+    for name in DAY_02_DATA_DIRS:
+        data_dir = app / name
+        if not (data_dir / "index.json").is_file():
+            continue
+        ran.append(name)
+        result = subprocess.run(
+            [sys.executable, "-I", str(tool), str(data_dir)],
+            capture_output=True,
+            text=True,
+            cwd=REPO_ROOT,
+        )
+        if result.returncode != 0:
+            tail = (result.stderr.strip() or result.stdout.strip()).splitlines()
+            bad.append(
+                f"day 02: report.py exited {result.returncode} over {name}/ — "
+                + " | ".join(tail[-3:])
+            )
+    if not ran:
+        bad.append(
+            "day 02: no directory under apps/day-02-lines/ carries an index.json, so "
+            "report.py was never run. Not a clean result — nothing was measured."
+        )
     return bad
 
 
@@ -2473,7 +4250,7 @@ def check_scaffold(page) -> list[str]:
         # The scaffolded app's stylesheet 404s nothing and the reloads log nothing, but the
         # navigations buffer events that the end-of-run sweep would otherwise attribute to
         # whatever ran last.
-        console_errors(page)
+        drain(page)
     return bad
 
 
@@ -2488,7 +4265,13 @@ def check_scaffold(page) -> list[str]:
 #: of the model rather than of persistence, which `filesystem persists` covers separately.
 FS_ASSERTIONS = """(async () => {
   const bad = [];
-  const { VFS, MAX_FILE_SIZE, normalize } = await import('/shared/fs/vfs.mjs');
+  // An `import()`, because there is no published global for the filesystem model and these
+  // are module-level constants and free functions rather than state a window owns. One URL
+  // in one realm is one instance, so this is the same `MAX_LINKS` the shell enforces rather
+  // than a copy of it — and naming the ceiling is the point: a check that writes `40` here
+  // cannot catch the ceiling changing.
+  const { VFS, MAX_FILE_SIZE, MAX_LINKS, basename, normalize } =
+    await import('/shared/fs/vfs.mjs');
   const { buildSeed, HOME } = await import('/shared/fs/seed.mjs');
   const fs = new VFS();
   buildSeed(fs);
@@ -2713,8 +4496,81 @@ FS_ASSERTIONS = """(async () => {
     VFS.parse(corrupt);
   });
 
+  // `splitPath` drops `.`, so a basename that fell back to '/' answered '/' for '.' — and
+  // `joinPath(dest, '/')` is the root, which is where `cp -r . dest` wrote.
+  want('basename of a dotted path', () => basename('.'), '.');
+  want('basename of the root', () => basename('/'), '/');
+
+  // One ceiling, one value. `realpath` used MAX_LINKS * 8, so it printed a path for a chain
+  // `cat` called unreachable.
+  setup('a chain longer than the ceiling', () => {
+    fs.mkdir('/t/chain');
+    fs.writeFile('/t/chain/end', 'end\\n');
+    fs.symlink('end', '/t/chain/l0');
+    for (let i = 1; i <= MAX_LINKS + 19; i += 1) fs.symlink('l' + (i - 1), '/t/chain/l' + i);
+  });
+  refuses('a chain past the ceiling does not resolve', 'ELOOP',
+          () => fs.readFile('/t/chain/l' + (MAX_LINKS + 19)));
+  refuses('and realpath refuses the same chain', 'ELOOP',
+          () => fs.realpath('/t/chain/l' + (MAX_LINKS + 19)));
+  want('a chain inside the ceiling still resolves', () => fs.realpath('/t/chain/l10'),
+       '/t/chain/end');
+
+  // The seed's relative link to a directory is relative. Holding an absolute target, the
+  // name contradicted `ls -l`.
+  want('relative-dir is relative', () => fs.readlink(HOME + '/links/relative-dir'),
+       '../notes');
+
+  // A write that does not pass through `writeFile` inherits none of its guards. `touch`
+  // stamped an existing inode directly, so `chmod 444 f` then `touch f` moved the mtime and
+  // announced a change on a file the caller may not write — and the announcement is what the
+  // debounced save in `fs.mjs` acts on.
+  setup('a file to lock against touching', () => {
+    fs.writeFile('/t/untouchable', 'open\\n');
+    fs.chmod('/t/untouchable', 0o444);
+    // Date.now() is milliseconds, so a stamp inside the same millisecond as the write would
+    // be indistinguishable from no stamp at all. Waited out, so this can fail.
+    const until = Date.now() + 3;
+    while (Date.now() < until);
+  });
+  let lockedAt = null;
+  setup("the locked file's timestamp", () => { lockedAt = fs.lstat('/t/untouchable').mtime; });
+  const whileLocked = [];
+  setup('watching a refused touch', () => {
+    const unwatch = fs.watch((event) => whileLocked.push(event.op + ' ' + event.path));
+    refuses('touch without the write bit', 'EACCES', () => fs.touch('/t/untouchable'));
+    unwatch();
+  });
+  want('and the mtime did not move', () => fs.lstat('/t/untouchable').mtime, lockedAt);
+  // A refusal that still notifies has told the saver that a read-only file changed.
+  want('and nothing was announced', () => whileLocked.join(), '');
+  want('and the contents are untouched', () => fs.readFile('/t/untouchable'), 'open\\n');
+  // Not a blanket refusal. The create branch, and a touch the caller may make, both work.
+  want('touch creates a name in a directory the caller may write',
+       () => { fs.touch('/t/touched'); return fs.lstat('/t/touched').size; }, 0);
+  setup('unlocking it, a moment later', () => {
+    fs.chmod('/t/untouchable', 0o644);
+    const until = Date.now() + 3;
+    while (Date.now() < until);
+  });
+  // `chmod` moves the ctime and not the mtime, so only the touch can satisfy this.
+  want('touch moves the mtime once the bit is back', () => {
+    fs.touch('/t/untouchable');
+    return fs.lstat('/t/untouchable').mtime > lockedAt;
+  }, true);
+  // `touch dir` is a write to the directory, and needs the bit on the directory itself.
+  setup('a directory without its write bit', () => {
+    fs.mkdir('/t/nowrite');
+    fs.chmod('/t/nowrite', 0o555);
+  });
+  refuses('touch on a directory without the write bit', 'EACCES', () => fs.touch('/t/nowrite'));
+
   // A batch notifies once, at the end, with the tree whole. Un-batched, the first mutation
   // of a reseed told every watcher the filesystem was empty.
+  //
+  // This block MUST stay last: it calls `fs.reset()`, so anything below it runs against a
+  // bare root. Appended after it, the two blocks above reported `ENOENT /t/untouchable` ten
+  // times instead of passing.
   const during = [];
   setup('a batched rebuild', () => {
     const unwatch = fs.watch(() => during.push(fs.exists(HOME)));
@@ -2742,8 +4598,9 @@ def fs_reset(page) -> None:
     page.navigate(BASE_URL + "/")
     time.sleep(1.2)
     # The navigation itself buffers events that would otherwise be attributed to whatever
-    # check runs next.
-    console_errors(page)
+    # check runs next. Kept rather than discarded: a drain for a reason must not also delete
+    # a real error raised before it.
+    drain(page)
 
 
 def check_filesystem(page) -> list[str]:
@@ -2927,6 +4784,118 @@ TERM_LINES = (
     ("realpath /tmp/h", ["/etc/hosts"], []),
     ("rm /tmp/h", [], []),
     ("cat /etc/hosts", ["localhost"], []),
+    # `basename('.')` answered '/', and `joinPath(dest, '/')` is the root: `cp -r . dest`
+    # copied into `/` and exited 0. The basename of the *resolved* source is the fix.
+    ('mkdir -p /tmp/dot/dst /tmp/dot/moved', [], []),
+    ('cd notes', [], []),
+    ('cp -r . /tmp/dot/dst', [], ['Permission denied', 'No such file']),
+    ('cd ~', [], []),
+    ('ls /tmp/dot/dst', ['notes'], []),
+    ('ls /tmp/dot/dst/notes', ['todo.txt', 'ideas.txt'], []),
+    ('ls /', ['etc', 'home'], ['todo.txt', 'ideas.txt']),
+    ('cd /tmp/dot/dst/notes', [], []),
+    # The pane also reports this session's directory being moved out from under it, which is
+    # the watcher doing its job; the assertion is that `mv .` aimed at the resolved name.
+    ('mv . /tmp/dot/moved', [], ['File exists', 'Directory not empty']),
+    ('cd ~', [], []),
+    ('ls /tmp/dot/moved', ['notes'], []),
+    ('ls /', ['etc', 'home'], ['todo.txt']),
+    # `rm -rf /` emptied the filesystem and then reported a child it happened to fail on
+    # last — a path the reader never typed.
+    ('rm -rf /', ['dangerous', "'/'"], ['No such file', 'Permission denied']),
+    ('ls /', ['etc', 'home', 'tmp'], []),
+    ('cd /', [], []),
+    ('rm -rf .', ['dangerous', "which is '/'"], []),
+    ('cd ~', [], []),
+    ('cat /etc/motd', ['POSIX shell'], []),
+    # `..` is resolved, not cancelled lexically before anything is looked at. `cd` and `ls`
+    # disagreed about the same string.
+    ('cd /nope/..', ['No such file or directory'], []),
+    ('pwd', ['/home/user'], ['/nope']),
+    ('cd /etc/motd/..', ['Not a directory'], []),
+    ('pwd', ['/home/user'], ['/etc']),
+    # A symlink child is recreated, never walked through. Two links pointing through each
+    # other re-entered the same directories once per hop: 642 stray directories from one cp.
+    ('mkdir -p /tmp/loopy/a /tmp/loopy/b', [], []),
+    ('ln -s /tmp/loopy/b /tmp/loopy/a/tob', [], []),
+    ('ln -s /tmp/loopy/a /tmp/loopy/b/toa', [], []),
+    ('cp -r /tmp/loopy/a /tmp/loopy/copy', [], ['Too many levels']),
+    ('ls -l /tmp/loopy/copy', ['tob -> /tmp/loopy/b'], []),
+    ('find /tmp/loopy/copy -type d', ['/tmp/loopy/copy'], ['/tmp/loopy/copy/tob']),
+    # One walk's bound, not the command's: two operands that resolve to one directory are
+    # two copies, which is what a shell does. The guard that keeps the recursion finite is
+    # scoped to a single operand's walk, so it cannot refuse this.
+    ('mkdir /tmp/sametree', [], []),
+    ('cp -r notes links/relative-dir /tmp/sametree', [], ['already', 'Not a directory', 'No such file']),
+    ('ls /tmp/sametree', ['notes', 'relative-dir'], []),
+    ('ls /tmp/sametree/notes', ['todo.txt', 'ideas.txt'], []),
+    ('ls /tmp/sametree/relative-dir', ['todo.txt', 'ideas.txt'], []),
+    ('mkdir /tmp/twice', [], []),
+    ('cp -r notes notes /tmp/twice', [], ['already']),
+    ('ls /tmp/twice/notes', ['todo.txt', 'ideas.txt'], []),
+    # One child that cannot be read is reported and skipped. It used to abandon every
+    # sibling after it, leaving a copy silently missing two of six names.
+    ('cp -r links /tmp/lcopy', [], ['No such file or directory']),
+    ('ls -a /tmp/lcopy', ['absolute', 'broken', 'ideas-too', 'loop', 'relative', 'relative-dir'], []),
+    ('mkdir /tmp/perm', [], []),
+    ('touch /tmp/perm/a /tmp/perm/zlast', [], []),
+    ('chmod 000 /tmp/perm/a', [], []),
+    ('cp -r /tmp/perm /tmp/permcopy', ['Permission denied'], []),
+    ('ls /tmp/permcopy', ['zlast'], []),
+    # `tree` reports an unreadable directory and carries on. Thrown, it cost every later
+    # sibling and the summary line, so the output described a smaller tree than the one there.
+    ('mkdir -p /tmp/tr/sub', [], []),
+    ('touch /tmp/tr/zlast', [], []),
+    ('chmod 000 /tmp/tr/sub', [], []),
+    ('tree /tmp/tr', ['Permission denied', 'zlast', '1 directory, 1 file'], []),
+    # Quoting is per character span. A word-wide flag made one quoted character suppress
+    # globbing across the whole word.
+    ('ls "no"*', ['ideas.txt', 'todo.txt'], ['No such file']),
+    ("touch '/tmp/star*'", [], []),
+    ("ls '/tmp/star*'", ['/tmp/star*'], ['No such file']),
+    # `\` is honoured inside double quotes, which the header advertises. The closing-quote
+    # scan stopped at an escaped one and reported a line with no unterminated quote in it.
+    ('echo "a\\"b"', ['a"b'], ['unterminated']),
+    # A trailing separator is the directories-only constraint. Split off as an empty
+    # component, it was dropped and `echo */` answered with regular files.
+    ('echo */', ['links/', 'notes/'], ['readme.txt']),
+    # `echo` takes no options past a leading -n. Through the general flag parser, `echo -5`
+    # answered `invalid option -- '5'` where a shell prints `-5`.
+    ('echo -5', ['-5'], ['invalid option']),
+    ('echo -n hi', ['hi'], []),
+    # An operand a command cannot carry out is an error, not a word to drop: `uniq a b`
+    # ignored `b` and `pwd junk` printed the directory and exited 0.
+    ('echo one > /tmp/u1', [], []),
+    ('echo two > /tmp/u2', [], []),
+    ('uniq /tmp/u1 /tmp/u2', ["extra operand '/tmp/u2'"], ['one', 'two']),
+    ('pwd /tmp', ['extra operand'], ['/home/user']),
+    ('whoami root', ['extra operand'], ['user']),
+    ('date now', ['extra operand'], []),
+    ('df -h /', ['extra operand'], ['webxp-vfs']),
+    ('tree /tmp /etc', ['extra operand'], ['directories']),
+    ('history 5', ['extra operand'], []),
+    # `[]]` is a class holding `]`. Unescaped, it compiled to the empty class `[]`, which
+    # matched nothing and threw nothing, so the literal fallback never engaged.
+    ("touch '/tmp/]'", [], []),
+    ("find /tmp -name '[]]'", ['/tmp/]'], []),
+    ('ls /tmp/[]]', ['/tmp/]'], ['No such file']),
+    # `touch` is a write, and a write needs the bit. It used to move the mtime of a file the
+    # reader cannot write and announce a change the saver then wrote out.
+    ('echo open > /tmp/ro', [], []),
+    ('chmod 444 /tmp/ro', [], []),
+    ('touch /tmp/ro', ['Permission denied'], []),
+    ('touch /tmp/ro /tmp/ro-sibling', ['Permission denied'], []),
+    ('ls /tmp/ro-sibling', ['/tmp/ro-sibling'], ['No such file']),
+    ('cat /tmp/ro', ['open'], []),
+    ('chmod 644 /tmp/ro', [], []),
+    ('touch /tmp/ro', [], ['Permission denied']),
+    # Every redirection in a stage is opened; the last one gets the output.
+    ('echo a > /tmp/r1 > /tmp/r2', [], []),
+    ('cat /tmp/r1', [], ['No such file']),
+    ('cat /tmp/r2', ['a'], ['No such file']),
+    ('cd /tmp', [], []),
+    ('cd -', ['/home/user'], ['OLDPWD not set']),
+    ('pwd', ['/home/user'], ['/tmp']),
     ("help", ["Where you are", "Reading", "Writing"], []),
     ("whoami", ["user"], []),
     ("df", ["webxp-vfs", "persistence:"], []),
@@ -2945,6 +4914,179 @@ def check_terminal(page, *, invert: bool = False) -> list[str]:
         bad.append(f"terminal: no banner in the pane — {banner['text'][:60]!r}")
     if "user@webxp:~$" not in banner["prompt"]:
         bad.append(f"terminal: prompt is {banner['prompt']!r}")
+
+    # These run before the row table, not after it, and the order is load-bearing: the rows
+    # leave `/tmp/perm/a` and `/tmp/tr/sub` at mode 000 on purpose, and `du -s /` below
+    # cannot walk an unreadable directory — run afterwards it would compare a short total
+    # against `df` and report a defect in `du` that is really the rows' fixture.
+
+    # 1. An unreadable ancestor of the working directory must not freeze the status bar.
+    # `fs.exists` rethrows EACCES and the watcher had no guard, so one `chmod 000` on an
+    # ancestor stopped the bar and the prompt for the rest of the session, silently.
+    def status_line() -> str:
+        return page.evaluate(
+            "(() => { const w = window.webxp.windows.find((w) => w.id === %s);"
+            " return w.statusEl ? w.statusEl.textContent : ''; })()" % json.dumps(shell)
+        )
+
+    term_run(page, "mkdir -p /tmp/sealed/deep", shell)
+    term_run(page, "cd /tmp/sealed/deep", shell)
+    term_run(page, "chmod 000 /tmp/sealed", shell)
+    frozen = status_line()
+    term_run(page, "touch /tmp/after-the-chmod", shell)
+    if status_line() == frozen:
+        bad.append(f"terminal: the status bar stopped at {frozen!r} when an ancestor of the "
+                   "working directory became unreadable")
+    term_run(page, "chmod 755 /tmp/sealed", shell)
+    # And the probe still does what it is for: a removed directory moves the session.
+    moved = term_run(page, "rm -rf /tmp/sealed/deep", shell)
+    if "is gone; moved to" not in moved:
+        bad.append(f"terminal: a removed working directory was not reported — {moved!r}")
+    term_run(page, "cd ~", shell)
+
+    # 2. `help` is generated from the table, groups included. A written-out list of group
+    # titles dropped any command whose group was not in it — from the one command that is
+    # the reference, silently.
+    #
+    # An `import()`, because `COMMANDS` is a module-level table and no window publishes it.
+    # One URL in one realm is one instance, so this is the table `win.app.shell` dispatches
+    # against and not a copy — asserted rather than assumed on the next line, because that
+    # identity is the whole reason the injection reaches `help`. Measured: injecting here
+    # makes the live shell's own completion offer `zzprobe`, and deleting it takes it away.
+    probed = page.evaluate(
+        "(async () => { const { COMMANDS } = await import('/apps/terminal/commands.mjs');"
+        " COMMANDS.zzprobe = { group: 'experimental', usage: 'zzprobe',"
+        "   summary: 'a probe', run: () => 0 };"
+        " const w = window.webxp.windows.find((w) => w.id === %s);"
+        " return w.app.shell.complete('zzprob').matches; })()"
+        % json.dumps(shell),
+        await_promise=True,
+    )
+    listing = term_run(page, "help", shell)
+    restored = page.evaluate(
+        "(async () => { const { COMMANDS } = await import('/apps/terminal/commands.mjs');"
+        " delete COMMANDS.zzprobe;"
+        " const w = window.webxp.windows.find((w) => w.id === %s);"
+        " return { live: w.app.shell.complete('zzprob').matches,"
+        "          inTable: 'zzprobe' in COMMANDS }; })()"
+        % json.dumps(shell),
+        await_promise=True,
+    )
+    if probed != ["zzprobe"]:
+        bad.append(
+            f"terminal: the probe command was injected and the live shell offers {probed!r} "
+            "— the table this reached is not the one the window dispatches against, so the "
+            "listing below says nothing about a missing group title"
+        )
+    elif "zzprobe" not in listing:
+        bad.append("terminal: help dropped a command whose group has no title")
+    # The injection is a mutation of the one live table, so the removal is asserted and not
+    # merely attempted: a probe command left behind outlives this check and every one after.
+    if restored["inTable"] or restored["live"]:
+        bad.append(
+            f"terminal: the probe command survived its removal ({restored!r}) — the command "
+            "table is left mutated for the rest of the run"
+        )
+
+    # 3. `uname -a` reports the filesystem's own format version. Written out as `vfs-1`, it
+    # would keep saying 1 after FORMAT_VERSION was bumped.
+    #
+    # An `import()` again, and safe for the same reason: a module-level constant, shared, and
+    # read rather than written.
+    version = page.evaluate(
+        "import('/shared/fs/vfs.mjs').then((m) => m.FORMAT_VERSION)", await_promise=True)
+    named = term_run(page, "uname -a", shell)
+    if f"vfs-{version}" not in named:
+        bad.append(f"terminal: uname -a printed {named.strip()[:80]!r}, want vfs-{version}")
+
+    # 4. readlink and realpath print a symlink's target; grouped as writes, `help` told the
+    # reader that printing it writes to the filesystem.
+    groups = page.evaluate(
+        "(async () => { const { COMMANDS } = await import('/apps/terminal/commands.mjs');"
+        " return [COMMANDS.readlink.group, COMMANDS.realpath.group]; })()", await_promise=True)
+    if groups != ["read", "read"]:
+        bad.append(f"terminal: readlink/realpath are grouped {groups}, want both 'read'")
+
+    # 5. One inode with two names is one file's worth of space. `du` charged it per name, so
+    # it reported space the filesystem does not use.
+    #
+    # Through the window rather than through `openFileSystem()`: `win.app.shell.fs` is the
+    # mount this terminal's `du` and `df` both run against, so there is no module specifier
+    # here to mis-spell into a second instance.
+    used = page.evaluate(
+        "(() => { const w = window.webxp.windows.find((w) => w.id === %s);"
+        " return w.app.shell.fs.stats().used; })()" % json.dumps(shell)
+    )
+    counted = term_run(page, "du -s /", shell)
+    if f"{used}\t" not in counted:
+        bad.append(f"terminal: du -s / counted {counted.strip()[:40]!r}, and df says {used}")
+
+    # 6. Tab offers command names in every command position, not only the first word.
+    offered = page.evaluate(
+        "window.webxp.windows.find((w) => w.id === %s).app.shell.complete('ls | ca').matches"
+        % json.dumps(shell))
+    if offered != ["cat"]:
+        bad.append(f"terminal: Tab after a pipe offered {offered!r}, want ['cat']")
+
+    # 7. The prompt's identity and `whoami` are one fact, and the hostname is the one in
+    # /etc/hosts. Built with {uid: 0}, `whoami` said root while the prompt said user@webxp.
+    #
+    # The one block here that deliberately does *not* use the live instance: it constructs a
+    # root-owned `VFS` and a `Shell` on it, because the defect is in how the identity is
+    # derived at construction and the desktop only ever builds one uid. A second instance is
+    # the subject, not an accident.
+    IDENTITY = """(async () => {
+      const { VFS } = await import('/shared/fs/vfs.mjs');
+      const { buildSeed } = await import('/shared/fs/seed.mjs');
+      const { Shell } = await import('/apps/terminal/shell.mjs');
+      const fs = new VFS({ uid: 0, gid: 0 });
+      fs.batch('seed', () => buildSeed(fs));
+      const shell = new Shell({ fs });
+      let printed = '';
+      await shell.run('whoami', { write: (t) => { printed += t; },
+                                  warn: (t) => { printed += t; } });
+      const host = shell.prompt().split('@')[1].split(':')[0];
+      return { prompt: shell.prompt(), printed: printed.trim(),
+               hostInHosts: fs.readFile('/etc/hosts').includes('127.0.0.1   ' + host),
+               rootInPasswd: fs.readFile('/etc/passwd').includes('root:x:0:0:'),
+               oldcwdDeclared: Object.prototype.hasOwnProperty.call(shell, 'oldcwd') };
+    })()"""
+    who = page.evaluate(IDENTITY, await_promise=True)
+    if who["printed"] != "root" or not who["prompt"].startswith("root@"):
+        bad.append(f"terminal: whoami said {who['printed']!r} and the prompt is "
+                   f"{who['prompt']!r} — the identity is not one fact")
+    if not who["hostInHosts"] or not who["rootInPasswd"]:
+        bad.append(f"terminal: the prompt's host is not the one in /etc/hosts — {who!r}")
+    if not who["oldcwdDeclared"]:
+        bad.append("terminal: `oldcwd` is session state a command invents")
+
+    # 8. A defect inside a command must not print in the register of a filesystem refusal.
+    # `cat: Cannot read properties of undefined` and `cat: Permission denied` are the same
+    # line to a reader, and only one of them is a fact about their files. The fault is
+    # injected into the mount this window's shell holds, so a real command's real catch site
+    # is what is measured — and `delete` puts the prototype method back rather than leaving
+    # an own property that merely looks like it.
+    page.evaluate(
+        "(() => { const w = window.webxp.windows.find((w) => w.id === %s);"
+        " w.app.shell.fs.readFile = () => { const nothing = undefined;"
+        "   return nothing.length; };"
+        " return true; })()" % json.dumps(shell)
+    )
+    swallowed = term_run(page, "cat notes/todo.txt", shell)
+    page.evaluate(
+        "(() => { const w = window.webxp.windows.find((w) => w.id === %s);"
+        " delete w.app.shell.fs.readFile; return true; })()" % json.dumps(shell)
+    )
+    if "internal error" not in swallowed:
+        bad.append(f"terminal: a defect inside cat printed {swallowed.strip()[:90]!r}, which "
+                   "reads as a refusal from the filesystem")
+    # Drained here on purpose: this one console error is the assertion, and left in the
+    # buffer the end-of-run sweep would attribute it to whatever check runs next.
+    if not any("cat threw" in line for line in console_errors(page)):
+        bad.append("terminal: a defect inside cat did not reach the console under its name")
+    # And the mount is unpatched again, or every check after this one is measuring a stub.
+    if "read the window model" not in term_run(page, "cat notes/todo.txt", shell):
+        bad.append("terminal: the defect control left the filesystem patched")
 
     lines = TERM_LINES
     if invert:
@@ -3177,7 +5319,7 @@ def check_fs_persistence(page) -> list[str]:
 
     page.navigate(BASE_URL + "/")
     time.sleep(1.2)
-    console_errors(page)
+    drain(page)
     launch(page, "terminal")
     restored = term_parts(page)
     shell = restored["id"]
@@ -3221,6 +5363,17 @@ def check_fs_persistence(page) -> list[str]:
     return bad
 
 
+#: The checks `--prove-failure` knows how to invert.
+#:
+#: Each takes `invert=True` and asserts the opposite of its usual claim, so a run with the
+#: flag must report them as failures. Three is still thin, and the gap is recorded in
+#: `docs/review.md` rather than papered over: for every other check, "shown capable of
+#: failing" rests on a negative control run at the time it was written, or on the review
+#: history, rather than on a control the suite re-runs.
+INVERTIBLE = (check_drag, check_reentrant_gesture, check_terminal)
+INVERTIBLE_NAMES = ("drag", "re-entrant gesture", "terminal")
+
+
 CHECKS = (
     ("manifest is current", check_manifest_current),
     ("boot", check_boot),
@@ -3233,6 +5386,11 @@ CHECKS = (
     ("iframe app", check_iframe_app),
     ("basemap app", check_basemap_app),
     ("30DaysOfMaps folder", check_map_challenge_folder),
+    # Before `day 02 lines`, deliberately: both read the files that day is about, and a
+    # stale segment file should be named as stale before a browser renders it and the
+    # failure arrives as a status-line message instead.
+    ("day 02 segment spans", check_day_02_segment_spans),
+    ("day 02 report", check_day_02_report),
     ("day 02 lines", check_day_02),
     ("active styling", check_active_styling),
     ("loading frame", check_loading_frame),
@@ -3244,12 +5402,17 @@ CHECKS = (
     ("resize past the desktop", check_resize_oversize),
     ("offscreen clamp", check_offscreen_clamp),
     ("viewport shrink", check_viewport_shrink),
+    ("viewport round trip", check_viewport_round_trip),
     ("minimum size", check_min_size),
     ("container query", check_container_query),
     ("minimise and restore", check_minimize_restore),
     ("taskbar toggle", check_taskbar_toggles),
     ("maximise", check_maximize),
+    ("title bar double click", check_title_double_click),
     ("keyboard move and resize", check_keyboard),
+    ("re-entrant gesture", check_reentrant_gesture),
+    ("state announcements", check_announce_states),
+    ("icon tokens", check_icon_tokens),
     ("focus order", check_focus_order),
     ("desktop blur", check_desktop_blur),
     ("close", check_close),
@@ -3258,6 +5421,13 @@ CHECKS = (
     # Last, because it registers a program and provokes a console error. Its cleanup puts
     # the desktop back, but a check that deliberately breaks something belongs at the end.
     ("mount failure", check_mount_failure),
+    ("ready after close", check_ready_after_close),
+    # These two open and close windows of their own, and `desktop destroy` builds two
+    # desktops in scratch roots. Here because the filesystem group reloads the page straight
+    # after, so anything they leave behind is cleared by something other than their own
+    # cleanup — which is the belt to their braces.
+    ("cascade across a close", check_cascade_across_close),
+    ("desktop destroy", check_desktop_destroy),
     # The filesystem group. After the window-manager checks because the first of these
     # reloads the page to clear the stored tree, and a reload closes every window the
     # earlier checks opened.
@@ -3329,6 +5499,11 @@ def main(argv: list[str] | None = None) -> int:
             print("server did not come up", file=sys.stderr)
             return 1
 
+        wrong_tree = serving_this_tree(base)
+        if wrong_tree:
+            print("\n".join(wrong_tree), file=sys.stderr)
+            return 1
+
         width, height = VIEWPORT
         with Browser() as browser:
             page = browser.page()
@@ -3358,28 +5533,121 @@ def main(argv: list[str] | None = None) -> int:
             # The apps have to finish loading before anything is measured.
             time.sleep(1.0)
 
-            for name, check in checks:
-                if args.prove_failure and check in (check_drag, check_terminal):
-                    found = check(page, invert=True)
-                else:
-                    found = check(page)
-                failures += [f"{name}: {message}" for message in found]
-                mark = "FAIL" if found else "ok"
-                print(f"  [{mark:>4}] {name}")
-                for message in found:
-                    print(f"         {message}")
-                shoot(page, out_dir / f"{name.replace(' ', '-').replace('(', '').replace(')', '')}.png")
+            inverted_ran: list[str] = []
+            inverted_fired: list[str] = []
+            #: Every check the loop got to the end of. Compared to `checks` afterwards, so
+            #: "this check never ran" cannot be inferred from a gap in the log — it is stated.
+            ran: list[str] = []
+            abandoned = ""
+            try:
+                for name, check in checks:
+                    # A check that raises is a failed check, named.
+                    #
+                    # There was no `try` here. One raise took the run out through a
+                    # traceback with no `[FAIL]` line and nothing identifying the check: a
+                    # `KeyError: 'w'` out of `probe` stopped the loop while the log still
+                    # read 14 passes, and the 26 checks behind it were unmeasured and unnamed.
+                    # A harness must fail when it cannot read what it was pointed at, and it
+                    # must say which thing it was.
+                    try:
+                        if args.prove_failure and check in INVERTIBLE:
+                            inverted_ran.append(name)
+                            found = check(page, invert=True)
+                            if found:
+                                inverted_fired.append(name)
+                        else:
+                            found = check(page)
+                    except Exception as error:  # noqa: BLE001 - reported, never discarded
+                        # The traceback to stderr, because the address of the raise is the
+                        # most useful thing about it and a one-line message loses it.
+                        traceback.print_exc()
+                        kind = (
+                            "could not measure" if isinstance(error, HarnessError)
+                            else "raised"
+                        )
+                        found = [
+                            f"{kind} {type(error).__name__}: {error} — this check did not "
+                            "finish, so nothing it asserts was measured"
+                        ]
+                    failures += [f"{name}: {message}" for message in found]
+                    mark = "FAIL" if found else "ok"
+                    print(f"  [{mark:>4}] {name}")
+                    for message in found:
+                        print(f"         {message}")
+                    shot = out_dir / f"{name.replace(' ', '-').replace('(', '').replace(')', '')}.png"
+                    try:
+                        shoot(page, shot)
+                    except Exception as error:  # noqa: BLE001 - reported, never discarded
+                        failures.append(f"{name}: the screenshot after it failed — {error}")
+                        print(f"  [FAIL] {failures[-1]}")
+                    ran.append(name)
+            except Exception as error:  # noqa: BLE001 - reported, never discarded
+                # Only a dead browser or a dead page reaches here, since every check is
+                # already wrapped. Caught rather than raised so the report below still runs:
+                # the one outcome this harness must never produce is a short run that looks
+                # like a clean one.
+                traceback.print_exc()
+                abandoned = f"{type(error).__name__}: {error}"
 
-            errors = console_errors(page)
+            never = [name for name, _ in checks if name not in ran]
+            if never:
+                failures.append(
+                    f"the run was abandoned after {len(ran)} of {len(checks)} checks"
+                    + (f" — {abandoned}" if abandoned else "")
+                    + f"; never measured: {', '.join(never)}"
+                )
+                print(f"  [FAIL] {failures[-1]}")
+
+            # The end-of-run sweep and the final screenshot, guarded for the same reason the
+            # loop is: a page that died mid-run took `main` out through a traceback from
+            # here, so the failure count and the exit code were never printed and the only
+            # evidence of 40 unmeasured checks was the absence of their lines. Measured by
+            # closing the page from inside a check: the loop reported all three remaining
+            # checks and then `shoot` raised out of `main`.
+            try:
+                errors = PENDING + console_errors(page)
+            except Exception as error:  # noqa: BLE001 - reported, never discarded
+                errors = []
+                failures.append(f"console: the end-of-run sweep could not run — {error}")
+                print(f"  [FAIL] {failures[-1]}")
             failures += [f"console: {message}" for message in errors]
             for message in errors:
                 print(f"  [FAIL] console: {message}")
 
-            size = shoot(page, out_dir / "desktop.png")
-            print(f"\n  desktop.png  {size // 1024} KB")
+            try:
+                size = shoot(page, out_dir / "desktop.png")
+                print(f"\n  desktop.png  {size // 1024} KB")
+            except Exception as error:  # noqa: BLE001 - reported, never discarded
+                failures.append(f"the closing screenshot failed — {error}")
+                print(f"  [FAIL] {failures[-1]}")
     finally:
         server.terminate()
         server.wait(timeout=10)
+
+    # `--prove-failure` inverts the exit code: the run is correct when the inversions fired.
+    #
+    # Without this the flag was decoration. It inverted two assertions, never asked whether
+    # they had produced a failure, and printed "all checks passed" either way — so the one
+    # control standing behind every clean run could not itself fail. A `--only` that excludes
+    # both invertible checks is now an error rather than a vacuous pass.
+    if args.prove_failure:
+        if not inverted_ran:
+            print(
+                "\n--prove-failure inverted nothing: the filter excluded every invertible "
+                f"check ({', '.join(sorted(INVERTIBLE_NAMES))})",
+                file=sys.stderr,
+            )
+            return 1
+        missed = [name for name in inverted_ran if name not in inverted_fired]
+        if missed:
+            print(
+                f"\n--prove-failure: {', '.join(missed)} ran inverted and reported no "
+                "failure, so the harness has not been shown capable of failing",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"\n--prove-failure: {', '.join(inverted_fired)} failed as required")
+        return 0
 
     if failures:
         print(f"\n{len(failures)} failure(s)", file=sys.stderr)

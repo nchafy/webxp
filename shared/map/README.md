@@ -234,8 +234,8 @@ the style's `name` and compares, which identifies the style rather than the mome
 ```
 
 Drives the Chrome already on the machine over the DevTools Protocol, screenshots each check
-into `screenshots/`, and fails on a console error. Two of its thirty-three checks are about
-the map. `basemap app` asserts:
+into `screenshots/`, and fails on a console error. Two of its checks are about the map.
+`basemap app` asserts:
 
 - the canvas fills `.map-area` — a collapsed container fetches every tile, reports the style
   loaded and draws nothing, which is what MapLibre's own `position: relative` did until this
