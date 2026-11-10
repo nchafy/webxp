@@ -50,9 +50,67 @@
 }
 
 /* The overview sits below the icons, separated by a rule rather than by space alone: it is a
-   different kind of thing from the folder's contents, not a fifth item in it. */
+   different kind of thing from the folder's contents, not a fifth item in it. The address box
+   is the same kind of thing again, and takes the same separator. */
+.app-showup .folder-lookup,
 .app-showup .folder-overview {
   margin-top: .6rem;
   padding-top: .5rem;
   border-top: 1px solid var(--rule);
+}
+
+/* The address box.
+ *
+ * The form ships `hidden` and is revealed by script, so its display rule carries
+ * `:not([hidden])`. Without that the rule beats the UA stylesheet's `display: none` and the
+ * form is visible, focusable and submittable before it has the index it answers from — which
+ * is the state this box is built never to be in. `hidden` is a UA default, not a guarantee.
+ */
+.app-showup .address-form:not([hidden]) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .3rem .35rem;
+}
+
+/* Its own line, because the label is the only place the four accepted kinds of input are
+   named and it must not be clipped to make room for the field. */
+.app-showup .address-label {
+  flex: 1 1 100%;
+}
+
+/* `min-width: 0` so a flex item with an intrinsic minimum does not push the button out of a
+   narrow window; the field gives up its width instead. */
+.app-showup .address-input {
+  flex: 1 1 11rem;
+  min-width: 0;
+}
+
+/* Reserved whether or not it is saying anything, so a resolution does not shunt the meeting
+   below it down the window. It is a live region, so it stays in the layout rather than being
+   hidden when empty — a region that comes and goes announces unpredictably. */
+.app-showup .address-status {
+  margin: .4rem 0 0;
+  min-height: 1.3em;
+  color: var(--muted);
+}
+
+.app-showup .address-results:not(:empty) {
+  margin-top: .4rem;
+}
+
+/* The destination names its row, and "Council / District 33" over two lines reads as two
+   destinations. The longest label is a board's at 31 characters, which fits its column at
+   every width the two-column layout survives. */
+.app-showup .address-results tbody th {
+  white-space: nowrap;
+}
+
+/* Below 26rem `theme.css` stacks each cell as a block, and a block cannot escape `nowrap`:
+   "Staten Island Community Board 1" at the window's 220px floor would run straight out of
+   the sheet. The stacked row is one label per line, so wrapping costs nothing there. */
+@container window (max-width: 26rem) {
+  .app-showup .address-results tbody th {
+    white-space: normal;
+  }
 }

@@ -17,18 +17,25 @@
  *
  * ## The overview
  *
- * The next citywide Council meeting, which is what the old landing page led with: the
- * committee, the day and time, how to get into the building, and how long is left to file
- * written testimony. It is citywide, so it belongs to no district and had nowhere to go when
- * the pages were deleted — which is why it vanished. `preview.json` has carried it the whole
- * time and nothing rendered it.
+ * Two blocks, in the order the old landing page had them: the address box, then the next
+ * citywide Council meeting.
  *
- * Read in `ready` rather than `mount`, because it is a fetch: the window should be on screen
- * before anything waits on the network.
+ * The address box is `apps/showup/address.mjs`, which carries the whole reason only one of
+ * its four kinds of input ever leaves the machine. It is in this position because that is
+ * where the landing page put it — the first thing on the page was "which district am I in".
+ *
+ * The meeting is the committee, the day and time, how to get into the building, and how long
+ * is left to file written testimony. It is citywide, so it belongs to no district and had
+ * nowhere to go when the pages were deleted — which is why it vanished. `preview.json` has
+ * carried it the whole time and nothing rendered it.
+ *
+ * Both are read in `ready` rather than `mount`, because both are fetches: the window should
+ * be on screen before anything waits on the network.
  */
 
 import { group, iconTile } from '../../src/widgets.mjs';
 import { load, PREVIEW } from '../../shared/showup/data.mjs';
+import { addressBox } from './address.mjs';
 
 //: What the folder contains, in the order it shows them.
 const CONTENTS = [
@@ -96,11 +103,19 @@ export default {
   icon: 'folder',
   singleton: true,
   onDesktop: true,
-  autostart: true,
+  // Not `autostart`. It was, while this was the only icon on its own desktop; here it is
+  // one icon among forty-odd, and a window this project opened uninvited sat over the
+  // click targets of nine checks in `scripts/check.py` — including `boot`, which says
+  // outright that a fresh desktop wants no windows open. A guest does not open its own
+  // window on someone else's desktop.
   width: 560,
-  height: 470,
+  // Tall enough for the icons, the address box and the meeting at once. The body scrolls, but
+  // an address box below the fold is an address box nobody finds.
+  height: 600,
   status: true,
-  styles: ['app.css'],
+  // `links.css` carries `.cross-link`, which is what the address box's choices render as —
+  // the same affordance the councils and boards programs use for the same kind of jump.
+  styles: ['../../shared/showup/links.css', 'app.css'],
 
   mount({ win, desktop }) {
     const sheet = el('div', 'sheet folder-sheet');
@@ -126,6 +141,14 @@ export default {
     }
     sheet.append(grid);
 
+    // Ships with its form hidden and reveals it in `ready`, once it has the index it answers
+    // a ZIP, a neighbourhood and a district number from. A box that cannot answer those would
+    // have only the geocoder left, which is the one input a reader did not ask to send.
+    const address = addressBox(desktop);
+    const lookup = el('div', 'folder-lookup');
+    lookup.append(address.node);
+    sheet.append(lookup);
+
     // Filled by `ready`. A placeholder rather than an absent box, so the window does not
     // change height once the fetch lands.
     const overview = el('div', 'folder-overview');
@@ -133,12 +156,21 @@ export default {
     sheet.append(overview);
 
     win.setStatus(`${CONTENTS.length} programs. Each one opens in its own window.`);
-    win.app = { overview };
+    // A fetch in flight and a pair of timers, so they are stopped with the window.
+    win.onClose = () => address.dispose();
+    win.app = { overview, address };
     return sheet;
   },
 
   async ready({ win }) {
-    const { overview } = win.app;
+    const { overview, address } = win.app;
+    // Not awaited together with the calendar: either one failing should leave the other
+    // rendered, and `Promise.all` would make the first failure hide the second block. The box
+    // reports the failure it expects in its own status line, so anything arriving here is the
+    // unexpected kind and an unhandled rejection would be its only trace.
+    address.ready().catch((error) => {
+      console.error(`showup: the address box could not start: ${error.message}`);
+    });
     try {
       const preview = await load(PREVIEW);
       const meeting = preview.next_meeting;
