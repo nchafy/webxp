@@ -284,10 +284,17 @@ export class Shell {
       // declares which commands need contents rather than each command discovering it.
       // `grep -rn x /usr/src/webxp` has to pull a tree; `ls -l` and `find` never fetch
       // anything, because the index already carries every size and date they print.
-      if (command.reads === 'operands' || command.reads === 'tree') {
-        const wanted = command.reads === 'tree' ? this.#subtrees(words.slice(1)) : words.slice(1);
+      // `< file` is a read by the shell itself, and it needs fetching whatever the command
+      // declares: `wc -c < /usr/src/webxp/README.md` has no operands at all, so hydrating
+      // only the words showed the reader `the caller must await hydrate() first` — a message
+      // about a defect in the program — for an ordinary redirection.
+      const needed = [];
+      if (command.reads === 'operands') needed.push(...words.slice(1));
+      else if (command.reads === 'tree') needed.push(...this.#subtrees(words.slice(1)));
+      if (stage.in !== null) needed.push(expandTilde(stage.in));
+      if (needed.length) {
         const { hydrate } = await import('../../shared/fs/fs.mjs');
-        await hydrate(this.fs, wanted, { cwd: this.cwd });
+        await hydrate(this.fs, needed, { cwd: this.cwd });
       }
 
       if (stage.in !== null) {

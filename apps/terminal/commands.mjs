@@ -522,7 +522,12 @@ export const COMMANDS = {
       // against the quota because they are never saved.
       const { mounted } = await import('../../shared/fs/fs.mjs');
       if (mounted.error) ctx.line(`mount: unavailable — ${mounted.error}`);
-      else if (mounted.root) {
+      else if (mounted.root && !ctx.fs.exists(mounted.root)) {
+        // `/usr` is the user's, so `mv /usr/src ~/elsewhere` is a legal thing to do. What is
+        // not legal is this line going on naming a path that is no longer there: the graft
+        // records where it put the files once and never looks again.
+        ctx.line(`mount: ${mounted.files} files were grafted at ${mounted.root}, which is no longer in the tree`);
+      } else if (mounted.root) {
         ctx.line(`mount: ${mounted.files} read-only files at ${mounted.root}, fetched on first read`);
       }
       // The persistence state belongs with the free space: both answer "will this still be
