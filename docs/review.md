@@ -1,7 +1,7 @@
 # Review findings
 
-Findings raised against this work, their addresses, and what was done. Fifteen defects in the
-code or the harness; all fifteen are fixed, and eleven became checks.
+Findings raised against this work, their addresses, and what was done. Every defect below is
+fixed, and each entry names the check that guards it where one does.
 
 Findings 1–5 are from a self-review. Findings 6–12 are from a second agent that reviewed the
 window manager without the author's conclusions, driving the live page rather than reading the
@@ -147,8 +147,11 @@ to have removed from XP, reachable by dragging the browser's corner.
 **Fix** `watchViewport` re-clamps every non-maximised window on resize, coalesced to one
 frame.
 
-**Check** `viewport shrink`. Disabling the listener reports `only -480px of the window is
-over a 520px desktop`.
+**Check** `viewport shrink`, asserted on `placed` — the clamp's own output — and naming which
+of two defects it saw: a placement that has not moved since the shrink is a listener that
+never fired or a clamp that does nothing, and a placement that moved and still left the window
+off the surface is the clamp's arithmetic. Reading `box` reports the −480 px above either way,
+because `apply()` never writes the clamp back into it.
 
 ## 9. The title-bar icon squashed to 4.2 px — fixed
 
@@ -255,8 +258,8 @@ measures its container on creation, so building the map in `mount` sized it to n
 The first attempt was for the app to call `win.setContent` itself mid-`mount` — which worked
 and was wrong: it set the content twice and tore up the loading-marquee timing for every app.
 
-**Fix** An optional `ready({ win, desktop })`, called after the content is in the document and
-two frames have passed. A throwing `ready` is reported like a throwing `mount`.
+**Fix** An optional `ready({ win, desktop, args })`, called after the content is in the
+document and two frames have passed. A throwing `ready` is reported like a throwing `mount`.
 
 ## 15. A cached rejection poisoned an app for the session — fixed
 
@@ -291,13 +294,15 @@ mistake that makes a suite report clean over broken behaviour.
 
 ## The pattern worth naming: a check that cannot fail
 
-Six incidents now, and they are the same defect wearing different clothes. In every one the
-check was **silent and reported success**, which is strictly worse than no check: a missing
-check is a known gap, while this one answers "is that covered?" with yes.
+The same defect wearing different clothes, every time. The check is **silent and reports
+success**, which is strictly worse than no check: a missing check is a known gap, while this
+one answers "is that covered?" with yes. One entry below had no check on it yet — the helper
+it names guaranteed that whatever was written on it would pass.
 
-Two of the six were introduced *by the fix for an earlier one*, which is the part worth
-dwelling on. A check and the code it guards are edited by the same person holding the same
-mental model, so a change that invalidates the check's premise rarely looks like one.
+More than one was introduced *by the fix for an earlier one*, which is the part worth dwelling
+on. A check and the code it guards are edited by the same person holding the same mental
+model, so a change that invalidates the check's premise rarely looks like one. The panel sweep
+is the clearest case: the fix that gave it its own long footer still left nothing overflowing.
 
 | What died | How | Found by |
 | --- | --- | --- |
@@ -307,6 +312,13 @@ mental model, so a change that invalidates the check's premise rarely looks like
 | `--only <substring>` | A filter matching nothing ran zero checks and exited 0. | The other session, on writing it |
 | The noise-ramp probe | `scripts/inspect_noise.py` queried `[data-role=noise-legend] .key-row`. `.key-row` exists nowhere in the repo, so the script written to inspect a new ramp printed an empty legend and no error. | The adversarial review |
 | `day_02_panel_sweep` | Its window sizes were chosen because a long panel footer pushed content over the status bar. The copy pass emptied all three footers and `.detail-foot:empty` drops the element, so the sizes stressed nothing and the check passed without exercising the overflow. | The adversarial review |
+| `viewport shrink` | Measured `box`, the position the setup asked for, which `apply()` never writes the clamp back into. It printed the −480 px of finding 8 — the signature of the listener being *absent* — whether the listener ran or not. | The audit |
+| `day 02 segment spans` | It walks the overlay files sitting beside the activity documents. A checkout with none made every loop skip, and the check reported ok having read nothing. | The audit |
+| `day_02_panel_sweep`, again | The footer it fills is not what overflows the panel. `max-height: 50%` with `min-height: 0` lets flex shrink `.detail-body` and `.detail-foot` to zero content height, so what overflows is the head and its two paddings: `panelWanted` measured 91 px and `footGiven` 14 px, both flat from 8 to 1024 repeats of the probe text. Before that the fill was erased outright — `panel.open` ends by writing the footer, and the open promise was discarded, so its fetches landed after the stress. | The audit |
+| `double_click`'s two presses | `mouse()` pinned `clickCount` at 1. Two presses that both say 1 are two single clicks, the browser never synthesises `dblclick`, and the `dblclick` listener `src/window.mjs` has carried since it was written had never run. A check built on that helper reports what an app that ignores double clicks would. | The audit |
+| `--prove-failure` | It inverted two assertions, never asked whether they had produced a failure, and printed "all checks passed" either way. The one control standing behind every clean run could not itself fail. | The audit |
+| `active styling`'s surface sweep | An empty stop list ran the contrast loop zero times and returned clean over white text on a near-white bar, measured at 1.04:1. | The audit |
+| `active styling`'s transparent skip | The skip for a transparent black tested a substring of `background-image` and `background-color` joined, so a genuine black gradient stop beside a transparent fill was skipped — and a black glyph on it is 1:1. | The audit |
 
 The rules that come out of it are cheap:
 
@@ -322,10 +334,20 @@ The rules that come out of it are cheap:
    (`scripts/inspect_manifest_cache.py`) turned a guess into 2 stale reads in 5 rounds with
    the cache on and 0 in 5 with it off.
 
-4. **A check must create the condition it tests, not inherit it.** `day_02_panel_sweep`
-   depended on the app's copy happening to be long. It now writes its own long footer, so the
-   stress is a property of the check rather than of this week's wording. The same reasoning
+4. **A check must create the condition it tests, and then measure that it did.**
+   `day_02_panel_sweep` depended on the app's copy happening to be long, so it was given its
+   own long footer — and the footer's length turned out not to move the panel's overflow at
+   all. Writing the setup is not the same as creating the condition. It now re-fills at every
+   size it sweeps and asserts the panel's content exceeds its box before any hit test, so a
+   panel that is not being clipped is a failure rather than a clean sweep. The same reasoning
    applies to any check whose setup is "the app happens to be in the right state".
+
+5. **The control for a helper belongs inside the check that uses it.** `title bar double
+   click` first asserts that two single clicks change nothing. Without that, "the double click
+   maximised" is satisfied by any pair of clicks that happens to toggle, and the helper's click
+   count goes unasserted. `--prove-failure` is the same rule one level up: a control nobody
+   asks about is not a control, so a run with the flag now fails when an inverted check reports
+   no failure.
 
 The general form: **a check whose precondition can go false without failing is not a check.**
 Every assertion added since is written so that the absence of what it measures is itself a
@@ -367,19 +389,80 @@ This is what makes it a family with the two above: in all three the check or gua
 reach it, which is not visible from there. So reading the guard does not tell you whether it
 holds — the routes have to be enumerated. The guard belongs at each entry point, where the
 path and the intent are, not in a shared setter that has neither. What that costs differs:
-`#need` at each public mutation is a line per method, while three tools over one dataset get
-it only by each applying the transform itself, which is a convention and not an enforcement.
+`#need` at each public mutation is a line per method, while three tools over one dataset
+agreeing on `--trim-m` is a convention and not an enforcement.
+
+So the second instance is enforced at the consumer instead. `spanFits` in
+`apps/day-02-lines/lines.mjs` drops a crossing whose span runs past the end of the run it
+names, and the status line says how many and why; `day 02 segment spans` fails the suite on
+the same condition before a browser renders anything. One direction only — a span that
+shifted but still fits addresses a different stretch of road, and nothing in the file can
+tell.
+
+## The fourth shape: a harness that does not know what it measured
+
+The three above are defects in a *check*. This one leaves the assertions intact and lies about
+what they were pointed at.
+
+- **The port decided the subject.** `http.server` exits with `Address already in use` rather
+  than failing where the harness can see it, and the readiness loop was satisfied by anything
+  answering 200 on the port. So a second checkout serving on that port silently became what
+  every check measured. One run was never explained at the time: `placed` came back `{}`,
+  `cascadeSlot` undefined, `Desktop.destroy` not a function and no `var()` fills in the icon
+  set — four symptoms of a page built from older modules, while every file on disk was newer
+  than the failure and the next run was clean. `serving_this_tree` now fetches the page and the
+  modules every geometry assertion indexes into and compares the served bytes to the bytes on
+  disk. Asking whether the subprocess is alive was tried and is not enough: the other server
+  answers the first 200 while ours is still on its way to exiting, so the inference is wrong
+  and the run goes on to blame the page for a server mix-up.
+- **The probe handed back a hole.** `JSON.stringify` drops a key whose value is `undefined`
+  rather than sending `null`, so a field read before it was set arrives with the key *absent*.
+  That is how `KeyError: 'w'` presented — at a subscript hundreds of lines from the early read,
+  as a product verdict rather than a harness defect. `probe` now separates three outcomes,
+  because they send a reader to three different places: *not yet* is this harness reading
+  early, *absent* is a renamed field or a window that never finished being built, and *wrong*
+  is a key holding something that is not a number. None of the three is a pass. The page tests
+  for the field with `in`, never with a truth test, because `0` is a legitimate coordinate.
+- **The run reported a prefix of itself.** The check loop had no `try`, so one raise took the
+  run out through a traceback with nothing in it naming the check: the log still read 14 passes
+  and the 26 checks behind it were unmeasured and unnamed. A raise is now a failed check under
+  that check's name, and every check the loop reached is recorded and compared to the list, so
+  "this check never ran" is stated rather than inferred from a gap in the log.
+
+What makes it a shape of its own: a check written perfectly against the first pattern still
+dies to all three. The assertions were right and the preconditions were asserted; the
+instrument was reading another tree, another field, or two thirds of the suite. The remedy is
+not a stronger assertion. The instrument has to prove its own subject before it measures, and
+state its own coverage afterwards.
+
+The harness bugs recorded above are this shape caught earlier. Relaunching a singleton is
+indistinguishable from a loading floor that does not work, and a check that closes a window a
+later check depends on moves the failure onto the innocent one. Neither is a weak assertion
+either.
 
 ## Not addressed
 
 - **The Start button fails SC 1.4.3 at 2.16:1.** Deliberate, excluded from the sweep, and
   recorded with its number in `windows.md`. It is the most recognisable element of the theme
   and a green dark enough to hold white stops reading as XP. Known defect, not an oversight.
-- **No check covers touch.** `pointercancel` is handled in `beginGesture` because a touch
-  drag the browser turns into a scroll fires it instead of `pointerup`, but the harness
-  dispatches mouse events only. The handling is reasoned, not observed.
+- **`pointercancel` is reasoned, not observed.** `re-entrant gesture` drives a real second
+  pointer through touch emulation — the only check in the suite that uses touch — so a touch
+  down, move and release are exercised. The branch that is not is the one `beginGesture`
+  handles `pointercancel` for: a touch drag the browser turns into a scroll, which fires it
+  instead of `pointerup`.
+- **Three checks can be inverted.** `--prove-failure` inverts `drag`, `re-entrant gesture` and
+  `terminal`, and the run fails if an inverted check reports no failure. `scripts/css_ties.py`
+  carries its own inversion over the specificity decisions it pins. For every other check,
+  "shown capable of failing" rests on a negative control run when it was written, or on the
+  history above, rather than on a control the suite re-runs.
 - **No check covers `prefers-reduced-motion`.** The zoom is skipped rather than shortened,
   and the marquee has a CSS fallback, but neither path is exercised.
+- **`scripts/css_ties.py` is a regression guard, not a tie detector.** It pins the decisions
+  listed in its `OUTRANKS`, `DISJOINT` and `GONE` tables, so undoing one of them fails. A new
+  tie of finding 13's shape, between two other selectors, is not caught. The general case needs
+  ancestor reachability — which class sets co-occur, and which ancestor chains are possible —
+  and without it a sweep over the stylesheets reports a few hundred candidate ties that can
+  never meet on one element.
 - **App CSS scoping is a convention, not an enforcement.** `docs/apps.md` requires every rule
   to sit under `.app-<id>` and `app styles` checks that one app's class does not land on
   another's window, but nothing stops an app shipping a bare `p { ... }`. `@scope` or a build
