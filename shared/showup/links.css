@@ -1,0 +1,45 @@
+/* Cross-links between the Show Up programs.
+ *
+ * Unscoped on purpose, and loaded by the three programs that need it rather than by all
+ * five — the alternative was the same twenty lines in three `app.css` files, hand-synced.
+ * The class is specific enough (`cross-link`) that it reaches nothing else on the desktop.
+ *
+ * A button that reads as a link. It is a button because the destination is a window and
+ * there is no URL to put in an href, but a reader should not have to know that: the old
+ * site's district page listed its community boards as links, and this is the same
+ * affordance pointing somewhere else.
+ */
+
+.cross-link {
+  /* Undo the beveled gradient `theme.css` gives every button. A row of four of these with
+     XP's control chrome on them would read as a toolbar, not as prose. */
+  appearance: none;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+  margin: 0;
+  min-height: 0;
+  font: inherit;
+  color: var(--accent, #0a246a);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* The focus ring is the shell's, so this cannot drift from it. 2px is the floor the rest of
+   the desktop draws, and SC 2.4.7 wants a visible one. */
+.cross-link:focus-visible {
+  outline: 2px solid var(--title-a);
+  outline-offset: 1px;
+}
+.cross-link:hover { text-decoration-thickness: 2px; }
+
+/* Several on one line, in a facts card that has no room for a table. `row-gap` as well as
+   `column-gap`, because four board names wrap on a narrow window and would otherwise sit
+   with their underlines touching. */
+.cross-link-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .15rem .6rem;
+}

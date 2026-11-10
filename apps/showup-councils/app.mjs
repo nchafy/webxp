@@ -46,7 +46,11 @@ export default {
   width: 720,
   height: 520,
   status: true,
-  styles: ['app.css'],
+  styles: [
+    '../../shared/showup/list-detail.css',
+    '../../shared/showup/links.css',
+    'app.css',
+  ],
 
   mount({ win }) {
     const root = el('div', 'list-detail');
@@ -61,7 +65,7 @@ export default {
     return root;
   },
 
-  async ready({ win }) {
+  async ready({ win, desktop }) {
     const { list, detail } = win.app;
 
     let rows;
@@ -95,7 +99,7 @@ export default {
       );
 
       for (const spec of facts.tables || []) {
-        nodes.push(group(spec.legend, usableTable(spec)));
+        nodes.push(group(spec.legend, usableTable(spec, desktop)));
       }
 
       detail.replaceChildren(...nodes);

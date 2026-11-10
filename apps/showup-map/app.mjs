@@ -22,6 +22,7 @@
  */
 
 import { group, table } from '../../src/widgets.mjs';
+import { crossLinkRow } from '../../shared/showup/data.mjs';
 
 //: Whatever zoom fits the whole city is as far out as the map goes. The ceiling is fixed:
 //: past this the basemap has no more detail and the boundary, simplified to 2.2 m, starts to
@@ -58,7 +59,7 @@ const LAYERS = {
     source: 'council',
     noun: 'council district',
     label: (id) => `Council District ${id}`,
-    sections: (id) => {
+    sections: (id, desktop) => {
       const hoods = (names.district.get(String(id)) || {}).hoods;
       const facts = (preview && preview.districts && preview.districts[String(id)]) || {};
       const member = facts.member;
@@ -68,6 +69,10 @@ const LAYERS = {
         // Only when it is not "filled": a status beside every name would read as a warning
         // about fifty filled seats.
         ['Seat', member && member.seat_status !== 'filled' ? member.seat_status : null],
+        // The cross-link the old district page carried: a district listed the community
+        // boards covering it, and each one was a link. `preview.json` still ships those
+        // hrefs; this turns them into launches of the Community boards program.
+        ['Community boards', crossLinkRow(facts, 'Community boards', desktop)],
       ];
     },
   },
@@ -81,7 +86,7 @@ const LAYERS = {
       return facts.label || (names.board.get(String(id)) || {}).label
         || `Community Board ${id}`;
     },
-    sections: (id) => {
+    sections: (id, desktop) => {
       const hoods = (names.board.get(String(id)) || {}).hoods;
       const facts = (preview && preview.boards && preview.boards[String(id)]) || {};
       return [
@@ -91,6 +96,8 @@ const LAYERS = {
         // The board's own words for when it meets. Not expanded into dates: "Fourth Tuesday"
         // is not a date until somebody publishes one.
         ['Meets', facts.cadence || null],
+        // The same link in the other direction, which the old board page carried.
+        ['Council districts', crossLinkRow(facts, 'Council districts', desktop)],
       ];
     },
   },
@@ -298,7 +305,7 @@ export default {
   width: 820,
   height: 560,
   status: true,
-  styles: ['app.css'],
+  styles: ['../../shared/showup/links.css', 'app.css'],
 
   mount({ win }) {
     const parts = build();
@@ -315,7 +322,7 @@ export default {
    * `mount` the nodes are not in the document and every rect is zero, so the map would size
    * itself to 0x0, report its style loaded, fetch every tile and draw nothing.
    */
-  async ready({ win }) {
+  async ready({ win, desktop }) {
     const { root, canvas, facts, status } = win.app;
 
     let geometry;
@@ -382,7 +389,7 @@ export default {
           // and the hit-testing both need the layers to exist, and `draw` is where they come
           // into being. The layers are rebuilt on every basemap change; these bindings are
           // properties of the window.
-          view = new View({ map, win, facts });
+          view = new View({ map, win, facts, desktop });
           view.show('council');
           for (const name of Object.keys(LAYERS)) {
             LAYERS[name].button.addEventListener('click', () => view.show(name));
@@ -428,10 +435,11 @@ function indexNames(lookup) {
 
 /** Which layer is showing, and which feature in it is selected. */
 class View {
-  constructor({ map, win, facts }) {
+  constructor({ map, win, facts, desktop }) {
     this.map = map;
     this.win = win;
     this.facts = facts;
+    this.desktop = desktop;
     this.name = 'council';
     this.selected = null;
   }
@@ -490,7 +498,7 @@ class View {
     this.map.setFeatureState({ source: this.layer.source, id }, { selected: true });
 
     const rows = this.layer
-      .sections(id)
+      .sections(id, this.desktop)
       // A fact the City does not publish is left out rather than shown as an empty row: a
       // blank beside a label reads as "nobody holds this seat".
       .filter(([, value]) => value)

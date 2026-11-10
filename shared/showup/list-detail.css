@@ -1,0 +1,99 @@
+/* List and detail: the shape the City councils and Community boards programs both draw.
+ *
+ * Recovered on 2026-11-10. It lived in the originating repository's own stylesheet, which
+ * the browser programs were ported out of without it — so both list windows rendered as a
+ * bulleted column of full-width buttons with each row's name and neighbourhoods run
+ * together. The port's checks measured row counts and legends, which both passed, and said
+ * nothing about layout.
+ *
+ * Unscoped and keyed on a marker class a program opts into, which is a deliberate departure
+ * from `docs/apps.md`'s rule that a program scopes its styles under `.app-<id>`: scoping
+ * exists to stop one program reaching another's window, and this is two programs asking for
+ * the same shape on purpose. Before it lived in one place the two carried the same seventy
+ * lines each, and a contrast fix had to be made twice.
+ *
+ * `min-height: 0` throughout, so a grid or flex child may be shorter than its content and
+ * scroll, rather than pushing the window's body past its own frame.
+ *
+ * `--on-title-dim` is declared here because it came from that repository's palette and this
+ * one has no equivalent: #edf2f9 measures 4.72:1 on --title-b and 12.67:1 on --title-a at
+ * 11px. Luna's own #dfe8f5 measured 4.30:1 on --title-b and failed SC 1.4.3.
+ */
+
+:root {
+  --on-title-dim: #edf2f9;
+}
+
+.list-detail {
+  display: grid;
+  grid-template-columns: 15rem 1fr;
+  gap: .6rem;
+  height: 100%;
+  min-height: 0;
+}
+
+.list-detail .pick-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  min-height: 0;
+  border: 1px solid var(--rule);
+  background: var(--bg);
+}
+
+.list-detail .detail-pane { overflow-y: auto; min-height: 0; padding-right: .2rem; }
+.list-detail .detail-empty { margin: 0; color: var(--muted); }
+.list-detail .pick-error {
+  padding: .5rem;
+  color: var(--urgent-ink);
+  background: var(--urgent-bg);
+}
+
+/* The row is the target: two lines of text, comfortably past the 24px SC 2.5.8 floor, and a
+   reader aiming at the name cannot miss by hitting the gap beside it. */
+.list-detail .pick {
+  display: flex;
+  flex-direction: column;
+  gap: .05rem;
+  width: 100%;
+  padding: .35rem .5rem;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--rule);
+  border-radius: 0;
+  box-shadow: none;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+.list-detail .pick:hover,
+.list-detail .pick:focus-visible { background: var(--title-a); color: #fff; }
+.list-detail .pick:hover .pick-hoods,
+.list-detail .pick:focus-visible .pick-hoods { color: var(--on-title-dim); }
+
+/* The current row keeps the selected blue after focus moves to the facts beside it, so the
+   list still says which one is showing. */
+.list-detail .pick[aria-current="true"] { background: var(--title-b); color: #fff; }
+.list-detail .pick[aria-current="true"] .pick-hoods { color: var(--on-title-dim); }
+
+.list-detail .pick-name { font-weight: 700; }
+.list-detail .pick-hoods {
+  font-size: 11px;
+  color: var(--muted);
+  /* Two lines at most: a neighbourhood list runs to 200 characters and would otherwise make
+     one row taller than the pane. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
+/* The panes stack when the window is narrow, which is a window query and not a media query —
+   a 400px window on a 1600px desktop has a phone's problem and `@media` cannot see it. */
+@container window (max-width: 34rem) {
+  .list-detail { grid-template-columns: 1fr; grid-template-rows: 12rem 1fr; }
+}
