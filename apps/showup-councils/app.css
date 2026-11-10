@@ -1,0 +1,7 @@
+/* City councils. Scoped under `.app-showup-councils`, which webxp puts on this window's body.
+ *
+ * The two-pane shape — the list, the detail beside it, and the row styling — is shared with
+ * the Community boards program and lives once in `assets/showup.css` under `.list-detail`,
+ * which this program's root opts into. Nothing about this list is different enough to style
+ * here, so this file holds nothing.
+ */

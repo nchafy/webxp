@@ -1,0 +1,25 @@
+/* Community boards. Scoped under `.app-showup-boards`, which webxp puts on this window's body.
+ *
+ * The two-pane shape is shared with the City councils program and lives once in
+ * `assets/showup.css` under `.list-detail`, which `.boards-panes` opts into. What is left
+ * here is this program's own: the note above the panes, which the councils window has no
+ * equivalent of.
+ */
+
+/* The note sits above the panes, so the grid is the second row of the window rather than the
+   whole of it. */
+.app-showup-boards .boards-root {
+  display: flex;
+  flex-direction: column;
+  gap: .5rem;
+  height: 100%;
+  min-height: 0;
+}
+.app-showup-boards .boards-note {
+  margin: 0;
+  padding: .45rem .6rem;
+  background: var(--face);
+  border: 1px solid var(--rule);
+  font-size: 11px;
+}
+.app-showup-boards .boards-panes { flex: 1 1 auto; min-height: 0; }

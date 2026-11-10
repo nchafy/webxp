@@ -1,0 +1,58 @@
+/* The Show Up NYC folder.
+ *
+ * Every rule is scoped under `.app-showup`, which webxp puts on this app's window body. An
+ * unscoped rule here would reach into every other app's windows — including the four this
+ * folder opens.
+ *
+ * The icon grid is deliberately the same shape as `apps/map-challenge/app.css`: both are
+ * folders on the same desktop, and a reader who has opened one should recognise the other.
+ * `.icon-tile` in `src/shell.css` carries the tile's box; only what this surface changes is
+ * here.
+ *
+ * Colours come from the theme's tokens rather than from values of their own, so the folder
+ * follows the desktop into dark mode without knowing that dark mode exists.
+ */
+
+/* `.sheet` is a centred 44rem page with a bevel, which is right for prose and wrong for a
+   folder: the icons would sit in a column down the middle of a wide window, inside a second
+   frame drawn just within the client area's own. The window body already scrolls. */
+.app-showup .folder-sheet {
+  max-width: none;
+  min-height: 100%;
+  margin: 0;
+  padding: .5rem;
+  border: none;
+  box-shadow: none;
+}
+
+.app-showup .folder-grid {
+  display: grid;
+  /* Fills the width with whole tiles and reflows on resize. `auto-fill` rather than
+     `auto-fit`, so four icons in a wide window stay the width of four icons instead of
+     stretching across the row. */
+  grid-template-columns: repeat(auto-fill, 5.5rem);
+  align-content: start;
+  gap: .35rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.app-showup .folder-icon {
+  color: var(--ink);
+}
+.app-showup .folder-icon:hover,
+.app-showup .folder-icon:focus-visible {
+  /* Explorer's hover wash. Mixed from the title-bar blue rather than written as a literal,
+     so the folder cannot drift from the theme it is quoting. */
+  background: color-mix(in srgb, var(--title-b) 20%, transparent);
+  border-color: var(--sunken);
+}
+
+/* The overview sits below the icons, separated by a rule rather than by space alone: it is a
+   different kind of thing from the folder's contents, not a fifth item in it. */
+.app-showup .folder-overview {
+  margin-top: .6rem;
+  padding-top: .5rem;
+  border-top: 1px solid var(--rule);
+}

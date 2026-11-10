@@ -1,0 +1,36 @@
+{
+  "built_at": "2026-11-09T21:50:24-05:00",
+  "calendar_window_end": "2026-12-17",
+  "sources": {
+    "legistar_calendar": {
+      "fetched_at": "2026-10-07T16:24:30+00:00",
+      "max_age_hours": 12,
+      "rows": 100
+    },
+    "district_pages": {
+      "fetched_at": "2026-09-21T15:43:25+00:00",
+      "max_age_hours": 960,
+      "rows": 51
+    },
+    "members": {
+      "fetched_at": "2026-09-21T15:42:51+00:00",
+      "max_age_hours": 960,
+      "rows": 51
+    },
+    "community_boards": {
+      "fetched_at": "2026-09-22T20:14:23+00:00",
+      "max_age_hours": 2160,
+      "rows": 59
+    },
+    "participatory_budgeting": {
+      "fetched_at": "2026-10-27T18:12:42+00:00",
+      "max_age_hours": 168,
+      "rows": 24
+    },
+    "board_budget_requests": {
+      "fetched_at": "2026-09-30T15:21:08+00:00",
+      "max_age_hours": 720,
+      "rows": 3809
+    }
+  }
+}
