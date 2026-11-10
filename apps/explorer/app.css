@@ -82,6 +82,12 @@
   min-height: 0;
   overflow-y: auto;
   background: var(--bg);
+  /* The header and the rows are two grids in two boxes, so a classic scrollbar narrows the
+     rows' content box and not the header's, and every column after Name sits offset from its
+     heading. Reserved always, so the two agree whether or not the list overflows. This
+     machine has overlay scrollbars and cannot show the defect; Linux and Windows Chrome can,
+     as can macOS with "Show scroll bars: Always". */
+  scrollbar-gutter: stable;
 }
 
 .app-explorer .exp-row {
@@ -132,6 +138,17 @@
   display: flex;
   align-items: center;
   gap: .3rem;
+  /* A flex container has no inline box to ellipsize, so the `text-overflow` above does
+     nothing here: an 81-character name was hard-clipped mid-token while the three cells
+     beside it ellipsized correctly. The ellipsis has to sit on the text, not on the cell
+     holding both the icon and the text. */
+  min-width: 0;
+}
+
+.app-explorer .exp-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .app-explorer .exp-size {
@@ -143,6 +160,13 @@
 .app-explorer .exp-type,
 .app-explorer .exp-modified {
   color: var(--muted);
+}
+
+.app-explorer .exp-modified {
+  /* Tabular, like the size column. Proportional digits moved the column 7 px between the
+     9th of the month and the 19th, and the leading space meant to pad single digits is
+     collapsed by HTML white-space processing whatever `white-space` says. */
+  font-variant-numeric: tabular-nums;
 }
 
 .app-explorer .exp-row[aria-selected="true"] .exp-type,

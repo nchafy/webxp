@@ -50,10 +50,15 @@ export default {
       win.setTitle(`${path.split('/').pop()} - Notepad`);
       // The repository is mounted read-only, so a file can be perfectly readable and
       // unsaveable. Said at the top rather than discovered by a Ctrl+S that fails.
-      const { PERM } = await import('../../shared/fs/vfs.mjs');
+      const { PERM, FsError } = await import('../../shared/fs/vfs.mjs');
       try {
         fs.access(path, PERM.W);
-      } catch {
+      } catch (error) {
+        // Only a refusal means read-only. A bare `catch` here would turn any other failure —
+        // a renamed `PERM`, a typo in the call — into a read-only editor for every file, with
+        // nothing in the console to say why, so anything that is not the filesystem saying no
+        // is re-thrown and becomes a window that reports it.
+        if (!(error instanceof FsError)) throw error;
         writable = false;
         area.readOnly = true;
       }

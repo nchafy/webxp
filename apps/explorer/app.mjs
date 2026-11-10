@@ -7,11 +7,15 @@
  *
  * ## Sizing
  *
- * No JavaScript sizes anything. `.window-body` declares `container: window / inline-size`,
- * so a `height: 100%` list with `overflow-y: auto` fills its window and scrolls, and that
- * survives a drag-resize, a maximise and a restore with no listener and nothing to keep in
- * step. Reading the window's own geometry would mean keeping a second copy of the layout's
- * answer on this side of the boundary.
+ * No JavaScript sizes anything. What fills the window is two rules in `app.css`:
+ * `.window-body.app-explorer` is a flex column with `min-height: 0`, on top of
+ * `.window-body { flex: 1 1 auto; min-height: 0 }` in `src/window.css`, and `.exp-list` is
+ * `flex: 1; min-height: 0; overflow-y: auto`. That survives a drag-resize, a maximise and a
+ * restore with no listener and no second copy of the layout's answer in JS.
+ *
+ * (The container query at the foot of `app.css` is what `container: window / inline-size`
+ * provides, and it drops columns in a narrow window. It has nothing to do with filling the
+ * block axis — an earlier version of this comment credited it with both.)
  *
  * ## What a row knows
  *
@@ -22,22 +26,33 @@
 
 import { icon } from '../../src/icons.mjs';
 
-//: Columns, in order. The widths live in `app.css`; this is what each cell says.
-const COLUMNS = ['Name', 'Size', 'Type', 'Modified'];
+//: The columns, once. `key` is the cell's class suffix and `label` is its heading, so
+//: renaming a heading cannot leave the header and the rows disagreeing about a class — which
+//: would hide a row cell while leaving its heading, and wrap the header into the grid's next
+//: line.
+const COLUMNS = [
+  { key: 'name', label: 'Name' },
+  { key: 'size', label: 'Size' },
+  { key: 'type', label: 'Type' },
+  { key: 'modified', label: 'Modified' },
+];
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
+/** `Nov 9 14:01`. No padding: HTML collapses it, and `.exp-modified` is tabular instead. */
 function stamp(ms) {
   const date = new Date(ms);
-  return `${MONTHS[date.getMonth()]} ${String(date.getDate()).padStart(2, ' ')} `
-    + `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  return `${MONTHS[date.getMonth()]} ${date.getDate()} ${hh}:${mm}`;
 }
 
 function size(entry) {
   if (entry.type === 'dir') return '';
-  if (entry.size < 1024) return `${entry.size} B`;
-  if (entry.size < 1024 * 1024) return `${(entry.size / 1024).toFixed(1)} KB`;
-  return `${(entry.size / (1024 * 1024)).toFixed(1)} MB`;
+  // Characters, not bytes: a file here holds a string, and the index counts the same way.
+  if (entry.size < 1024) return `${entry.size} chars`;
+  if (entry.size < 1024 * 1024) return `${(entry.size / 1024).toFixed(1)}K`;
+  return `${(entry.size / (1024 * 1024)).toFixed(1)}M`;
 }
 
 function kind(entry) {
@@ -58,9 +73,10 @@ export default {
   styles: ['app.css'],
 
   async mount({ win, desktop, args }) {
-    const [{ openFileSystem }, { HOME }] = await Promise.all([
+    const [{ openFileSystem, hydrate }, { HOME }, { normalize, joinPath }] = await Promise.all([
       import('../../shared/fs/fs.mjs'),
       import('../../shared/fs/seed.mjs'),
+      import('../../shared/fs/vfs.mjs'),
     ]);
     const fs = await openFileSystem();
 
@@ -102,8 +118,8 @@ export default {
     head.className = 'exp-head';
     for (const column of COLUMNS) {
       const cell = document.createElement('span');
-      cell.className = `exp-cell exp-${column.toLowerCase()}`;
-      cell.textContent = column;
+      cell.className = `exp-cell exp-${column.key}`;
+      cell.textContent = column.label;
       head.append(cell);
     }
 
@@ -111,8 +127,13 @@ export default {
 
     /* ------------------------------ navigation ------------------------------ */
 
-    let here = (args && args.path) || HOME;
+    // A relative `args.path` would resolve against `/` inside `fs.list`, and a trailing
+    // slash made the title the empty string.
+    const asked = args && args.path ? String(args.path) : HOME;
+    let here = normalize(asked.startsWith('/') ? asked : joinPath(HOME, asked));
     let selected = null;
+
+    const title = (path) => (path === '/' ? '/' : path.slice(path.lastIndexOf('/') + 1));
 
     const open = async (entry, path) => {
       // A symlink is followed on open and described in the list: `realpath` is what the
@@ -124,16 +145,27 @@ export default {
         real = fs.realpath(path);
         stat = fs.stat(real);
       } catch (error) {
-        win.setStatus(`${entry.name} — ${error.message}`);
+        win.setStatus(error.message);
         return;
       }
       if (stat.type === 'dir') {
         show(real);
         return;
       }
-      // Notepad is the only thing that opens a file today, and it hydrates a mounted one
-      // itself. When an app can declare what it opens, this becomes a lookup rather than a
-      // name written here.
+
+      // The read Notepad is about to do, done here first.
+      //
+      // `launch` turns a failed mount into a window that says so and returns normally, so
+      // awaiting it says nothing about whether the file opened — this window used to report
+      // `Opened …` over an editor showing `Permission denied`. Attempting the same read is
+      // also better placed: the refusal appears where the double-click happened.
+      try {
+        await hydrate(fs, [real]);
+        fs.readFile(real);
+      } catch (error) {
+        win.setStatus(error.message);
+        return;
+      }
       await desktop.launch('notepad', { path: real });
       win.setStatus(`Opened ${real}`);
     };
@@ -141,7 +173,11 @@ export default {
     const select = (entry, row) => {
       selected = entry;
       for (const other of table.querySelectorAll('.exp-row')) {
-        other.setAttribute('aria-selected', String(other === row));
+        const isTarget = other === row;
+        other.setAttribute('aria-selected', String(isTarget));
+        // A roving tabindex: one stop for the whole listbox, not one per file. A folder of
+        // 41 files put 41 tab stops between the address bar and the rest of the desktop.
+        other.tabIndex = isTarget ? 0 : -1;
       }
       const detail = entry.type === 'link'
         ? `${entry.name} → ${entry.target}`
@@ -150,25 +186,36 @@ export default {
     };
 
     function show(path) {
+      // A half-typed path survives another window's write. The watcher re-lists on every
+      // filesystem event, and in a shared filesystem that is whenever anything else writes —
+      // which used to wipe the address box mid-edit.
+      const editing = document.activeElement === address;
+      const refocus = document.activeElement
+        && document.activeElement.classList
+        && document.activeElement.classList.contains('exp-row')
+        ? document.activeElement.dataset.name
+        : null;
+
       let entries;
       try {
         entries = fs.list(path);
       } catch (error) {
         // An unreadable directory is a fact to print, not an empty list. A folder window
         // that looks finished and is empty is the failure this project keeps finding.
-        table.replaceChildren(message(`${path} — ${error.message}`));
+        // `error.message` already starts with the path, so it is not prefixed again.
+        table.replaceChildren(message(error.message));
         win.setStatus(error.message);
         here = path;
-        address.value = path;
-        win.setTitle(`${path} - Explorer`);
+        if (!editing) address.value = path;
+        win.setTitle(`${title(path)} - Explorer`);
         up.disabled = path === '/';
         return;
       }
 
       here = path;
-      address.value = path;
+      if (!editing) address.value = path;
       selected = null;
-      win.setTitle(`${path === '/' ? '/' : path.split('/').pop()} - Explorer`);
+      win.setTitle(`${title(path)} - Explorer`);
       up.disabled = path === '/';
 
       // Folders first, then by name — Explorer's own order, and the one that makes a deep
@@ -178,35 +225,42 @@ export default {
         return kinds || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
       });
 
-      const rows = entries.map((entry) => {
+      const rows = entries.map((entry, index) => {
         const row = document.createElement('button');
         row.type = 'button';
         row.className = 'exp-row';
         row.setAttribute('role', 'option');
         row.setAttribute('aria-selected', 'false');
         row.dataset.name = entry.name;
-
-        const name = document.createElement('span');
-        name.className = 'exp-cell exp-name';
-        name.append(icon(entry.type === 'dir' ? 'folder' : 'document', 16));
-        const text = document.createElement('span');
-        text.textContent = entry.name;
-        name.append(text);
-
-        const cells = [name];
-        for (const [column, value] of [['size', size(entry)], ['type', kind(entry)], ['modified', stamp(entry.mtime)]]) {
-          const cell = document.createElement('span');
-          cell.className = `exp-cell exp-${column}`;
-          cell.textContent = value;
-          cells.push(cell);
-        }
-        row.append(...cells);
+        row.tabIndex = index === 0 ? 0 : -1;
 
         const path = here === '/' ? `/${entry.name}` : `${here}/${entry.name}`;
+
+        const cells = COLUMNS.map((column) => {
+          const cell = document.createElement('span');
+          cell.className = `exp-cell exp-${column.key}`;
+          if (column.key === 'name') {
+            cell.append(icon(glyph(entry, path), 16));
+            const text = document.createElement('span');
+            text.className = 'exp-label';
+            text.textContent = entry.name;
+            cell.append(text);
+          } else {
+            cell.textContent = column.key === 'size' ? size(entry)
+              : column.key === 'type' ? kind(entry)
+                : stamp(entry.mtime);
+          }
+          return cell;
+        });
+        row.append(...cells);
+
         row.addEventListener('click', () => select(entry, row));
         row.addEventListener('dblclick', () => open(entry, path));
         row.addEventListener('keydown', (event) => {
-          if (event.key !== 'Enter' && event.key !== ' ') return;
+          // Enter opens. Space is left alone on purpose: a button activates on Space, which
+          // fires the click that selects — cancelling it meant a keyboard user could never
+          // select a row at all, and `aria-selected` stayed false on every one of them.
+          if (event.key !== 'Enter') return;
           event.preventDefault();
           open(entry, path);
         });
@@ -214,8 +268,34 @@ export default {
       });
 
       table.replaceChildren(...(rows.length ? rows : [message('This folder is empty.')]));
+
+      // `replaceChildren` destroyed the focused row, and nothing put focus back: a keyboard
+      // user landed on BODY after every navigation and after every write another window made.
+      if (refocus) {
+        const again = [...table.querySelectorAll('.exp-row')]
+          .find((row) => row.dataset.name === refocus) || table.querySelector('.exp-row');
+        if (again) {
+          again.tabIndex = 0;
+          again.focus();
+        }
+      }
+
       const dirs = entries.filter((entry) => entry.type === 'dir').length;
       win.setStatus(`${entries.length} item${entries.length === 1 ? '' : 's'}, ${dirs} folder${dirs === 1 ? '' : 's'}`);
+    }
+
+    /** The icon for a row. A shortcut to a folder draws a folder. */
+    function glyph(entry, path) {
+      if (entry.type === 'dir') return 'folder';
+      if (entry.type === 'link') {
+        try {
+          return fs.stat(path).type === 'dir' ? 'folder' : 'document';
+        } catch {
+          // A broken shortcut points at nothing, so there is nothing to take the icon from.
+          return 'document';
+        }
+      }
+      return 'document';
     }
 
     function message(text) {
@@ -238,7 +318,6 @@ export default {
         const real = fs.realpath(typed, { cwd: here });
         if (fs.stat(real).type !== 'dir') {
           win.setStatus(`${typed} is not a folder`);
-          address.value = here;
           return;
         }
         show(real);
@@ -254,11 +333,23 @@ export default {
     // all change what this window is showing, and a folder that needs a refresh button is a
     // folder that is lying between clicks.
     const unwatch = fs.watch(() => {
-      show(fs.exists(here) ? here : HOME);
+      // `fs.exists` rethrows EACCES rather than answering false, so asking it here threw out
+      // of the listener and left the window showing a folder it could no longer read — the
+      // exact "looks finished and is wrong" failure, reached through the watcher. Only
+      // absence sends this window home; a refusal is something `show` prints.
+      try {
+        fs.stat(here);
+      } catch (error) {
+        if (error.code === 'ENOENT' || error.code === 'ENOTDIR') {
+          show(fs.exists(HOME) ? HOME : '/');
+          return;
+        }
+      }
+      show(here);
     });
     win.onClose = unwatch;
 
-    win.app = { show, table, address, up, get here() { return here; }, get selected() { return selected; } };
+    win.app = { show, table };
     show(here);
     return root;
   },
