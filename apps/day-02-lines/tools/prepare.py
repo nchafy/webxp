@@ -63,6 +63,118 @@ ACTIVITY_SUFFIXES = (".gpx", ".fit", ".tcx", ".gpx.gz", ".fit.gz", ".tcx.gz")
 PRIVATE_OUT = APP / "private"
 FIXTURE_OUT = APP / "data"
 
+#: The committed synthetic export, and the address a reader can follow. The repo-relative
+#: string is what the README and `data/noise-summary.json` already use for a path in prose.
+FIXTURE_SRC = APP / "fixture"
+FIXTURE_SRC_REL = "apps/day-02-lines/fixture"
+
+#: The two overlay files written beside a measured directory, in the order `lines.mjs`
+#: fetches them. Named once because three Python files need them -- both generators and
+#: `test_pipeline.py` -- and a second spelling is how one of them comes to look for a
+#: renamed file under its old name and find nothing to measure.
+STREET_OVERLAY = "street-noise.json"
+AREA_OVERLAY = "area-noise.json"
+OVERLAYS = (STREET_OVERLAY, AREA_OVERLAY)
+
+
+def outside_fixture(paths: list[pathlib.Path]) -> list[pathlib.Path]:
+    """Which of `paths` resolve outside the committed synthetic fixture.
+
+    Resolved, not compared as written, and that is the load-bearing part. The real export
+    reaches a worktree as a symlink -- `.gitignore` carries a slash-less `apps/day-*/private`
+    for exactly that -- so a link under `fixture/` is the way real traces get measured under
+    a profile that labels its output synthetic. Following the link is what catches it.
+    """
+    root = FIXTURE_SRC.resolve()
+    out = []
+    for path in paths:
+        resolved = path.resolve()
+        if resolved != root and root not in resolved.parents:
+            out.append(path)
+    return out
+
+
+def refuse_fixture_profile(
+    targets: list[pathlib.Path], files: list[pathlib.Path], trim_m: float
+) -> str:
+    """Why a `--fixture` run must be refused, or `""` if it may proceed.
+
+    The profile in `noise_by_area.py` and `street_segments.py` widens the spacing band,
+    drops the aggregation minimums to one, and then writes `synthetic: true` into its own
+    output. Both halves of that are wrong on a real export: the figures stop being comparable
+    with every published one, and the label lies about what produced them.
+
+    Three refusals, each about a file that would look right and be wrong.
+
+    The targets and the activity files are checked separately because they fail differently.
+    A target elsewhere is someone pointing the profile at an export. A target inside
+    `fixture/` whose files resolve outside it is a symlinked export being measured under the
+    synthetic label, which no check downstream could tell from the real thing.
+
+    And `data/` is built with `--trim-m 0`, so an overlay cropped differently writes
+    `[i0, i1]` spans against points the committed documents do not have -- which `lines.mjs`
+    slices anyway and draws along the wrong stretch of road. Cropped-but-in-range is the half
+    no reader can see.
+    """
+    if not targets or outside_fixture(targets):
+        return (
+            f"--fixture measures {FIXTURE_SRC_REL} and nothing else. It widens the spacing "
+            "band and labels its output synthetic, so pointing it at a real export writes a "
+            "figure no published one is comparable with, under a label that is untrue."
+        )
+    if not files:
+        return f"--fixture found no activity file under {FIXTURE_SRC_REL}."
+    strays = outside_fixture(files)
+    if strays:
+        return (
+            f"{len(strays)} of {len(files)} activity files resolve outside "
+            f"{FIXTURE_SRC_REL}, starting at {strays[0]} -> {strays[0].resolve()}. A link "
+            "out of the fixture is how a real export comes to be measured under a synthetic "
+            "label."
+        )
+    if trim_m != 0:
+        return (
+            f"--fixture needs --trim-m 0, got {trim_m:g}. The committed data/ documents are "
+            "built uncropped, and an overlay cropped differently indexes points they do not "
+            "have."
+        )
+    return ""
+
+
+def fixture_provenance(tool: str) -> dict:
+    """The block a `--fixture` run writes above its own figures.
+
+    A check that passes over a committed overlay holds the index spans and the drill-down
+    against the fixture. It is not evidence about a real recording, and the two are easy to
+    conflate once a percentage is sitting in a tracked file. So the distinction travels in
+    the file, where a reader meets the figures, rather than in a note somewhere else.
+
+    The gates are not restated here. They are already top-level fields of the overlay --
+    `spacing_band_m`, `speed_band_ms` and the minimums -- and a second copy is how the two
+    come to disagree.
+    """
+    return {
+        "synthetic": True,
+        "measured": FIXTURE_SRC_REL,
+        "what": (
+            "Built from the committed synthetic fixture, not from a Strava export. A check "
+            "passing over this file says the span arithmetic and the drill-down hold on the "
+            "fixture. It is not a measurement of a real recording and says nothing about one."
+        ),
+        "not_comparable": (
+            "The fixture is a routed path displaced by white noise, measured with the "
+            "spacing band widened to admit it, so the percentages here run tens of percent "
+            "where a real export is about one. A figure from this file and a figure from "
+            "private/ are different quantities. The gates used are this file's own "
+            "top-level fields."
+        ),
+        "produced_by": f"apps/day-02-lines/tools/{tool}",
+        "reproduce": (
+            f".venv/bin/python -I apps/day-02-lines/tools/{tool} {FIXTURE_SRC_REL} "
+            "--out apps/day-02-lines/data --trim-m 0 --fixture"
+        ),
+    }
+
 
 def destination_would_be_published(path: pathlib.Path) -> bool:
     """Whether writing real traces to `path` could end up in a commit.

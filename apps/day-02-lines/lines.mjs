@@ -1399,10 +1399,30 @@ export async function startDay({ win, chrome }) {
         selectedCell: () => selectedCell,
         passSpan: () => passSpan,
         ghostCount: () => ghostSpans.length,
+        //: The segment with the *most* crossings, not the first one over a bar.
+        //:
+        //: This used to take the first feature with more than two passes, which is a bar the
+        //: committed synthetic overlay cannot clear: the fixture's four Runs are four
+        //: point-to-point routes in four boroughs, so its noisiest street is crossed twice.
+        //: `scripts/check.py` then found nothing to drill into and reported the panel
+        //: unmeasured on a clean clone — a browser check going vacuous for want of a cell.
+        //:
+        //: Picking the richest is also the stronger input where there is a choice. The panel
+        //: sweep stresses the drill-down's layout, and the most-crossed segment draws the most
+        //: ghosts and the longest pass list. A segment with no crossing is still no answer, so
+        //: an overlay where nothing has one returns null and the sweep fails as before.
         firstCellWithPasses: () => {
           if (!noise) return null;
-          const f = noise.features.find((x) => (x.properties.passes || []).length > 2);
-          return f ? f.properties : null;
+          let best = null;
+          let most = 0;
+          for (const f of noise.features) {
+            const n = (f.properties.passes || []).length;
+            if (n > most) {
+              most = n;
+              best = f;
+            }
+          }
+          return best ? best.properties : null;
         },
         openSegment: (props) => openSegment(map, props),
         showPass: (pass, cell) => showPass(map, pass, cell),
@@ -1511,9 +1531,18 @@ export async function startDay({ win, chrome }) {
               .filter((v) => typeof v === 'number')
               .sort((a, b) => a - b);
             const median = pcts.length ? pcts[Math.floor(pcts.length / 2)] : null;
+            // The figures and what they are measured over, in one line.
+            //
+            // A reader meets these percentages here and nowhere else in the interface, and a
+            // figure off the committed fixture is not the same quantity as one off an export:
+            // the fixture is a routed path displaced by white noise, so it reads tens of
+            // percent where a real recording reads about one. The overlay says which it is
+            // (`synthetic` from `prepare.fixture_provenance`); unlabelled stays unlabelled
+            // rather than being asserted real.
+            const kind = noise.synthetic ? `${unit}, synthetic` : unit;
             noiseNote.textContent = median === null
-              ? `${noise.features.length} ${unit}`
-              : `${noise.features.length} ${unit} · median ${median.toFixed(1)}% noise`;
+              ? `${noise.features.length} ${kind}`
+              : `${noise.features.length} ${kind} · median ${median.toFixed(1)}% noise`;
           }
           noiseToggle.addEventListener('click', () => {
             showNoise = !showNoise;

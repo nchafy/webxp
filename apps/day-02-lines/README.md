@@ -126,6 +126,39 @@ The split is deliberate: `data/` is tracked, so a default that wrote there would
 command above overwrites committed files with real traces, and the next `git add -A`
 publishes them.
 
+### The committed overlays
+
+`data/` also carries the two segment overlays, built from the fixture by the same two tools
+that measure an export:
+
+```
+.venv/bin/python -I apps/day-02-lines/tools/street_segments.py apps/day-02-lines/fixture \
+    --out apps/day-02-lines/data --trim-m 0 --fixture
+.venv/bin/python -I apps/day-02-lines/tools/noise_by_area.py apps/day-02-lines/fixture \
+    --out apps/day-02-lines/data --trim-m 0 --fixture
+```
+
+Without them a clean clone has no `street-noise.json` or `area-noise.json` at all, so
+`check_day_02_segment_spans` in `scripts/check.py` walks nothing and the drill-down panel
+has no segment to open. Both say so rather than passing, which is right and is also a
+repository that is red the moment it is cloned.
+
+`--fixture` is one profile, not a set of knobs. It widens the spacing band to
+`gpsnoise.FIXTURE_SPACING_BAND_M` — the fixture's white noise puts the median recorded step
+at 3.43 to 7.14 m across its four Runs, and `SPACING_BAND_M` admits only the first of those
+— drops both aggregation minimums to one, since the four Runs are in four boroughs and no
+street or cell is ever reached by a second activity, and writes `synthetic: true` and the
+measurement's provenance into the file. It is refused anywhere but `fixture/`, and refused
+without `--trim-m 0`: the first keeps the label honest, the second keeps the `[i0, i1]`
+spans addressing the documents in `data/`.
+
+**A figure from these files is not a figure from an export.** Inflation here runs tens of
+percent against about one on a real recording, measured under a band nothing published uses.
+A check passing over them holds the span arithmetic and the drill-down against the fixture,
+and says nothing about anyone's traces. `tools/test_pipeline.py` asserts the segment and
+crossing counts are non-zero, that every span addresses its own run, and that the label is
+there — a file that degraded to empty would otherwise satisfy every reader of it.
+
 | File | What it is |
 | --- | --- |
 | `gpsnoise.py` | The measurement library: projection, length, Douglas-Peucker, file readers, map matching. |

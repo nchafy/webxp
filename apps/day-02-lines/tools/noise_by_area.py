@@ -69,6 +69,17 @@ CELL_DEG = 0.002
 MIN_WINDOWS = 12
 MIN_ACTIVITIES = 4
 
+#: The same two minimums for the `--fixture` profile: one window from one activity.
+#:
+#: `MIN_ACTIVITIES` is unreachable on the fixture by construction rather than by bad luck.
+#: Its four Runs are in four different parks -- Riverside, Central Park, Prospect Park and
+#: Flushing Meadows -- so no 222 m cell ever collects a second activity, and the real
+#: minimum leaves an overlay with no features at all. A cell admitted this way is one
+#: crossing of one synthetic trace, which is a structure to check and not a property of a
+#: place; `prepare.fixture_provenance` is written into the output saying so.
+FIXTURE_MIN_WINDOWS = 1
+FIXTURE_MIN_ACTIVITIES = 1
+
 #: The speed and spacing gates, from `gpsnoise` rather than restated here, so this pipeline
 #: and `street_segments.py` cannot disagree about what they filtered on.
 SPEED_BAND_MS = gn.SPEED_BAND_MS
@@ -141,10 +152,32 @@ def main() -> int:
         "must match whatever prepare.py used)",
     )
     ap.add_argument("--top", type=int, default=12)
+    ap.add_argument(
+        "--fixture",
+        action="store_true",
+        help=f"measure {prepare.FIXTURE_SRC_REL}: widen the spacing band to "
+        f"{gn.FIXTURE_SPACING_BAND_M[0]:g}-{gn.FIXTURE_SPACING_BAND_M[1]:g} m, drop the "
+        "aggregation minimums to one, and label the output synthetic",
+    )
     args = ap.parse_args()
 
+    spacing_band = gn.FIXTURE_SPACING_BAND_M if args.fixture else SPACING_BAND_M
+    min_windows = FIXTURE_MIN_WINDOWS if args.fixture else MIN_WINDOWS
+    min_activities = FIXTURE_MIN_ACTIVITIES if args.fixture else MIN_ACTIVITIES
+
     files = prepare.find_activities(args.targets)
+    # After the walk, not before: the refusal has to see the files, because a symlink under
+    # `fixture/` is how a real export reaches a profile that labels its output synthetic.
+    if args.fixture:
+        refused = prepare.refuse_fixture_profile(args.targets, files, args.trim_m)
+        if refused:
+            ap.error(refused)
     print(f"{len(files)} activity file(s)")
+    if args.fixture:
+        print(
+            f"synthetic fixture profile: spacing {spacing_band[0]:g}-{spacing_band[1]:g} m, "
+            f"{min_windows} window(s) from {min_activities} activity(s) per cell"
+        )
 
     rows = []
     skipped_sport = 0
@@ -186,7 +219,7 @@ def main() -> int:
         if steps.size == 0:
             continue
         step = float(np.median(steps))
-        if not (SPACING_BAND_M[0] <= step <= SPACING_BAND_M[1]):
+        if not (spacing_band[0] <= step <= spacing_band[1]):
             skipped_spacing += 1
             continue
 
@@ -204,7 +237,7 @@ def main() -> int:
     print(
         f"\n{used_activities} activities contributed {len(rows):,} windows\n"
         f"  dropped: {skipped_sport} not runs, {skipped_spacing} outside "
-        f"{SPACING_BAND_M[0]}-{SPACING_BAND_M[1]} m spacing, "
+        f"{spacing_band[0]}-{spacing_band[1]} m spacing, "
         f"{skipped_speed:,} windows outside {SPEED_BAND_MS[0]}-{SPEED_BAND_MS[1]} m/s"
     )
     if not rows:
@@ -304,15 +337,21 @@ def main() -> int:
     good = {
         k: v
         for k, v in cells.items()
-        if len(v["values"]) >= MIN_WINDOWS and len(v["acts"]) >= MIN_ACTIVITIES
+        if len(v["values"]) >= min_windows and len(v["acts"]) >= min_activities
     }
     print(
-        f"\n{len(cells):,} cells touched; {len(good):,} with at least {MIN_WINDOWS} "
-        f"windows from {MIN_ACTIVITIES}+ activities"
+        f"\n{len(cells):,} cells touched; {len(good):,} with at least {min_windows} "
+        f"windows from {min_activities}+ activities"
     )
+    # Nothing measured is a failure, not a quiet success.
+    #
+    # This returned 0 and wrote no file, so a caller that only reads the exit status was told
+    # the overlay was built. A run that reports fine and leaves `scripts/check.py` nothing to
+    # walk is `docs/review.md`'s "check that cannot fail" one layer earlier: the precondition
+    # went false and the exit status did not.
     if not good:
-        print("no cell is sampled well enough to compare")
-        return 0
+        print("no cell is sampled well enough to compare; nothing written")
+        return 1
 
     stats = []
     for (ky, kx), v in good.items():
@@ -371,18 +410,28 @@ def main() -> int:
               f"{s['resid'] * 100:>+8.2f} {(s['median'] - 1) * 100:>+7.2f}% "
               f"{s['n']:>6} {s['activities']:>5}")
 
+    # A file with no crossing in it is the defect in the one costume a reader cannot spot,
+    # because the file exists. `check_day_02_segment_spans` walks `features[].properties
+    # .passes[]`, so an empty overlay loops zero times and reports ok having read nothing --
+    # and it can no longer say "nothing was found", because something was.
+    crossings = sum(len(s["passes"]) for s in stats)
+    if not stats or not crossings:
+        print(f"{len(stats)} cells and {crossings} crossings survived; nothing written")
+        return 1
+
     args.out.mkdir(parents=True, exist_ok=True)
-    out = args.out / "area-noise.json"
+    out = args.out / prepare.AREA_OVERLAY
     out.write_text(
         json.dumps(
             {
+                **(prepare.fixture_provenance("noise_by_area.py") if args.fixture else {}),
                 "window_m": WINDOW_M,
                 "floor_m": FLOOR_M,
                 "cell_deg": CELL_DEG,
                 "speed_band_ms": list(SPEED_BAND_MS),
-                "spacing_band_m": list(SPACING_BAND_M),
-                "min_windows": MIN_WINDOWS,
-                "min_activities": MIN_ACTIVITIES,
+                "spacing_band_m": list(spacing_band),
+                "min_windows": min_windows,
+                "min_activities": min_activities,
                 "speed_inflation_r": r,
                 "speed_residual_r": r_after,
                 "type": "FeatureCollection",
@@ -415,7 +464,10 @@ def main() -> int:
             separators=(",", ":"),
         )
     )
-    print(f"\nwrote {out} ({out.stat().st_size / 1e6:.2f} MB, {len(stats)} cells)")
+    print(
+        f"\nwrote {out} ({out.stat().st_size / 1e6:.2f} MB, {len(stats)} cells, "
+        f"{crossings} crossings)"
+    )
     return 0
 
 

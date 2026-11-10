@@ -420,6 +420,20 @@ SPEED_BAND_MS = (2.0, 5.0)
 #: were moving and calling it a property of a place.
 SPACING_BAND_M = (3.0, 4.0)
 
+#: The spacing band the `--fixture` profile measures under, in metres.
+#:
+#: `make_fixture.py` displaces a routed path by white noise of 1.5 to 4.0 m sigma at a
+#: nominal 2.5 to 3.5 m spacing, and white noise is not what a receiver does, so the median
+#: *recorded* step lands well above the nominal one. Measured over the fixture's four Runs:
+#: 3.43, 4.75, 4.97 and 7.14 m. `SPACING_BAND_M` admits the first of those and nothing else,
+#: which leaves an overlay built from one activity.
+#:
+#: 9.0 is the measured 7.14 with headroom for a tileset update moving a route. Reachable only
+#: through `--fixture`, which both generators refuse outside `prepare.FIXTURE_SRC`: a figure
+#: measured under this band is not the same quantity as one measured under `SPACING_BAND_M`,
+#: and mixing the two would compare sample spacing and call it a property of a place.
+FIXTURE_SPACING_BAND_M = (1.0, 9.0)
+
 
 def speed_residuals(
     speed: np.ndarray, values: np.ndarray, min_per_bin: int = 400

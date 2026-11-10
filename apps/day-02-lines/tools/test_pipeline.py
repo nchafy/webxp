@@ -27,6 +27,9 @@ import pathlib
 import sys
 
 HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import prepare  # noqa: E402
+
 #: The app folder. `fixture/` and `data/` live beside `app.mjs`, one level above these
 #: scripts. Anchored on `HERE` this found neither, printed "run make_fixture.py first" and
 #: returned 1 without executing a single `check()` — while the README cited its output as
@@ -162,6 +165,57 @@ def main() -> int:
               f"{lengths[0]:,.0f} m down to {lengths[-1]:,.0f} m")
         check(f"{doc['name']}: geometry written", len(doc["recorded"]) > 10,
               f"{len(doc['recorded'])} recorded, {len(doc['matched'])} matched points")
+
+    # The two committed overlays, which nothing else holds.
+    #
+    # `check_day_02_segment_spans` in `scripts/check.py` counts crossings whose `[i0, i1]`
+    # runs past the end of the run it names -- and cannot tell a file with no crossing in it
+    # from a file it was never given, because both loop zero times. An overlay that degraded
+    # to empty would pass there while the file sat on disk looking measured. So the counts are
+    # asserted here, where the fixture that produced them is, and before any span is trusted.
+    #
+    # Counted from the file rather than read out of a figure written beside the features: a
+    # stated count and the features it describes are two renderings of one fact, and the one
+    # that goes stale is the one being asserted on.
+    points = {a["id"]: a["points"] for a in index["activities"]}
+    for name in prepare.OVERLAYS:
+        path = data / name
+        if not path.is_file():
+            check(f"{name}: written into data/", False, f"{path} is missing")
+            continue
+        overlay = json.loads(path.read_text())
+        segments = overlay.get("features") or []
+        crossings = [
+            crossing
+            for feature in segments
+            for crossing in feature["properties"].get("passes", [])
+        ]
+        check(f"{name}: segments measured", bool(segments), f"{len(segments)} segments")
+        check(f"{name}: crossings measured", bool(crossings), f"{len(crossings)} crossings")
+        # `data/` is the synthetic fixture, and a percentage measured over it is not a
+        # percentage measured over an export -- white noise against a receiver, and a widened
+        # spacing band against the published one. The label travels in the file, so a reader
+        # who meets the figures meets the distinction. Without it a green suite reads as
+        # evidence about a real recording, which nothing here measured.
+        check(
+            f"{name}: labelled synthetic",
+            overlay.get("synthetic") is True,
+            f"synthetic={overlay.get('synthetic')!r}, measured={overlay.get('measured')!r}",
+        )
+        # Both ends of every span, against the run it names. `i1` is inclusive: `lines.mjs`
+        # slices `doc.recorded[i0 : i1 + 1]`, so `i1 == points` reads one past the end.
+        off = [
+            f"{c['activity']}[{c['i0']}:{c['i1']}]"
+            for c in crossings
+            if points.get(c["activity"]) is None
+            or not (0 <= c["i0"] <= c["i1"] < points[c["activity"]])
+        ]
+        check(
+            f"{name}: every span addresses its own run",
+            not off,
+            f"{len(crossings) - len(off)} of {len(crossings)} fit"
+            + (f"; {', '.join(off[:3])}" if off else ""),
+        )
 
     print()
     if FAILURES:

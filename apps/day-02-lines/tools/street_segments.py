@@ -109,6 +109,17 @@ SPACING_BAND_M = gn.SPACING_BAND_M
 MIN_TRAVERSALS = 6
 MIN_ACTIVITIES = 3
 
+#: The same two minimums for the `--fixture` profile: one traversal from one activity.
+#:
+#: `MIN_ACTIVITIES` is unreachable on the fixture by construction rather than by bad luck.
+#: Its four Runs are four point-to-point routes in four different boroughs, so no OSM way is
+#: ever walked by a second activity, and the real minimum leaves an overlay with no features
+#: at all. A way admitted this way is one crossing of one synthetic trace, which is a
+#: structure to check and not a claim about a street; `prepare.fixture_provenance` is written
+#: into the output saying so.
+FIXTURE_MIN_TRAVERSALS = 1
+FIXTURE_MIN_ACTIVITIES = 1
+
 #: Points per matching request.
 #:
 #: Deliberately far below `gpsnoise.MATCH_CHUNK`'s 15,000. That figure was measured for a
@@ -323,35 +334,68 @@ def main() -> int:
         help=f"crop this much off each end of every run (default {gn.QUARTER_MILE_M:.0f}; "
         "must match whatever prepare.py used)",
     )
+    ap.add_argument(
+        "--fixture",
+        action="store_true",
+        help=f"measure {prepare.FIXTURE_SRC_REL}: widen the spacing band to "
+        f"{gn.FIXTURE_SPACING_BAND_M[0]:g}-{gn.FIXTURE_SPACING_BAND_M[1]:g} m, drop the "
+        "aggregation minimums to one, skip the resume cache, and label the output synthetic",
+    )
     args = ap.parse_args()
+
+    spacing_band = gn.FIXTURE_SPACING_BAND_M if args.fixture else SPACING_BAND_M
+    min_traversals = FIXTURE_MIN_TRAVERSALS if args.fixture else MIN_TRAVERSALS
+    min_activities = FIXTURE_MIN_ACTIVITIES if args.fixture else MIN_ACTIVITIES
 
     files = prepare.find_activities(args.targets)
     if args.limit:
         files = files[: args.limit]
+    # After the walk, not before: the refusal has to see the files, because a symlink under
+    # `fixture/` is how a real export reaches a profile that labels its output synthetic.
+    if args.fixture:
+        refused = prepare.refuse_fixture_profile(args.targets, files, args.trim_m)
+        if refused:
+            ap.error(refused)
+        # Said, not swallowed. `--fixture` keeps no cache, so `--fresh` would be a flag that
+        # reports nothing and does nothing.
+        if args.fresh:
+            ap.error("--fixture keeps no resume cache, so --fresh has nothing to clear")
     print(f"{len(files)} activity file(s)")
+    if args.fixture:
+        print(
+            f"synthetic fixture profile: spacing {spacing_band[0]:g}-{spacing_band[1]:g} m, "
+            f"{min_traversals} traversal(s) from {min_activities} activity(s) per way"
+        )
 
     # Resume, because this job talks to the network four hundred times and has already died
     # once. Every activity's traversals are appended as one JSON line the moment they are
     # measured, and an activity already in the cache is not matched again. A death now costs
     # one activity rather than the run. `--fresh` clears it.
+    # No resume cache under `--fixture`, which is the one case it costs rather than saves.
+    # The cache exists for a job that talks to the network four hundred times; the fixture is
+    # six activities. And a fixture run's `--out` is the tracked `data/`, where a
+    # `street-cache.jsonl` is a file nobody meant to commit and which `.gitignore`'s
+    # `apps/day-*/private` does not cover.
     args.out.mkdir(parents=True, exist_ok=True)
-    cache_path = args.out / "street-cache.jsonl"
-    if args.fresh and cache_path.exists():
-        cache_path.unlink()
     cached: dict[str, list] = {}
-    if cache_path.is_file():
-        for line in cache_path.read_text().splitlines():
-            if not line.strip():
-                continue
-            try:
-                rec = json.loads(line)
-            except ValueError:
-                # A line half-written when the process died. Drop it and re-measure that
-                # one activity rather than refusing to resume at all.
-                continue
-            cached[rec["activity"]] = rec["traversals"]
-        print(f"  resuming: {len(cached)} already measured")
-    cache = cache_path.open("a")
+    cache = None
+    if not args.fixture:
+        cache_path = args.out / "street-cache.jsonl"
+        if args.fresh and cache_path.exists():
+            cache_path.unlink()
+        if cache_path.is_file():
+            for line in cache_path.read_text().splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    # A line half-written when the process died. Drop it and re-measure that
+                    # one activity rather than refusing to resume at all.
+                    continue
+                cached[rec["activity"]] = rec["traversals"]
+            print(f"  resuming: {len(cached)} already measured")
+        cache = cache_path.open("a")
 
     rows = []
     geoms: dict[int, np.ndarray] = {}
@@ -409,7 +453,7 @@ def main() -> int:
         if steps.size == 0:
             continue
         step = float(np.median(steps))
-        if not (SPACING_BAND_M[0] <= step <= SPACING_BAND_M[1]):
+        if not (spacing_band[0] <= step <= spacing_band[1]):
             skipped_spacing += 1
             continue
 
@@ -457,8 +501,9 @@ def main() -> int:
                     )
             # Written the moment it is known, and flushed, so a kill -9 loses nothing that
             # has already been printed as done.
-            cache.write(json.dumps({"activity": aid, "traversals": measured}) + "\n")
-            cache.flush()
+            if cache is not None:
+                cache.write(json.dumps({"activity": aid, "traversals": measured}) + "\n")
+                cache.flush()
             cached[aid] = measured
             fresh_count += 1
 
@@ -506,13 +551,17 @@ def main() -> int:
             used += 1
         print(f"    {found} traversal(s)", flush=True)
 
-    cache.close()
+    if cache is not None:
+        cache.close()
     print(
         f"\n{used} activities gave {len(rows):,} traversals over "
         f"{len({r[0] for r in rows}):,} ways"
     )
     print(f"  {fresh_count} matched this run, {len(cached) - fresh_count} from the cache")
-    print(f"  dropped {skipped_sport} not runs, {skipped_spacing} outside the spacing band")
+    print(
+        f"  dropped {skipped_sport} not runs, {skipped_spacing} outside the "
+        f"{spacing_band[0]:g}-{spacing_band[1]:g} m spacing band"
+    )
     if not rows:
         print("nothing to report")
         return 1
@@ -558,15 +607,21 @@ def main() -> int:
     good = {
         w: v
         for w, v in by_way.items()
-        if len(v["infl"]) >= MIN_TRAVERSALS and len(v["acts"]) >= MIN_ACTIVITIES
+        if len(v["infl"]) >= min_traversals and len(v["acts"]) >= min_activities
     }
     print(
-        f"\n{len(by_way):,} ways touched; {len(good):,} with {MIN_TRAVERSALS}+ traversals "
-        f"from {MIN_ACTIVITIES}+ activities"
+        f"\n{len(by_way):,} ways touched; {len(good):,} with {min_traversals}+ traversals "
+        f"from {min_activities}+ activities"
     )
+    # Nothing measured is a failure, not a quiet success.
+    #
+    # This returned 0 and wrote no file, so a caller reading only the exit status was told the
+    # overlay was built. A run that reports fine and leaves `scripts/check.py` nothing to walk
+    # is `docs/review.md`'s "check that cannot fail" one layer earlier: the precondition went
+    # false and the exit status did not.
     if not good:
-        print("no way is sampled well enough to compare")
-        return 0
+        print("no way is sampled well enough to compare; nothing written")
+        return 1
 
     stats = []
     for way, v in good.items():
@@ -618,17 +673,27 @@ def main() -> int:
             f"{s['n']:>4} {s['activities']:>5} {s['road_class'][:14]:<14} {label}"
         )
 
+    # A file with no crossing in it is the defect in the one costume a reader cannot spot,
+    # because the file exists. `check_day_02_segment_spans` walks `features[].properties
+    # .passes[]`, so an empty overlay loops zero times and reports ok having read nothing --
+    # and it can no longer say "nothing was found", because something was.
+    crossings = sum(len(s["passes"]) for s in stats)
+    if not stats or not crossings:
+        print(f"{len(stats)} ways and {crossings} crossings survived; nothing written")
+        return 1
+
     args.out.mkdir(parents=True, exist_ok=True)
-    out = args.out / "street-noise.json"
+    out = args.out / prepare.STREET_OVERLAY
     out.write_text(
         json.dumps(
             {
+                **(prepare.fixture_provenance("street_segments.py") if args.fixture else {}),
                 "unit": "osm_way",
                 "min_traversal_m": MIN_TRAVERSAL_M,
                 "speed_band_ms": list(SPEED_BAND_MS),
-                "spacing_band_m": list(SPACING_BAND_M),
-                "min_traversals": MIN_TRAVERSALS,
-                "min_activities": MIN_ACTIVITIES,
+                "spacing_band_m": list(spacing_band),
+                "min_traversals": min_traversals,
+                "min_activities": min_activities,
                 "speed_inflation_r": r_before,
                 "speed_residual_r": r_after,
                 "type": "FeatureCollection",
@@ -656,7 +721,10 @@ def main() -> int:
             separators=(",", ":"),
         )
     )
-    print(f"\nwrote {out} ({out.stat().st_size / 1e6:.2f} MB, {len(stats)} ways)")
+    print(
+        f"\nwrote {out} ({out.stat().st_size / 1e6:.2f} MB, {len(stats)} ways, "
+        f"{crossings} crossings)"
+    )
     return 0
 
 
