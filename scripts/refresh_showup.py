@@ -60,6 +60,15 @@ class RefreshError(RuntimeError):
     """The refresh was refused, with the reason."""
 
 
+class NotBuiltError(RefreshError):
+    """No artifact is there at all, which is an unbuilt ETL rather than a broken one.
+
+    Distinguished because the two want different answers. "You have not run the build" is a
+    note; "the build produced a 2-byte lookup.json" is a failure. Collapsing them meant a
+    caller that merely had no ETL checkout printed six lines of alarm.
+    """
+
+
 def source_path(source_root: Path, name: str) -> Path:
     site = source_root / SOURCE_SITE
     return site / name if name in AT_SITE_ROOT else site / "data" / name
@@ -92,6 +101,10 @@ def collect(source_root: Path) -> dict[str, bytes]:
             continue
         payloads[name] = payload
 
+    if problems and not payloads:
+        raise NotBuiltError(
+            f"no artifacts under {source_root / SOURCE_SITE} — run the ETL's build first"
+        )
     if problems:
         raise RefreshError(
             "refusing to refresh; nothing was written:\n  " + "\n  ".join(problems)
@@ -148,6 +161,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         payloads = collect(source_root)
+    except NotBuiltError as error:
+        # 2, the same status as "no checkout here": both mean there is nothing to compare
+        # against, which a caller may legitimately ignore.
+        print(f"error: {error}", file=sys.stderr)
+        return 2
     except RefreshError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

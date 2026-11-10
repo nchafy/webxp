@@ -221,7 +221,11 @@ function build() {
 
   const boundaries = el('div', 'card');
   boundaries.append(el('h2', null, 'Boundaries'));
-  const switcher = el('div', 'layer-switch');
+  // `segment` is the row layout and the pressed look, from `src/theme.css`.
+  // `layer-switch` carries no rule of its own now; it stays because
+  // `shared/map/basemap.mjs` and `shared/map/README.md` both point an editor at it as
+  // the place a basemap button goes, and the aria-label hangs off it.
+  const switcher = el('div', 'layer-switch segment');
   switcher.setAttribute('role', 'group');
   switcher.setAttribute('aria-label', 'Which boundaries to show');
   for (const [name, layer] of Object.entries(LAYERS)) {
@@ -236,7 +240,7 @@ function build() {
 
   const basemaps = el('div', 'card');
   basemaps.append(el('h2', null, 'Basemap'));
-  const basemapSwitch = el('div', 'layer-switch');
+  const basemapSwitch = el('div', 'layer-switch segment');
   basemapSwitch.setAttribute('role', 'group');
   basemapSwitch.setAttribute('aria-label', 'Which basemap to show');
   for (const [value, label] of [
