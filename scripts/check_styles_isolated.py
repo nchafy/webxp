@@ -23,8 +23,12 @@ The instrument for that is different: launch one app alone and assert a *styling
 it should have — the border its own sheet removes, the grid its own sheet sets. That is what
 found that case, and it needs one assertion per app rather than a sweep.
 
-    scripts/check_styles_isolated.py [--port 8188]
-    scripts/check_styles_isolated.py --prove-failure
+Run it through the virtualenv, as `README.md` runs every browser script here: `cdp.py` imports
+`websocket`, which the system interpreter does not have, so a bare `python3` ends in
+`ModuleNotFoundError` before anything is checked.
+
+    .venv/bin/python scripts/check_styles_isolated.py [--port 8188]
+    .venv/bin/python scripts/check_styles_isolated.py --prove-failure
 
 `--prove-failure` really misspells one shared declaration in one app's source, runs, requires
 to be told, and puts the file back. Two earlier versions of this control were empty: the first
