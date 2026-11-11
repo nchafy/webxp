@@ -1080,8 +1080,43 @@ export function folderView(spec) {
     items.setAttribute('aria-multiselectable', 'false');
   }
 
+  const list = spec.items || [];
   const tiles = [];
-  (spec.items || []).forEach((item, index) => {
+
+  const select = (index) => {
+    tiles.forEach((tile, at) => tile.setAttribute('aria-selected', String(at === index)));
+    if (spec.onSelect) spec.onSelect(list[index], index);
+  };
+
+  const open = (index) => {
+    if (list[index].disabled) return;
+    list[index].onOpen();
+  };
+
+  /* The list's keyboard, bound on the list rather than on each tile.
+   *
+   * Enter and Space open, which is what a double click is for a pointer. `iconTile` binds the
+   * open to `click`, and in this mode that click is the selection — so Blink's own activation
+   * has to be taken off the key here. Without it the only thing a keyboard could do to this
+   * list was select: Enter and Space fire `click` and never `dblclick`, so a reader with no
+   * pointer could choose any item in a folder and open none of them.
+   */
+  const onKey = (event) => {
+    const tile = event.target.closest ? event.target.closest('.folder-item') : null;
+    const at = tile ? tiles.indexOf(tile) : -1;
+    if (at < 0) return;
+    const keys = {
+      Enter: () => open(at),
+      ' ': () => open(at),
+    };
+    const run = keys[event.key];
+    if (!run) return;
+    event.preventDefault();
+    run();
+  };
+  if (selects) items.addEventListener('keydown', onKey);
+
+  list.forEach((item, index) => {
     const cell = document.createElement('li');
     const tile = iconTile({
       name: item.name,
@@ -1090,15 +1125,7 @@ export function folderView(spec) {
       // `iconTile` binds this to click. In selecting mode a click selects and a double
       // click opens, as Explorer does, so the open is moved to `dblclick` below and this
       // becomes the selection.
-      onOpen: () => {
-        if (!selects) {
-          item.onOpen();
-          return;
-        }
-        for (const other of tiles) other.setAttribute('aria-selected', 'false');
-        tile.setAttribute('aria-selected', 'true');
-        if (spec.onSelect) spec.onSelect(item, index);
-      },
+      onOpen: () => (selects ? select(index) : open(index)),
     });
 
     if (item.disabled) {
@@ -1110,9 +1137,7 @@ export function folderView(spec) {
     if (selects) {
       tile.setAttribute('role', 'option');
       tile.setAttribute('aria-selected', 'false');
-      tile.addEventListener('dblclick', () => {
-        if (!item.disabled) item.onOpen();
-      });
+      tile.addEventListener('dblclick', () => open(index));
     }
 
     tiles.push(tile);
