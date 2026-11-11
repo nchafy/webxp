@@ -1036,7 +1036,10 @@ export function menuBar(spec) {
  *        "Other Places" — where a reader goes instead of here.
  * @param {[string, string][]} [spec.details]  "Details": label and value rows.
  * @param {string} [spec.itemClass]  Surface class for each tile, as `iconTile` takes.
- * @param {'none'|'one'} [spec.select]  `'one'` makes a click select and a double click open.
+ * @param {'none'|'one'} [spec.select]  `'one'` makes the icons a listbox: a click selects, a
+ *        double click opens, Enter and Space open, and the arrows walk the list's one tab
+ *        stop. Omitting it leaves a grid of launchers, where a click opens and nothing
+ *        selects.
  * @param {(item: object, index: number) => void} [spec.onSelect]  Fired on selection change.
  * @returns {HTMLDivElement}
  */
@@ -1093,19 +1096,41 @@ export function folderView(spec) {
     list[index].onOpen();
   };
 
+  /* Move the one tab stop, and the selection with it.
+   *
+   * Selection follows focus, as it does in the picker (`src/dialogs.mjs`'s `focusRow`) and as
+   * a single-select listbox is expected to: arrowing onto a tile is how a reader with no
+   * pointer reads the list at all.
+   */
+  const rove = (index) => {
+    if (!tiles.length) return;
+    const at = Math.max(0, Math.min(index, tiles.length - 1));
+    tiles.forEach((tile, i) => { tile.tabIndex = i === at ? 0 : -1; });
+    tiles[at].focus();
+    select(at);
+  };
+
   /* The list's keyboard, bound on the list rather than on each tile.
    *
-   * Enter and Space open, which is what a double click is for a pointer. `iconTile` binds the
-   * open to `click`, and in this mode that click is the selection — so Blink's own activation
-   * has to be taken off the key here. Without it the only thing a keyboard could do to this
-   * list was select: Enter and Space fire `click` and never `dblclick`, so a reader with no
-   * pointer could choose any item in a folder and open none of them.
+   * Every arrow moves one tile, the vertical pair included. A grid's vertical neighbour needs
+   * the column count, which is a layout measurement that changes with the window's width; one
+   * step is the same move at every width and can never land on a tile that is not there.
    */
   const onKey = (event) => {
     const tile = event.target.closest ? event.target.closest('.folder-item') : null;
     const at = tile ? tiles.indexOf(tile) : -1;
     if (at < 0) return;
     const keys = {
+      ArrowRight: () => rove(at + 1),
+      ArrowDown: () => rove(at + 1),
+      ArrowLeft: () => rove(at - 1),
+      ArrowUp: () => rove(at - 1),
+      Home: () => rove(0),
+      End: () => rove(tiles.length - 1),
+      // Enter and Space open, which is what a double click is for a pointer. `iconTile` binds
+      // the open to `click` and in this mode that click is the selection, so Blink's own
+      // activation has to be taken off the key here — otherwise the only thing a keyboard
+      // could do to this list was select.
       Enter: () => open(at),
       ' ': () => open(at),
     };
@@ -1137,6 +1162,10 @@ export function folderView(spec) {
     if (selects) {
       tile.setAttribute('role', 'option');
       tile.setAttribute('aria-selected', 'false');
+      // One tab stop for the whole list, not one per tile: `wrapTab` cycles every match of
+      // `FOCUSABLE` inside a modal layer, so a 41-item folder in a dialog put 41 presses
+      // between whatever precedes the list and whatever follows it.
+      tile.tabIndex = index === 0 ? 0 : -1;
       tile.addEventListener('dblclick', () => open(index));
     }
 
