@@ -514,7 +514,8 @@ are worth asking. Only the second is answered by breaking the subject.
 - **No check covers `prefers-reduced-motion`.** The zoom is skipped rather than shortened,
   and the marquee has a CSS fallback, but neither path is exercised.
 - **`scripts/css_ties.py` is a regression guard, not a tie detector.** It pins the decisions
-  listed in its `OUTRANKS`, `DISJOINT` and `GONE` tables, so undoing one of them fails. A new
+  listed in its `OUTRANKS`, `DISJOINT`, `ORDERED` and `GONE` tables, so undoing one of them
+  fails. A new
   tie of finding 13's shape, between two other selectors, is not caught. The general case needs
   ancestor reachability — which class sets co-occur, and which ancestor chains are possible —
   and without it a sweep over the stylesheets reports a few hundred candidate ties that can

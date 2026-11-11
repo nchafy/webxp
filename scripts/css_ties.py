@@ -5,14 +5,20 @@ WHAT THIS IS, AND WHAT IT IS NOT
 --------------------------------
 This is a **regression guard over an explicit list of already-resolved ties**. It is
 **not a tie detector.** It cannot tell you that a new tie exists. It can only tell you
-that the decisions listed in `OUTRANKS`, `DISJOINT` and `GONE` below are still decided the
-way `docs/apps.md` says they are.
+that the decisions listed in `OUTRANKS`, `DISJOINT`, `ORDERED` and `GONE` below are still
+decided the way `docs/apps.md` says they are.
 
-The distinction matters, because the two halves of the list are pinned differently:
+The distinction matters, because the tables are pinned differently:
 
 * `DISJOINT` pairs are checked **as ties**: both specificities are computed and the pair is
   asserted to share no property. Reintroduce the overlap and this names the property. It
   would also catch a *newly* introduced overlap between those two selectors.
+* `ORDERED` pairs are also checked as ties, and are the case where the overlap is intended
+  and neither side can be raised from here. A tie falls through to source position, so
+  position is what gets asserted, along with the premise that makes it the only option: one
+  sheet, both sides setting the property, equal counts. It is the weakest pin here, and the
+  one to delete first: raising either side of the pair in CSS is the real fix, and it retires
+  the row in favour of an `OUTRANKS` one.
 * `OUTRANKS` and `GONE` entries are pinned as **"this selector exists and sets these
   properties"** — `.map-root .map-area > .map` over `.map-root .maplibregl-map`,
   `.clippy .clippy-bubble` over `.card`, `.window.is-max:not(.is-active)` over
@@ -113,8 +119,13 @@ def strip_comments(text: str) -> str:
     return re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
 
 
-def parse(text: str) -> list[tuple[str, dict[str, str]]]:
-    """Flatten a stylesheet to (selector, declarations) pairs.
+def parse(text: str) -> list[tuple[str, dict[str, str], int]]:
+    """Flatten a stylesheet to (selector, declarations, position) triples.
+
+    `position` counts blocks from the top of the sheet, and the members of one selector list
+    share it. `ORDERED` is the only assertion that reads it, and it needs the position of the
+    block rather than of the selector text: the same selector can be spelled inside a longer
+    one elsewhere in the file, so searching the source for it finds the wrong rule.
 
     At-rule preludes are dropped and their bodies are flattened in with everything else:
     every selector this file names sits either at the top level or inside a `@container` /
@@ -125,8 +136,9 @@ def parse(text: str) -> list[tuple[str, dict[str, str]]]:
     catch a file this parser could not read.
     """
     src = strip_comments(text)
-    out: list[tuple[str, dict[str, str]]] = []
+    out: list[tuple[str, dict[str, str], int]] = []
     buf = ""
+    block = 0
     i, n = 0, len(src)
     while i < n:
         ch = src[i]
@@ -152,7 +164,8 @@ def parse(text: str) -> list[tuple[str, dict[str, str]]]:
                     decls[prop] = value.strip()
             for sel in prelude.split(","):
                 if sel.strip():
-                    out.append((sel.strip(), decls))
+                    out.append((sel.strip(), decls, block))
+            block += 1
             i = j
             continue
         if ch == "}":
@@ -206,8 +219,9 @@ def specificity(sel: str) -> tuple[int, int, int]:
 
 #: Hand-computed specificities. The calculator above is what every other assertion in this
 #: file rests on, so it is checked against arithmetic done by a person before it is used to
-#: check anything else. The last three reproduce the three rows of `docs/apps.md`'s own
-#: table, which is an independent source for the same numbers.
+#: check anything else. Whichever selectors also appear in `docs/apps.md`'s specificity table
+#: (`grep -n 'What decided it' docs/apps.md`) carry the same numbers from a separate hand
+#: count there, so the overlap is a second independent source rather than a slice of this dict.
 SELF_TEST = {
     ".card": (0, 1, 0),
     ".card p": (0, 1, 1),
@@ -232,6 +246,23 @@ SELF_TEST = {
     ".map-root .map-area > .map": (0, 3, 0),
     ".map-root .maplibregl-map": (0, 2, 0),
     ".map-root .map-zoom button": (0, 2, 1),
+    ".menu-popup.context-menu": (0, 2, 0),
+    ".menu-item:hover": (0, 2, 0),
+    '.menu-title[aria-expanded="true"]': (0, 2, 0),
+    '.menu-popup .menu-item[aria-disabled="true"]': (0, 3, 0),
+    # Two attributes and a pseudo-element on one selector, which is the shape this calculator
+    # gets wrong most easily: the attributes are class-column, the pseudo-element is
+    # type-column, and the descendant class is a fourth in the class column.
+    '.menu-item[aria-checked="true"] .menu-check::before': (0, 3, 1),
+    '.menu-item[role="menuitemradio"][aria-checked="true"] .menu-check::before': (0, 4, 1),
+    ".dialog.picker": (0, 2, 0),
+    ".picker-row:hover": (0, 2, 0),
+    '.picker-row[aria-selected="true"]': (0, 2, 0),
+    ".picker-list .picker-row:focus-visible": (0, 3, 0),
+    "[tabindex]:focus-visible": (0, 2, 0),
+    ".window-body.app-explorer": (0, 2, 0),
+    '.app-explorer .exp-row[aria-selected="true"] .exp-type': (0, 4, 0),
+    ".app-explorer .exp-type": (0, 2, 0),
 }
 
 
@@ -309,6 +340,90 @@ OUTRANKS = (
         "height",
         "compass is not sized by the zoom button",
     ),
+    # `src/contextmenu.css` over `src/menu.css`. `contextmenu.mjs` links the pair in a fixed
+    # order, and the first menu bar a program builds links `menu.css` on its own — so either
+    # sheet can be the later one and neither override may rest on that.
+    (
+        ".menu-popup.context-menu",
+        ".menu-popup",
+        "z-index",
+        "context menu paints over the taskbar",
+    ),
+    # `aria-checked` is the attribute for both menu roles, so the tick rule matches a radio row
+    # too and the bullet is an override rather than an addition.
+    (
+        '.menu-item[role="menuitemradio"][aria-checked="true"] .menu-check::before',
+        '.menu-item[aria-checked="true"] .menu-check::before',
+        "content",
+        "radio row draws a bullet, not a tick",
+    ),
+    # A dead row must not light up. Both halves of the highlight are pinned, and `:focus`
+    # beside `:hover` because a menu moves focus with the pointer: the row under the pointer
+    # and the row the arrow keys reached are the same row.
+    (
+        '.menu-popup .menu-item[aria-disabled="true"]',
+        ".menu-item:hover",
+        "background-color",
+        "disabled menu row stays unlit",
+    ),
+    (
+        '.menu-popup .menu-item[aria-disabled="true"]',
+        ".menu-item:hover",
+        "color",
+        "disabled menu row stays unlit",
+    ),
+    (
+        '.menu-popup .menu-item[aria-disabled="true"]',
+        ".menu-item:focus",
+        "background-color",
+        "disabled menu row stays unlit",
+    ),
+    (
+        '.menu-popup .menu-item[aria-disabled="true"]',
+        ".menu-item:focus",
+        "color",
+        "disabled menu row stays unlit",
+    ),
+    # The picker wears `.dialog`'s skin and overrides its two sizes. `min-height` is the one
+    # that shows: a CSS minimum beats a maximum, so `.dialog`'s 150px winning here pushes the
+    # footer — and both answers — out of a short window's frame.
+    (".dialog.picker", ".dialog", "width", "picker is wider than a message box"),
+    (".dialog.picker", ".dialog", "min-height", "picker gives its height up"),
+    # The theme's focus ring is a white inset line with a navy halo, drawn for chrome and
+    # invisible on a white list. The picker replaces it, so it has to outrank the `box-shadow`
+    # half rather than sit after it.
+    (
+        ".picker-list .picker-row:focus-visible",
+        "button:focus-visible",
+        "box-shadow",
+        "picker row's own focus ring",
+    ),
+    (
+        ".picker-list .picker-row:focus-visible",
+        "button:focus-visible",
+        "outline",
+        "picker row's own focus ring",
+    ),
+    # Explorer's list scrolls, not the client area around it.
+    (
+        ".window-body.app-explorer",
+        ".window-body",
+        "overflow",
+        "explorer scrolls its list",
+    ),
+    # `--muted` is a dark grey chosen for white; on the selection blue it measures 2.14:1.
+    (
+        '.app-explorer .exp-row[aria-selected="true"] .exp-type',
+        ".app-explorer .exp-type",
+        "color",
+        "selected row's grey cells inherit white",
+    ),
+    (
+        '.app-explorer .exp-row[aria-selected="true"] .exp-modified',
+        ".app-explorer .exp-modified",
+        "color",
+        "selected row's grey cells inherit white",
+    ),
 )
 
 #: (a, b, label). These pairs tie on purpose and must therefore share no property at all, so
@@ -321,6 +436,15 @@ DISJOINT = (
     (".icon-tile:active", ".desktop-icon:focus-visible", "desktop icon pressed vs focused"),
     (".start-item:active", ".start-item:hover", "start item pressed vs hovered"),
     (".start-item:active", ".start-item:focus-visible", "start item pressed vs focused"),
+    # `src/menu.css` is the same arrangement: the pressed row flattens the theme's button with
+    # `background-image` and `box-shadow`, and the highlight paints `background-color` and
+    # `color`. A `background` shorthand on the pressed side reaches `background-color` and
+    # hands the result back to the order of two blocks in one file.
+    (".menu-item:active", ".menu-item:hover", "menu row pressed vs hovered"),
+    (".menu-item:active", ".menu-item:focus", "menu row pressed vs focused"),
+    (".menu-title:active", ".menu-title:hover", "menu title pressed vs hovered"),
+    (".menu-title:active", ".menu-title:focus", "menu title pressed vs focused"),
+    (".menu-title:active", '.menu-title[aria-expanded="true"]', "menu title pressed vs open"),
 )
 
 #: Shorthands and the longhands they reach, for the `DISJOINT` overlap test.
@@ -334,6 +458,34 @@ REACHES = {
     "padding": ("padding-top", "padding-right", "padding-bottom", "padding-left"),
     "outline": ("outline-color", "outline-width", "outline-style"),
 }
+
+#: (earlier, later, property, label). A tie inside one sheet whose outcome is source order,
+#: pinned as the order it rests on. This is the weakest pin in this file, and the only one
+#: available when neither side can be raised: an equal count falls through to position, so
+#: position is what there is to assert.
+#:
+#: The premise is asserted with it — one sheet, both sides setting the property, equal counts.
+#: Raising either side is caught as a rename, because specificity is a function of the selector
+#: text: the old spelling goes absent and the run fails. The equality assertion is therefore a
+#: guard on this table rather than on the sheets, in the same role as `SELF_TEST` — it catches a
+#: row whose two sides never tied, and so asserted an order that nothing rested on.
+ORDERED = (
+    # In `src/picker.css` these two are both (0,2,0) — a class and a pseudo-class against a
+    # class and an attribute — and both set `background`. The selection wins by sitting below
+    # the hover rule, and nothing else. Reorder them and a selected row under the pointer gets
+    # hover's 16% wash of `--title-b` over `--bg`, while `color: #fff` still comes from the
+    # selection block: white on rgb(223 232 241) measures 1.24:1, against the 5.31:1 the
+    # selection is chosen for. That composite is computed from the two declarations — 16% of
+    # #3a6ea5 over #fff — and not read back off the painted pixel: `getComputedStyle` hands
+    # back the unresolved `color-mix`.
+    # Order is a real cascade rule, not a defect on its own; resting a contrast floor on it is.
+    (
+        ".picker-row:hover",
+        '.picker-row[aria-selected="true"]',
+        "background",
+        "selection is not washed out by hover",
+    ),
+)
 
 #: Selectors that must not exist. Dead rules, hand-synced duplicates, and the pre-fix
 #: spelling of every selector `OUTRANKS` names — so a fix that is reverted by rewriting the
@@ -372,6 +524,18 @@ GONE = (
     ".clippy-bubble",
     ".clippy-says",
     ".window-body.is-loading",
+    # The flattened spelling of each selector the menu, context menu, picker and explorer
+    # sheets win a tie with. Every one of these ties a live rule on a property both set, which
+    # hands the outcome to source order: `.context-menu` ties `.menu-popup` on `z-index`,
+    # `.menu-item[aria-disabled="true"]` ties `.menu-item:hover` on the highlight, `.picker`
+    # ties `.dialog` on both sizes, `.picker-row:focus-visible` ties the theme's
+    # `[tabindex]:focus-visible` — the picker's rows carry a roving `tabindex`, so one element
+    # matches both — and `.app-explorer` ties `.window-body` on `overflow`.
+    ".context-menu",
+    '.menu-item[aria-disabled="true"]',
+    ".picker",
+    ".picker-row:focus-visible",
+    ".app-explorer",
 )
 
 #: (sheet, find, replace, label) — undoes one fix. Applied to the text in memory by
@@ -510,6 +674,60 @@ REVERTS = (
         ".map-root .tilt-row { align-items: center;",
         "map.css duplicates of .segment and the link colour",
     ),
+    (
+        "src/contextmenu.css",
+        ".menu-popup.context-menu {",
+        ".context-menu {",
+        "context menu paints over the taskbar",
+    ),
+    (
+        "src/contextmenu.css",
+        '.menu-item[role="menuitemradio"][aria-checked="true"] .menu-check::before',
+        '.menu-item[aria-checked="true"] .menu-check::before',
+        "radio row draws a bullet, not a tick",
+    ),
+    (
+        "src/menu.css",
+        '.menu-popup .menu-item[aria-disabled="true"] {',
+        '.menu-item[aria-disabled="true"] {',
+        "disabled menu row stays unlit",
+    ),
+    (
+        "src/menu.css",
+        ".menu-item:active { background-image: none;",
+        ".menu-item:active { background: none;",
+        "menu row pressed vs hovered",
+    ),
+    ("src/picker.css", ".dialog.picker {", ".picker {", "picker is wider than a message box"),
+    (
+        "src/picker.css",
+        ".picker-list .picker-row:focus-visible {",
+        ".picker-row:focus-visible {",
+        "picker row's own focus ring",
+    ),
+    # An order pin can only be reverted by moving a block, and restating the hover wash below
+    # the selection is how the regression arrives: the second copy reads as a tidy-up, and the
+    # rule it overrides is twenty lines above it.
+    (
+        "src/picker.css",
+        '.picker-row[aria-disabled="true"] { opacity: .5; }',
+        '.picker-row[aria-disabled="true"] { opacity: .5; }\n'
+        ".picker-row:hover { background: color-mix(in srgb, var(--title-b) 16%, transparent); }",
+        "selection is not washed out by hover",
+    ),
+    (
+        "apps/explorer/app.css",
+        ".window-body.app-explorer {",
+        ".app-explorer {",
+        "explorer scrolls its list",
+    ),
+    (
+        "apps/explorer/app.css",
+        '.app-explorer .exp-row[aria-selected="true"] .exp-type,\n'
+        '.app-explorer .exp-row[aria-selected="true"] .exp-modified {',
+        ".app-explorer .exp-type,\n.app-explorer .exp-modified {",
+        "selected row's grey cells inherit white",
+    ),
 )
 
 
@@ -560,17 +778,17 @@ def check(page=None, invert: bool = False) -> list[str]:
     if invert:
         sources, control = _apply_reverts(sources)
 
-    index: dict[str, list[tuple[str, dict[str, str]]]] = {}
+    index: dict[str, list[tuple[str, dict[str, str], int]]] = {}
     for sheet, text in sources.items():
         rules = parse(text)
         if not rules:
             bad.append(f"parse: {sheet} yielded no rules — the parser could not read it")
-        for sel, decls in rules:
-            index.setdefault(sel, []).append((sheet, decls))
+        for sel, decls, block in rules:
+            index.setdefault(sel, []).append((sheet, decls, block))
 
     missing: list[str] = []
 
-    def rule(sel: str) -> list[tuple[str, dict[str, str]]]:
+    def rule(sel: str) -> list[tuple[str, dict[str, str], int]]:
         """An unknown selector is a failure. See the module docstring."""
         if sel not in index:
             missing.append(sel)
@@ -578,7 +796,7 @@ def check(page=None, invert: bool = False) -> list[str]:
         return index[sel]
 
     def declared(sel: str, prop: str) -> str | None:
-        for _sheet, decls in rule(sel):
+        for _sheet, decls, _block in rule(sel):
             if prop in decls:
                 return decls[prop]
         return None
@@ -599,8 +817,8 @@ def check(page=None, invert: bool = False) -> list[str]:
             fired.append(f"{label}: {winner} > {loser}")
 
     for a, b, label in DISJOINT:
-        da = {prop for _sheet, decls in rule(a) for prop in decls}
-        db = {prop for _sheet, decls in rule(b) for prop in decls}
+        da = {prop for _sheet, decls, _block in rule(a) for prop in decls}
+        db = {prop for _sheet, decls, _block in rule(b) for prop in decls}
         if not da or not db:
             bad.append(f"{label}: {a} or {b} declares nothing, so the pin asserts nothing")
             continue
@@ -619,6 +837,41 @@ def check(page=None, invert: bool = False) -> list[str]:
             )
         else:
             fired.append(f"{label}: {a} / {b} share nothing")
+
+    for earlier, later, prop, label in ORDERED:
+        places = {
+            side: [(sheet, block) for sheet, decls, block in rule(side) if prop in decls]
+            for side in (earlier, later)
+        }
+        if not places[earlier] or not places[later]:
+            bad.append(
+                f"{label}: {earlier} or {later} does not set {prop}, "
+                "so the pin asserts nothing"
+            )
+            continue
+        se, sl = specificity(earlier), specificity(later)
+        if se != sl:
+            bad.append(
+                f"{label}: {earlier} {se} and {later} {sl} no longer tie, so order no longer "
+                f"decides {prop} — replace this pin with an OUTRANKS row"
+            )
+            continue
+        held = {sheet for side in places.values() for sheet, _block in side}
+        if len(held) != 1:
+            bad.append(
+                f"{label}: {earlier} and {later} set {prop} across {sorted(held)}; "
+                "between sheets the order is link order, which this pin cannot assert"
+            )
+            continue
+        if max(block for _sheet, block in places[earlier]) >= min(
+            block for _sheet, block in places[later]
+        ):
+            bad.append(
+                f"{label}: {later} no longer sits below every {earlier} block in "
+                f"{held.pop()}, so the tie on {prop} now goes the other way"
+            )
+        else:
+            fired.append(f"{label}: {later} after {earlier}")
 
     for sel in GONE:
         if sel in index:
