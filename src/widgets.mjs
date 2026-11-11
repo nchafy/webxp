@@ -1102,14 +1102,19 @@ export function folderView(spec) {
     note.className = 'folder-note';
     note.setAttribute('role', 'status');
   }
-  const say = (text) => { if (note) note.textContent = text; };
+  // Written only when it changes, so arriving twice at one refused tile is said once. The
+  // desktop's own `announce` clears the region first to force a repeat; a refusal is the
+  // opposite case — nothing has changed, and saying it again is noise.
+  const say = (text) => { if (note && note.textContent !== text) note.textContent = text; };
 
   const list = spec.items || [];
   const tiles = [];
 
   const refuse = (index) => {
     const item = list[index];
-    say(item.hint ? `${item.name}: ${item.hint}` : `${item.name} cannot be chosen.`);
+    // Neutral about which press was refused: this answers a click, an arrow, Enter, Space
+    // and a double click.
+    say(item.hint ? `${item.name}: ${item.hint}` : `${item.name} is not available.`);
   };
 
   /* Where Tab enters the list: one stop for the whole of it, moved rather than added to. */
@@ -1157,6 +1162,18 @@ export function folderView(spec) {
     select(at);
   };
 
+  /* The reason, said on arrival and not only on a press.
+   *
+   * `aria-disabled` keeps a refused tile in the tab order, so Tab is a route onto it that
+   * never passes through `select`. The first item in a folder being the refused one is enough
+   * to meet it: the keyboard lands there and, without this, nothing says why.
+   */
+  const onFocus = (event) => {
+    const tile = event.target.closest ? event.target.closest('.folder-item') : null;
+    const at = tile ? tiles.indexOf(tile) : -1;
+    if (at >= 0 && list[at].disabled) refuse(at);
+  };
+
   /* The list's keyboard, bound on the list rather than on each tile.
    *
    * Every arrow moves one tile, the vertical pair included. A grid's vertical neighbour needs
@@ -1186,7 +1203,10 @@ export function folderView(spec) {
     event.preventDefault();
     run();
   };
-  if (selects) items.addEventListener('keydown', onKey);
+  if (selects) {
+    items.addEventListener('keydown', onKey);
+    items.addEventListener('focusin', onFocus);
+  }
 
   list.forEach((item, index) => {
     const cell = document.createElement('li');
