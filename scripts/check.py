@@ -14,9 +14,11 @@ page yourself.
 
 A flag exists to keep the harness honest:
 
-    --prove-failure   Inverts the drag assertion, so a run that reports clean is reporting
-                      something. A harness that has never been seen to fail is a harness
-                      nobody has checked.
+    --prove-failure   Inverts the assertions of the checks in `INVERTIBLE` and requires that
+                      every one of them failed and nothing else did, so a run that reports
+                      clean is reporting something. A harness that has never been seen to
+                      fail is a harness nobody has checked. `--help` lists them; the list is
+                      derived from `INVERTIBLE`, so it cannot go stale.
 
 The negative control is not a flag: `check_drag_is_title_bar_only` performs the identical
 drag starting inside the window body and requires that nothing moves. That is what rules
@@ -34,6 +36,7 @@ import subprocess
 import sys
 import time
 import traceback
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -10929,6 +10932,10 @@ def main(argv: list[str] | None = None) -> int:
 
             inverted_ran: list[str] = []
             inverted_fired: list[str] = []
+            #: What the inverted checks themselves put into `failures`, so the rest of
+            #: `failures` can be told from it. Without the difference, `--prove-failure`
+            #: reads any failure as the one it asked for.
+            inverted_failures: list[str] = []
             #: Every check the loop got to the end of. Compared to `checks` afterwards, so
             #: "this check never ran" cannot be inferred from a gap in the log — it is stated.
             ran: list[str] = []
@@ -10949,6 +10956,7 @@ def main(argv: list[str] | None = None) -> int:
                             found = check(page, invert=True)
                             if found:
                                 inverted_fired.append(name)
+                                inverted_failures += [f"{name}: {m}" for m in found]
                         else:
                             found = check(page)
                     except Exception as error:  # noqa: BLE001 - reported, never discarded
@@ -11020,12 +11028,11 @@ def main(argv: list[str] | None = None) -> int:
         print(error, file=sys.stderr)
         return 1
 
-    # `--prove-failure` inverts the exit code: the run is correct when the inversions fired.
-    #
-    # Without this the flag was decoration. It inverted two assertions, never asked whether
-    # they had produced a failure, and printed "all checks passed" either way — so the one
-    # control standing behind every clean run could not itself fail. A `--only` that excludes
-    # both invertible checks is now an error rather than a vacuous pass.
+    # `--prove-failure` inverts the exit code: the run is correct when the inversions fired
+    # and nothing else did. Asking only "did the flag run" would print "all checks passed"
+    # either way, which leaves the one control standing behind every clean run unable to
+    # fail itself. A `--only` filter that excludes every check in `INVERTIBLE_NAMES` is an
+    # error below rather than a vacuous pass, so narrowing the run cannot quietly disarm it.
     if args.prove_failure:
         if not inverted_ran:
             print(
@@ -11039,6 +11046,22 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"\n--prove-failure: {', '.join(missed)} ran inverted and reported no "
                 "failure, so the harness has not been shown capable of failing",
+                file=sys.stderr,
+            )
+            return 1
+        # The inversions fired, and nothing else did. Both halves are the control.
+        #
+        # Returning 0 on "the inversions fired" alone discarded every other failure the run
+        # collected — the other checks', the end-of-run console sweep, and the
+        # "abandoned after N of M" line — so the flag could not tell a clean tree from one
+        # with twenty console errors in it. Measured: a check leaving one uncaught TypeError
+        # on the page gave exit 1 plain and exit 0 here, under a printed `[FAIL] console:`.
+        stray = Counter(failures) - Counter(inverted_failures)
+        if stray:
+            print(
+                f"\n--prove-failure: {sum(stray.values())} failure(s) outside the inverted "
+                "checks, so this run proves nothing about a clean tree:\n  "
+                + "\n  ".join(sorted(stray.elements())),
                 file=sys.stderr,
             )
             return 1

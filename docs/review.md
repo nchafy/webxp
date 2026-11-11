@@ -316,7 +316,7 @@ is the clearest case: the fix that gave it its own long footer still left nothin
 | `day 02 segment spans` | It walks the overlay files sitting beside the activity documents. A checkout with none made every loop skip, and the check reported ok having read nothing. | The audit |
 | `day_02_panel_sweep`, again | The footer it fills is not what overflows the panel. `max-height: 50%` with `min-height: 0` lets flex shrink `.detail-body` and `.detail-foot` to zero content height, so what overflows is the head and its two paddings: `panelWanted` measured 91 px and `footGiven` 14 px, both flat from 8 to 1024 repeats of the probe text. Before that the fill was erased outright — `panel.open` ends by writing the footer, and the open promise was discarded, so its fetches landed after the stress. | The audit |
 | `double_click`'s two presses | `mouse()` pinned `clickCount` at 1. Two presses that both say 1 are two single clicks, the browser never synthesises `dblclick`, and the `dblclick` listener `src/window.mjs` has carried since it was written had never run. A check built on that helper reports what an app that ignores double clicks would. | The audit |
-| `--prove-failure` | It inverted two assertions, never asked whether they had produced a failure, and printed "all checks passed" either way. The one control standing behind every clean run could not itself fail. | The audit |
+| `--prove-failure` | It inverted its assertions, never asked whether they had produced a failure, and printed "all checks passed" either way. The one control standing behind every clean run could not itself fail. | The audit |
 | `active styling`'s surface sweep | An empty stop list ran the contrast loop zero times and returned clean over white text on a near-white bar, measured at 1.04:1. | The audit |
 | `active styling`'s transparent skip | The skip for a transparent black tested a substring of `background-image` and `background-color` joined, so a genuine black gradient stop beside a transparent fill was skipped — and a black glyph on it is 1:1. | The audit |
 
@@ -428,17 +428,72 @@ what they were pointed at.
   and the 26 checks behind it were unmeasured and unnamed. A raise is now a failed check under
   that check's name, and every check the loop reached is recorded and compared to the list, so
   "this check never ran" is stated rather than inferred from a gap in the log.
+- **The control graded half of its own run.** `--prove-failure` inverts the checks in
+  `INVERTIBLE` and requires each to fail. Its exit-code branch returned on that result alone,
+  so everything else the run collected — the other checks' failures, the end-of-run console
+  sweep, the "abandoned after N of M" line — was discarded by the one flag that exists to
+  prove the suite can fail. A planted `TypeError` gave exit 1 on a plain run and **exit 0**
+  here, printing its `[FAIL]` line and then `failed as required`. The break was sound; the
+  verdict over it was not, which is why this sits here and not under the fifth shape. The exit
+  path now subtracts the inverted checks' own failures from the run's and fails on the
+  remainder, naming each one, so a clean tree is the only thing the flag can report clean.
+  `scripts/check.py --prove-failure` is the check — the control for every other run, and now
+  for itself.
 
 What makes it a shape of its own: a check written perfectly against the first pattern still
-dies to all three. The assertions were right and the preconditions were asserted; the
-instrument was reading another tree, another field, or two thirds of the suite. The remedy is
-not a stronger assertion. The instrument has to prove its own subject before it measures, and
-state its own coverage afterwards.
+dies to every one of these. The assertions were right and the preconditions were asserted; the
+instrument was reading another tree, another field, two thirds of the suite, or only the part
+of its own run it had asked about. The remedy is not a stronger assertion. The instrument has
+to prove its own subject before it measures, and state its own coverage afterwards.
 
 The harness bugs recorded above are this shape caught earlier. Relaunching a singleton is
 indistinguishable from a loading floor that does not work, and a check that closes a window a
 later check depends on moves the failure onto the innocent one. Neither is a weak assertion
 either.
+
+## The fifth shape: a control that breaks the checking, not the thing checked
+
+The four above are defects in a check or in the harness around it. This one is a defect in the
+**control** — the deliberate break that is supposed to show a check capable of failing. It
+leaves the check unproven and reports it proven, which puts it in the same family.
+
+Three attempts at one control, in `scripts/check_styles_isolated.py` on `feat/showup-apps`
+(`git show feat/showup-apps:scripts/check_styles_isolated.py`; its docstring records all
+three). The check opens one app alone in a fresh document and requires every stylesheet that
+app declares to be in the document. The control has to make that fail.
+
+1. **Skip the assertion for that app.** A skipped assertion cannot fail.
+2. **Remove the declaration.** The check derives what an app needs from what it declares, so
+   removing the declaration removed the expectation with it.
+3. **Misspell the path.** The declaration is still there, still expected, and now wrong — the
+   only one of the three that perturbs the subject rather than the instrument.
+
+The first two share one tell: both **reduced what was asserted**, and reducing what is
+asserted always passes. So **if the control makes the check ask less, it is not a control.**
+
+That is what the first pattern does not give. "Show it capable of failing" says a control is
+owed; it does not say how a control goes wrong, and both empty ones were written by someone
+following it. Recorded off two instances in one day rather than waiting for a third, because
+the tell costs one question per control.
+
+`scripts/css_ties.py` is the same shape done right, and worth reading beside those three.
+`--prove-failure` applies `REVERTS` to the stylesheet text in memory, never to disk
+(`_apply_reverts`) — the subject is the CSS and the control edits the CSS. It then
+audits its own break: a revert whose text no longer matches the file, or a pin that passed
+with its fix reverted, is reported as `control: …` rather than counted as the
+required failure. A stale control is one that quietly stopped breaking anything, which is the
+same defect reached from the other side. The isolation check refuses in the same spirit: with
+no sheet declared by two apps it exits 2 saying it has no subject, rather than planting a
+break that cannot bite.
+
+`scripts/check.py`'s `--prove-failure` is a different instrument, not a weaker one. It inverts
+the assertion of every check in `INVERTIBLE`, and fails the run if an inverted check reports no
+failure. The tuple is the list: `grep -n "^INVERTIBLE" scripts/check.py`. It is named rather
+than counted here on purpose — a count of it, and a line number into a file of ten thousand
+lines, both go stale without anything failing. Inverting asks *more*, so it clears the tell —
+but what it proves is that the measurement responds to the page and that a failure reaches the
+log, not that the un-inverted assertion catches the defect it was written for. Both questions
+are worth asking. Only the second is answered by breaking the subject.
 
 ## Not addressed
 
@@ -450,11 +505,12 @@ either.
   down, move and release are exercised. The branch that is not is the one `beginGesture`
   handles `pointercancel` for: a touch drag the browser turns into a scroll, which fires it
   instead of `pointerup`.
-- **Three checks can be inverted.** `--prove-failure` inverts `drag`, `re-entrant gesture` and
-  `terminal`, and the run fails if an inverted check reports no failure. `scripts/css_ties.py`
-  carries its own inversion over the specificity decisions it pins. For every other check,
-  "shown capable of failing" rests on a negative control run when it was written, or on the
-  history above, rather than on a control the suite re-runs.
+- **Only the checks in `INVERTIBLE` can be inverted.** `--prove-failure` asserts the opposite
+  of each one's usual claim and fails the run if an inverted check reports no failure — or if
+  an `--only` filter excluded every one of them. `scripts/css_ties.py` carries its own
+  inversion over the specificity decisions it pins. For every other check, "shown capable of
+  failing" rests on a negative control run when it was written, or on the history above, rather
+  than on a control the suite re-runs.
 - **No check covers `prefers-reduced-motion`.** The zoom is skipped rather than shortened,
   and the marquee has a CSS fallback, but neither path is exercised.
 - **`scripts/css_ties.py` is a regression guard, not a tie detector.** It pins the decisions
