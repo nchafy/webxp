@@ -1192,6 +1192,10 @@ export function folderView(spec) {
     const tile = event.target.closest ? event.target.closest('.folder-item') : null;
     const at = tile ? tiles.indexOf(tile) : -1;
     if (at < 0) return;
+    // A chord belongs to the browser or to the host, not to this list: Cmd+ArrowLeft is Back
+    // and Ctrl+Home is the top of the document. Taken off the browser only for a press this
+    // list acts on, which is the rule the menu bar's own guards above state.
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
     const keys = {
       ArrowRight: () => rove(at + 1),
       ArrowDown: () => rove(at + 1),
