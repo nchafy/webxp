@@ -8704,22 +8704,51 @@ def notepad_parts(page, win_id: str | None = None) -> dict | None:
     return found
 
 
+#: How page script picks the Notepad window to measure: the one named, or the newest if none
+#: was named. Declares `const win`. `ID` is filled in by `with_window_id`.
+#:
+#: Every probe that reads a Notepad goes through this, because falling back to *another*
+#: Notepad on a miss is how a check that drives its own subject through a close path reports
+#: ok on having lost it. `check_notepad_picker` launches its own Notepad while `check_picker`
+#: may have left the shared one open, and it drives File > Exit and Cancel — the close path
+#: that *is* the subject. With a fallback, a Cancel that closed the window silently moved 18
+#: reads onto the other one: "Cancel left the document dirty" read off a window nothing had
+#: edited, and the check reported ok. A check that picks its own subject cannot fail by
+#: losing it.
+NOTEPAD_PICK = (
+    "const pads = window.webxp.windows.filter((p) => p.programId === 'notepad');"
+    " const win = ID ? pads.find((p) => p.id === ID) : pads[pads.length - 1];"
+)
+
+#: What a probe says when the window it was *named* is not there. One message, two probes,
+#: because the two disagree on what an unnamed miss means — `null` is "no Notepad is open",
+#: which `check_notepad` and `check_open_across_apps` read as a verdict, while a picker
+#: cannot be measured on no window at all. Only the choice of window is shared; what a miss
+#: means is each probe's own.
+NOTEPAD_GONE = json.dumps("the notepad window asked for is gone")
+
+NOTEPAD_PARTS = (
+    "(() => { " + NOTEPAD_PICK
+    + " if (!win) return ID ? { id: ID, error: " + NOTEPAD_GONE + " } : null;"
+    + " const area = win.el.querySelector('.notepad-area');"
+    # A missing text area is reported as itself. Returning null for `value` and 0 for
+    # the coordinates made a renamed class fail as 'Notepad overwrote an external change
+    # silently', which sends the reader after the wrong defect.
+    " if (!area) return { id: win.id, error: 'no .notepad-area in the Notepad window' };"
+    " const r = area.getBoundingClientRect();"
+    " return { id: win.id, title: win.titleText, value: area.value,"
+    "          status: win.statusEl ? win.statusEl.textContent : '',"
+    "          x: r.left + 20, y: r.top + 10 }; })()"
+)
+
+
+def with_window_id(template: str, win_id: str | None) -> str:
+    """`ID` in a page script replaced by a quoted window id, or `null` for "the newest"."""
+    return template.replace("ID", json.dumps(win_id) if win_id else "null")
+
+
 def _notepad_parts(page, win_id: str | None = None) -> dict | None:
-    return page.evaluate(
-        "(() => { const pads = window.webxp.windows.filter((w) => w.programId === 'notepad');"
-        " const w = %s ? pads.find((p) => p.id === %s) : pads[pads.length - 1];"
-        " if (!w) return null;"
-        " const area = w.el.querySelector('.notepad-area');"
-        # A missing text area is reported as itself. Returning null for `value` and 0 for
-        # the coordinates made a renamed class fail as 'Notepad overwrote an external change
-        # silently', which sends the reader after the wrong defect.
-        " if (!area) return { id: w.id, error: 'no .notepad-area in the Notepad window' };"
-        " const r = area.getBoundingClientRect();"
-        " return { id: w.id, title: w.titleText, value: area.value,"
-        "          status: w.statusEl ? w.statusEl.textContent : '',"
-        "          x: r.left + 20, y: r.top + 10 }; })()"
-        % (json.dumps(win_id) if win_id else "null", json.dumps(win_id) if win_id else "null")
-    )
+    return page.evaluate(with_window_id(NOTEPAD_PARTS, win_id))
 
 
 def notepad_caret(page, win_id: str) -> None:
