@@ -1179,6 +1179,16 @@ export function folderView(spec) {
 
   list.forEach((item, index) => {
     const cell = document.createElement('li');
+    if (selects) {
+      // `role="none"` is what keeps the tiles options of the listbox in the ARIA tree, as it
+      // does for the menu bar's slots above. An `<li>`'s own semantics outrank
+      // `role="option"` on its child, and the whole mode rests on that not happening:
+      // measured in Chrome 157, `ul[role=listbox] > li > button[role=option]` reaches the
+      // accessibility tree as plain buttons carrying no selected state at all, and the same
+      // tree with this line reaches it as options carrying it. A `<div>` wrapper does not do
+      // this — it is the `<li>` specifically.
+      cell.setAttribute('role', 'none');
+    }
     const tile = iconTile({
       name: item.name,
       icon: item.icon,
