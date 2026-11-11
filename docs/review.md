@@ -458,9 +458,8 @@ The four above are defects in a check or in the harness around it. This one is a
 **control** — the deliberate break that is supposed to show a check capable of failing. It
 leaves the check unproven and reports it proven, which puts it in the same family.
 
-Three attempts at one control, in `scripts/check_styles_isolated.py` on `feat/showup-apps`
-(`git show feat/showup-apps:scripts/check_styles_isolated.py`; its docstring records all
-three). The check opens one app alone in a fresh document and requires every stylesheet that
+Three attempts at one control, in `scripts/check_styles_isolated.py` (its docstring records
+all three). The check opens one app alone in a fresh document and requires every stylesheet that
 app declares to be in the document. The control has to make that fail.
 
 1. **Skip the assertion for that app.** A skipped assertion cannot fail.
