@@ -996,6 +996,84 @@ def check_boot(page) -> list[str]:
     return bad
 
 
+#: Keys measured to hide a headless document, and so to stop its frame clock: Escape, the
+#: four arrows, Home, End, Backspace and F10 all do it, and Tab, Enter, Space, ContextMenu
+#: and a letter do not. Two of them are driven, because the hide is one browser-side
+#: behaviour and not a property of any one key. This is the only place that list is written
+#: down; every other site names this tuple.
+STRAY_KEYS = ("Escape", "ArrowDown")
+
+
+def check_stray_keypress(page) -> list[str]:
+    """A key no shell handler consumes must not stop the desktop opening windows.
+
+    Every awaited zoom in the shell comes back through `animation.finished` at
+    `src/window.mjs:136` — the launch's at `src/desktop.mjs:532`, and `restore`, `minimize`
+    and `close` at `src/window.mjs:573`, `:560` and `:613`. A hidden document never settles
+    it, because finish events are dispatched from the rendering lifecycle a hidden document
+    skips. Measured with the document hidden: `webxp.launch('notepad')` stays pending while
+    the zoom's `playState` already reads `finished`.
+
+    So a dead clock stalls the launch before `win.setContent` (`src/desktop.mjs:545`), and
+    the window does show it — the body is still `is-loading` over its `window-loading`
+    child, which is what `check_boot` asserts above. The promise is read here instead because
+    it names the clock itself rather than one window's symptom, and because the `launch`
+    helper cannot: it sleeps past the loading floor and clicks, awaiting nothing.
+
+    `src/desktop.mjs:555-557` waits two frames of its own before `program.ready`, and that is
+    a second stall, not this one. It is reached only after `setContent`, so a window wedged
+    there has its content in and `is-loading` cleared. Measured with `requestAnimationFrame`
+    stubbed out and the document visible: `about`, which defines no `ready`, resolves, while
+    `notepad`, which defines one at `apps/notepad/app.mjs:362`, stays pending with a plain
+    `window-body app-notepad`.
+
+    Early in `CHECKS` on purpose. The frame clock is a precondition of every check that opens
+    a window, and a dead one has to be named here rather than inferred from a wall of
+    downstream failures with reasons of their own.
+    """
+    bad: list[str] = []
+    drain(page)
+    for key in STRAY_KEYS:
+        press_key(page, key)
+    pressed = ", ".join(STRAY_KEYS)
+    page.evaluate(
+        "(() => { window.__frame = 'pending';"
+        " requestAnimationFrame(() => { window.__frame = 'fired'; }); })()"
+    )
+    deadline = time.time() + 1.0
+    while time.time() < deadline and page.evaluate("window.__frame") == "pending":
+        time.sleep(0.05)
+    if page.evaluate("window.__frame") != "fired":
+        bad.append(
+            f"stray keypress: no frame arrived in the second after {pressed}, which nothing "
+            "consumed — the shell waits on frames, so everything it opens stops finishing"
+        )
+    page.evaluate(
+        "(() => { window.__strayLaunch = 'pending';"
+        " window.webxp.launch('notepad').then("
+        "   (w) => { window.__strayLaunch = w.closed ? 'closed' : 'resolved'; },"
+        "   (e) => { window.__strayLaunch = 'rejected: ' + e; }); })()"
+    )
+    deadline = time.time() + 3.0
+    while time.time() < deadline and page.evaluate("window.__strayLaunch") == "pending":
+        time.sleep(0.1)
+    outcome = page.evaluate("window.__strayLaunch")
+    if outcome != "resolved":
+        bad.append(
+            f"stray keypress: after {pressed}, launching notepad answered {outcome!r} within "
+            "3s — a launch that never settles leaves a window nobody can finish"
+        )
+    closed = page.evaluate(
+        "(() => { const w = window.webxp.windows.find((w) => w.programId === 'notepad');"
+        " delete window.__frame; delete window.__strayLaunch;"
+        " if (!w) return 'no window'; w.close(); return 'closed'; })()"
+    )
+    if closed != "closed":
+        bad.append(f"stray keypress: the window it opened could not be handed back ({closed})")
+    time.sleep(0.3)
+    return bad
+
+
 def check_launch_all(page) -> list[str]:
     """Every program opens, gets a button, and does not land on top of the last one."""
     bad = []
@@ -6725,6 +6803,9 @@ CHECKS = (
     ("manifest is current", check_manifest_current),
     ("mount index is current", check_mount_index),
     ("boot", check_boot),
+    # Before the suite opens anything else: it presses a key nothing consumes, and the frame
+    # clock it measures is a precondition of every check below. Its docstring holds why.
+    ("stray keypress", check_stray_keypress),
     ("launch all", check_launch_all),
     ("app loading", check_app_loading),
     ("app filetypes", check_app_filetypes),
@@ -6866,6 +6947,20 @@ def main(argv: list[str] | None = None) -> int:
                 deviceScaleFactor=1,
                 mobile=False,
             )
+            # The renderer treats the page as focused and active for the whole run.
+            #
+            # Headless Chrome hides the document when the browser gets a key the renderer
+            # reported unhandled — `STRAY_KEYS` carries which keys were measured to do it and
+            # which were measured not to — and a hidden document runs no frames.
+            # `check_stray_keypress` holds where that stalls a launch; without this line the
+            # rest of the run drives windows that never finish starting. Measured on a bare
+            # `data:text/html,<title>bare</title><body tabindex=0>hello` with no webxp in it,
+            # so it is the browser's own window state and not anything in this tree.
+            # `setFocusEmulationEnabled` is devtools-protocol-only, which is the other half of
+            # that evidence: no page can reach it, so nothing a page does can be the cause.
+            # `check_stray_keypress` asserts the frame clock survives such a key, and fails
+            # without this line.
+            page.call("Emulation.setFocusEmulationEnabled", enabled=True)
             page.navigate(base + "/")
             # The apps have to finish loading before anything is measured.
             time.sleep(1.0)
