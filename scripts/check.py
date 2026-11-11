@@ -39,6 +39,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from cdp import Browser, CDPError, Session  # noqa: E402
+from css_ties import check as check_css_ties  # noqa: E402
 from serve import ServeError, serve  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -6791,15 +6792,24 @@ def check_fs_persistence(page) -> list[str]:
 #: The checks `--prove-failure` knows how to invert.
 #:
 #: Each takes `invert=True` and asserts the opposite of its usual claim, so a run with the
-#: flag must report them as failures. Three is still thin, and the gap is recorded in
-#: `docs/review.md` rather than papered over: for every other check, "shown capable of
-#: failing" rests on a negative control run at the time it was written, or on the review
-#: history, rather than on a control the suite re-runs.
-INVERTIBLE = (check_drag, check_reentrant_gesture, check_terminal)
-INVERTIBLE_NAMES = ("drag", "re-entrant gesture", "terminal")
-
-
+#: flag must report them as failures. These are a minority of the suite, and the gap is
+#: recorded in `docs/review.md` rather than papered over: for every other check, "shown
+#: capable of failing" rests on a negative control run at the time it was written, or on the
+#: review history, rather than on a control the suite re-runs.
+INVERTIBLE = (
+    check_drag,
+    check_reentrant_gesture,
+    check_terminal,
+    # `css_ties.check` carries its own inversion: `invert=True` applies its `REVERTS` to the
+    # stylesheet text in memory and asserts against the undone tree. Listing it here runs
+    # that control on every `--prove-failure` rather than only when somebody runs the file by
+    # hand, which is the state it was in when a five-sheet discovery hole went unnoticed.
+    check_css_ties,
+)
 CHECKS = (
+    # Beside the other two that read files rather than the page, and first for the same
+    # reason: no browser, no port, and a stylesheet decision the whole desktop is drawn from.
+    ("css ties", check_css_ties),
     ("manifest is current", check_manifest_current),
     ("mount index is current", check_mount_index),
     ("boot", check_boot),

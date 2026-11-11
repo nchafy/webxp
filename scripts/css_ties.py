@@ -42,17 +42,19 @@ PROVING IT CAN FAIL
 -------------------
 `check(invert=True)` applies `REVERTS` to the stylesheet text in memory — never to disk —
 and runs the same assertions against the undone tree. Every pinned case is expected to fail.
-`scripts/check.py` treats an inverted check that returns nothing as a failure of the control
-itself.
+`main()` treats an inverted run that reports nothing as a failure of the control itself, as
+`scripts/check.py` does for the checks it inverts.
 
 The two modes cover each other. A revert whose `old` text no longer matches means the file
 moved under the revert table; that same edit makes the corresponding assertion fail in
 normal mode, so the staleness surfaces either way rather than silently weakening the
 control.
 
-Standalone:  python3 -I scripts/css_ties.py [--prove-failure]
-As a check:  ("css ties", check) in CHECKS, and `check` in INVERTIBLE.
-             It takes no `page` and touches no network, port or browser.
+Standalone:   python3 -I scripts/css_ties.py [--prove-failure]
+As a check:   `scripts/check.py` imports `check` and runs it as `("css ties", ...)`, in its
+              `INVERTIBLE` set so the suite drives `invert=True` too. It takes no `page` and
+              touches no network, port or browser, so it costs the suite a file read per
+              sheet and nothing else.
 """
 
 from __future__ import annotations
