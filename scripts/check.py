@@ -9760,6 +9760,764 @@ def check_open_across_apps(page) -> list[str]:
     return bad
 
 
+# ---------------------------------------------------------------------------
+# The file picker, as a service any window can ask for. `src/dialogs.mjs` holds it.
+# ---------------------------------------------------------------------------
+
+#: XP's file dialog footer, by way of win32.run's `Viewer3.svelte` (lines 196-228): two fixed
+#: rows with the labels in a gutter. `src/picker.css` declares both as tokens on the dialog;
+#: these are the numbers a reader sees, so they are asserted rather than read back off the
+#: custom property that sets them.
+PICKER_FOOT_H = 35
+PICKER_GUTTER = 100
+
+#: Where the picker's checks build their folder. Named here because two checks share it.
+PICK_DIR = "/home/user/pick-probe"
+
+PICKER_STATE = "(() => {\n  " + NOTEPAD_PICK + """
+  if (!win) return { error: ID ? """ + NOTEPAD_GONE + """
+                                : 'no notepad window to put a picker on' };
+  const el = (s) => win.el.querySelector(s);
+  const dialog = el('.dialog.picker');
+  const round = (r) => ({ x: Math.round(r.left), y: Math.round(r.top),
+                          w: Math.round(r.width), h: Math.round(r.height) });
+  const labels = [...win.el.querySelectorAll('.picker-foot .picker-label')]
+    .map((n) => round(n.getBoundingClientRect()));
+  const active = document.activeElement;
+  return {
+    id: win.id,
+    hasModal: win.hasModal,
+    layers: win.el.querySelectorAll('.window-modal').length,
+    picker: Boolean(dialog),
+    dialog: dialog ? round(dialog.getBoundingClientRect()) : null,
+    body: round(win.bodyEl.getBoundingClientRect()),
+    win: round(win.el.getBoundingClientRect()),
+    places: [...win.el.querySelectorAll('.picker-place')].map((p) => p.dataset.path),
+    where: (el('.picker-where') || {}).textContent ?? null,
+    note: (el('.picker-note') || {}).textContent ?? null,
+    rows: [...win.el.querySelectorAll('.picker-row')].map((r) => ({
+      name: r.dataset.name, kind: r.dataset.kind,
+      refused: r.getAttribute('aria-disabled') === 'true',
+      selected: r.getAttribute('aria-selected') === 'true',
+      stop: r.tabIndex === 0,
+      opacity: Number(getComputedStyle(r).opacity),
+      role: r.getAttribute('role'),
+    })),
+    listRole: el('.picker-list') ? el('.picker-list').getAttribute('role') : null,
+    name: (el('.picker-name') || {}).value ?? null,
+    go: el('.picker-go') ? [el('.picker-go').textContent, el('.picker-go').disabled] : null,
+    gutter: labels.length ? labels[0].w : null,
+    pitch: labels.length > 1 ? labels[1].y - labels[0].y : null,
+    ask: (el('.picker-ask .dialog-text') || {}).textContent || null,
+    activeInPicker: Boolean(dialog && dialog.contains(active)),
+    activeClass: active ? (active.className || active.tagName) : null,
+    answer: window.__picked ?? null,
+    title: win.titleText,
+    status: win.statusEl ? win.statusEl.textContent : '',
+    buffer: (el('.notepad-area') || {}).value ?? null,
+    info: win.app && win.app.info ? win.app.info() : null,
+    pads: window.webxp.windows.filter((w) => w.programId === 'notepad').length,
+  };
+})()"""
+
+
+def picker_state(page, win_id: str | None = None) -> dict:
+    """What the picker on a Notepad window is showing, and what it has answered.
+
+    Every field that can be absent is coerced to `null` in the page, not guarded here: a CDP
+    result by value drops an `undefined` property entirely, so reading one off a dialog that
+    has already closed raised `KeyError` and reported as a harness fault instead of as the
+    assertion it was standing in for.
+    """
+    state = page.evaluate(with_window_id(PICKER_STATE, win_id))
+    # A missing window is the harness failing to reach what it was pointed at, not a verdict
+    # about the picker. It used to be neither: the probe fell back to any other Notepad and
+    # answered about that one instead. `NOTEPAD_PICK` carries the rule now.
+    if state.get("error"):
+        raise HarnessError(state["error"])
+    return state
+
+
+def start_picker(page, win_id: str, call: str) -> dict:
+    """Open a picker on that window and stash its answer where the state probe can read it.
+
+    Through the module's own entry point, because that is the interface an app has. The
+    answer is kept on `window.__picked` rather than awaited here: the check has to drive the
+    dialog with real input while the promise is still pending, which is the whole point of
+    it.
+    """
+    page.evaluate(
+        "(() => { window.__picked = 'pending';"
+        " const win = window.webxp.windows.find((w) => w.id === %s);"
+        " import('/src/dialogs.mjs').then((d) => d.%s.then("
+        "   (value) => { window.__picked = value; },"
+        "   (error) => { window.__picked = 'REJECTED: ' + error.message; })); })()"
+        % (json.dumps(win_id), call)
+    )
+    time.sleep(0.9)
+    return picker_state(page, win_id)
+
+
+def type_into_name(page, win_id: str, text: str) -> None:
+    """Clear the name box, focus it for real, and type. Enter is pressed by the caller."""
+    page.evaluate(
+        "(() => { const win = window.webxp.windows.find((w) => w.id === %s);"
+        " const box = win.el.querySelector('.picker-name');"
+        " box.value = ''; box.focus(); })()" % json.dumps(win_id)
+    )
+    page.type_text(text)
+    time.sleep(0.15)
+
+
+def ready_shell(page) -> str:
+    """A terminal that is actually on screen, and its id.
+
+    `term_run` drives real input: it raises the window and clicks where the input is. A
+    minimised terminal cannot take that click, and `term_run` then returns the bare prompt —
+    which reads exactly like a command that printed nothing, so every file a check meant to
+    create is silently missing and the product is blamed for not finding it. `expose`
+    minimises every window but its target, so any check that runs after one needs this.
+    Measured: without it, `echo … > /tmp/pad-probe/one.txt` returned the prompt and the file
+    was never created.
+    """
+    shell = terminal_session(page)
+    page.evaluate(
+        "(() => { const w = window.webxp.windows.find((x) => x.id === %s);"
+        " if (w && w.state === 'min') w.restore(); })()" % json.dumps(shell)
+    )
+    time.sleep(0.5)
+    return shell
+
+
+def press_in_picker(page, win_id: str, selector: str, answer: str | None = None) -> bool:
+    """Press a control inside the picker, and say whether it was there to press.
+
+    A control that is missing is what a control run looks like: the question the picker was
+    supposed to ask, deleted. Reported by the assertion that wanted it rather than raised as
+    a `TypeError` from page script, which reads as the harness breaking.
+    """
+    return page.evaluate(
+        "(() => { const win = window.webxp.windows.find((w) => w.id === %s);"
+        " if (!win) return false;"
+        " const found = [...win.el.querySelectorAll(%s)];"
+        " const target = %s === null ? found[0]"
+        "   : found.find((b) => b.dataset.id === %s);"
+        " if (!target) return false; target.click(); return true; })()"
+        % (json.dumps(win_id), json.dumps(selector), json.dumps(answer), json.dumps(answer))
+    )
+
+
+#: `src/window.mjs`, read for the selector its modal focus trap cycles.
+SOURCE_WINDOW = (REPO_ROOT / "src" / "window.mjs").read_text(encoding="utf-8")
+
+
+def picker_tab_stops(page, win_id: str, bad: list[str]) -> list[str]:
+    """One tab stop for the whole file list, asserted against the trap that decides it.
+
+    `row.tabIndex === 0` is a property of the row, not of the cycle: `window.mjs`'s modal
+    trap consumes every Tab and walks its own `FOCUSABLE` list, so inside a dialog the trap
+    *is* the tab order and the picker's roving tabindex decides nothing. Measured before the
+    host excluded `tabindex="-1"` from its type selectors: 14 stops for a 6-file folder, 6 of
+    them rows, and Tab crossed every file between the places column and the name box. In
+    `/usr/src/webxp/apps`, 41 entries, that was 41 presses.
+
+    The selector is read out of the product rather than copied, so a probe carrying its own
+    copy cannot measure the copy — and a shape it can no longer parse is a failure, not a skip.
+    """
+    focusable = re.search(r"const FOCUSABLE = \[(.*?)\]\.join", SOURCE_WINDOW, re.S)
+    if not focusable:
+        return bad + ["picker: no `const FOCUSABLE = [...]` in src/window.mjs to read"]
+    selector = ", ".join(re.findall(r"'([^']+)'", focusable.group(1)))
+    trap = page.evaluate(
+        "((sel) => { const win = window.webxp.windows.find((w) => w.id === %s);"
+        " const layer = win && win.el.querySelector('.window-modal');"
+        " if (!layer) return null;"
+        " const stops = [...layer.querySelectorAll(sel)];"
+        " return { rows: layer.querySelectorAll('.picker-row').length,"
+        "   rowStops: stops.filter((s) => s.classList.contains('picker-row')).length,"
+        "   notATabStop: stops.filter((s) => s.tabIndex === -1)"
+        "     .map((s) => (s.className || s.tagName)) }; })(%s)"
+        % (json.dumps(win_id), json.dumps(selector))
+    )
+    if trap is None:
+        return bad + ["picker: no modal layer to read the trap's stop list from"]
+    if trap["rows"] < 3:
+        # A folder with one or two rows cannot tell one stop from one per row.
+        bad.append(f"picker: {trap['rows']} rows in the probe folder — too few to measure a "
+                   "roving tab stop against a stop-per-row")
+    if trap["rowStops"] != 1:
+        bad.append(
+            f"picker: the modal trap cycles {trap['rowStops']} of {trap['rows']} file rows, "
+            "want 1 — the list is one tab stop walked with the arrows, and a stop per file "
+            "puts a folder's whole contents between the places column and the name box"
+        )
+    if trap["notATabStop"]:
+        bad.append(
+            f"picker: {trap['notATabStop']} are in the trap's cycle with tabindex=-1 — "
+            "focusable by script and deliberately not a tab stop, so the trap and the roving "
+            "tabindex disagree about what Tab does"
+        )
+    return bad
+
+
+def check_picker(page) -> list[str]:
+    """The file picker as a service: a path or null, clipped to the window that asked.
+
+    Every condition is built here from a terminal — `docs/review.md` rule 4 — so a check
+    failure names this check's own folder and not a fixture some other app owns.
+
+    What this is for: the picker resolves an **absolute path**, and `null` on a cancel rather
+    than rejecting, because `try/catch` around a cancel is the mistake every caller makes. It
+    resolves nothing it has not read, so a mounted file cannot reach a caller as an `EAGAIN`
+    one window away from the press that opened it.
+    """
+    bad = []
+    # Runnable alone: `--only picker` on a fresh page would otherwise race the boot's module
+    # fetches against the single-threaded `http.server`, and lose. `wait_for_apps` says why.
+    wait_for_apps(page)
+    shell = ready_shell(page)
+    term_run(page, f"rm -rf {PICK_DIR}", shell)
+    term_run(page, f"mkdir -p {PICK_DIR}/inner", shell)
+    term_run(page, f"echo picked-me > {PICK_DIR}/note.txt", shell)
+    term_run(page, f"echo wrong-kind > {PICK_DIR}/other.md", shell)
+    listing = term_run(page, f"ls {PICK_DIR}", shell)
+    if "note.txt" not in listing or "other.md" not in listing:
+        # The harness could not build its own condition, and must say so rather than report
+        # the picker as unable to list a folder that was never written.
+        return bad + [
+            f"picker: the harness did not create {PICK_DIR} — the shell listed "
+            f"{listing.strip()[:120]!r}"
+        ]
+
+    state = expose(page, "notepad")
+    pad = need(state, "notepad")
+    win_id = pad["id"]
+    page.evaluate(
+        "(() => { const w = window.webxp.windows.find((x) => x.id === %s);"
+        " w.moveTo(60, 40); w.sizeTo(620, 440); })()" % json.dumps(win_id)
+    )
+    time.sleep(0.4)
+
+    # 1. The dialog, where it belongs, and the footer XP built.
+    up = start_picker(page, win_id, "pickFile(win, { dir: %s })" % json.dumps(PICK_DIR))
+    if not up["picker"]:
+        # The harness cannot assert anything about a dialog that is not there, and must not
+        # report the rest as passing.
+        return bad + [f"picker: no .dialog.picker went up on {win_id} — note {up['note']!r}"]
+    frame, dialog = up["win"], up["dialog"]
+    if (dialog["x"] < frame["x"] or dialog["y"] < frame["y"]
+            or dialog["x"] + dialog["w"] > frame["x"] + frame["w"]
+            or dialog["y"] + dialog["h"] > frame["y"] + frame["h"]):
+        bad.append(
+            f"picker: the dialog is at {dialog} outside its window at {frame} — a dialog "
+            "belongs to the window that asked, not to the screen"
+        )
+    if up["gutter"] != PICKER_GUTTER:
+        bad.append(f"picker: the footer's label gutter is {up['gutter']}px, want {PICKER_GUTTER}")
+    # Two fixed rows: the pitch is the row plus the grid's own gap, so it is asserted with
+    # slack rather than as an equality on a number the gap also feeds.
+    if up["pitch"] is None or not (PICKER_FOOT_H <= up["pitch"] <= PICKER_FOOT_H + 10):
+        bad.append(
+            f"picker: the footer's two rows are {up['pitch']}px apart, want {PICKER_FOOT_H}px "
+            "plus the row gap"
+        )
+    if up["listRole"] != "listbox" or any(row["role"] != "option" for row in up["rows"]):
+        bad.append(f"picker: the list is {up['listRole']!r} and its rows are "
+                   f"{sorted({row['role'] for row in up['rows']})}")
+
+    # 2. The places column is derived, not listed. HOME and `/` are the two the seed
+    #    guarantees; the mounted repository is there because the filesystem says so, and a
+    #    hardcoded list is what goes stale when a graft moves.
+    for wanted in ("/home/user", "/", "/usr/src/webxp"):
+        if wanted not in up["places"]:
+            bad.append(f"picker: {wanted} is not in the places column {up['places']}")
+
+    # 3. Folders first, then by name, and one tab stop for the whole list.
+    order = [row["name"] for row in up["rows"]]
+    if order != ["inner", "note.txt", "other.md"]:
+        bad.append(f"picker: rows are {order}, want folders first then by name")
+    if sum(1 for row in up["rows"] if row["stop"]) != 1:
+        bad.append(f"picker: {sum(1 for r in up['rows'] if r['stop'])} rows are tab stops, want 1")
+    if not up["activeInPicker"]:
+        bad.append(f"picker: focus opened on {up['activeClass']!r}, outside the dialog")
+    bad = picker_tab_stops(page, win_id, bad)
+
+    # 4. The keyboard is the whole route for a reader with no mouse: the list moves under the
+    #    arrows, selection follows the focus, Enter walks into a folder and Backspace comes
+    #    back out. Explorer's own list does none of this, which is why it is asserted here.
+    page.evaluate(
+        "(() => { const win = window.webxp.windows.find((w) => w.id === %s);"
+        " win.el.querySelector('.picker-row').focus(); })()" % json.dumps(win_id)
+    )
+    press_key(page, "ArrowDown")
+    time.sleep(0.25)
+    moved = picker_state(page, win_id)
+    if [row["name"] for row in moved["rows"] if row["selected"]] != ["note.txt"]:
+        bad.append(
+            "picker: ArrowDown selected "
+            f"{[r['name'] for r in moved['rows'] if r['selected']]}, want ['note.txt'] — the "
+            "list cannot be walked from the keyboard"
+        )
+    if moved["name"] != "note.txt":
+        bad.append(f"picker: arrowing onto a row left the name box reading {moved['name']!r}")
+    page.evaluate(
+        "(() => { const win = window.webxp.windows.find((w) => w.id === %s);"
+        " [...win.el.querySelectorAll('.picker-row')]"
+        "   .find((r) => r.dataset.name === 'inner').focus(); })()" % json.dumps(win_id)
+    )
+    page.press("Enter")
+    time.sleep(0.4)
+    inside = picker_state(page, win_id)
+    if inside["where"] != f"{PICK_DIR}/inner":
+        bad.append(f"picker: Enter on a folder left it showing {inside['where']!r}")
+    press_key(page, "Backspace")
+    time.sleep(0.4)
+    back = picker_state(page, win_id)
+    if back["where"] != PICK_DIR:
+        bad.append(f"picker: Backspace in the list left it showing {back['where']!r}")
+
+    # 5. Escape is a cancel, and a cancel is `null` rather than a rejection. A caller that
+    #    wrapped this in try/catch would never see it.
+    page.press("Escape")
+    time.sleep(0.4)
+    cancelled = picker_state(page, win_id)
+    if cancelled["answer"] is not None:
+        bad.append(f"picker: Escape answered {cancelled['answer']!r}, want None")
+    if cancelled["hasModal"] or cancelled["layers"]:
+        bad.append(f"picker: Escape left {cancelled['layers']} layer(s) up")
+
+    # 6. A typed name resolves an absolute path, and the file is read before it resolves.
+    typed = start_picker(page, win_id, "pickFile(win, { dir: %s })" % json.dumps(PICK_DIR))
+    if not typed["picker"]:
+        return bad + ["picker: the second picker did not go up"]
+    type_into_name(page, win_id, "note.txt")
+    page.press("Enter")
+    time.sleep(0.6)
+    answered = picker_state(page, win_id)
+    if answered["answer"] != f"{PICK_DIR}/note.txt":
+        bad.append(f"picker: a typed name answered {answered['answer']!r}")
+
+    # 7. A file the filesystem refuses is refused *here*, where the press was, instead of
+    #    resolving a path the caller cannot read. `/etc/secret.conf` is seeded `chmod 000`.
+    refused = start_picker(page, win_id, "pickFile(win, { dir: '/etc' })")
+    if not refused["picker"]:
+        # A failure, not a skip. The two assertions below are the only ones in this check
+        # about refusing an unreadable file where the press was, and the dialog going up is
+        # their precondition: seed `/etc` itself mode 000 and this block vanished while the
+        # suite still printed `[  ok] picker`. Steps 9 and 10 say so; this one did not.
+        bad.append("picker: pickFile did not go up on /etc, so a refused file is unasserted")
+    else:
+        type_into_name(page, win_id, "secret.conf")
+        page.press("Enter")
+        time.sleep(0.5)
+        denied = picker_state(page, win_id)
+        if denied["answer"] != "pending":
+            bad.append(
+                f"picker: an unreadable file answered {denied['answer']!r} — the caller is "
+                "handed a path that throws when it reads it"
+            )
+        if "Permission denied" not in (denied["note"] or ""):
+            bad.append(f"picker: the refusal reads {denied['note']!r}")
+        page.press("Escape")
+        time.sleep(0.3)
+
+    # 8. A kind the caller does not offer is greyed to 50% and refused selection, never
+    #    hidden: a reader can see the file is there and is told why they cannot pick it.
+    #    win32.run declares this filter, renders it, and never applies it.
+    filtered = start_picker(
+        page, win_id,
+        "pickFile(win, { dir: %s, extensions: ['.txt'] })" % json.dumps(PICK_DIR),
+    )
+    other = next((row for row in filtered["rows"] if row["name"] == "other.md"), None)
+    if other is None:
+        bad.append("picker: a filter hid other.md instead of greying it")
+    else:
+        if not other["refused"]:
+            bad.append("picker: other.md is not marked aria-disabled under a .txt filter")
+        if not near(other["opacity"], 0.5, 0.01):
+            bad.append(f"picker: a refused row is drawn at opacity {other['opacity']}, want 0.5")
+        # `centre` and not a second "middle of a row" helper. One picker is up — a window has
+        # one modal slot — so the row's own data attribute addresses it exactly.
+        click_at(page, *centre(page, '.picker-row[data-name="other.md"]'))
+        time.sleep(0.1)
+        pressed = picker_state(page, win_id)
+        if any(row["selected"] for row in pressed["rows"]):
+            bad.append(
+                "picker: pressing a refused row selected "
+                f"{[r['name'] for r in pressed['rows'] if r['selected']]}"
+            )
+        if "not a .txt file" not in (pressed["note"] or ""):
+            bad.append(f"picker: pressing a refused row said {pressed['note']!r}")
+    page.press("Escape")
+    time.sleep(0.3)
+
+    # 9. Save is dead in a folder nothing can be written to, before a name is typed. The
+    #    repository mounts read-only, so this is the case a reader meets by opening a file
+    #    from it and asking to save it back.
+    locked = start_picker(page, win_id, "pickSaveAs(win, { dir: '/usr/src/webxp' })")
+    if not locked["picker"]:
+        bad.append("picker: pickSaveAs did not go up on the mounted repository")
+    else:
+        if locked["go"] != ["Save", True]:
+            bad.append(
+                f"picker: in a read-only folder Save reads {locked['go']!r}, want "
+                "['Save', True] — a dead button before a name is typed"
+            )
+        if "read-only" not in (locked["note"] or ""):
+            bad.append(f"picker: the read-only folder said {locked['note']!r}")
+        # And out of it again by absolute path: the button follows the folder the box names,
+        # not the folder on screen.
+        type_into_name(page, win_id, "/tmp/picker-elsewhere.txt")
+        time.sleep(0.3)
+        freed = picker_state(page, win_id)
+        if freed["go"] != ["Save", False]:
+            bad.append(
+                f"picker: an absolute path out of a read-only folder left Save {freed['go']!r}"
+            )
+        page.press("Escape")
+        time.sleep(0.3)
+
+    # 10. Replacing a file is asked inside the picker's own layer, because a window has one
+    #     modal slot and `showModal` refuses a second. One layer, and No keeps the dialog up.
+    over = start_picker(page, win_id, "pickSaveAs(win, { dir: %s, name: 'note.txt' })"
+                        % json.dumps(PICK_DIR))
+    if not over["picker"]:
+        bad.append("picker: pickSaveAs did not go up over the probe folder")
+    else:
+        press_in_picker(page, win_id, ".picker-go")
+        time.sleep(0.5)
+        asked = picker_state(page, win_id)
+        if "already exists" not in (asked["ask"] or ""):
+            bad.append(
+                f"picker: saving over a file asked {asked['ask']!r} — it replaced a file "
+                "without a question"
+            )
+        if asked["layers"] != 1:
+            bad.append(
+                f"picker: the replace question put {asked['layers']} layers up — a window has "
+                "one modal slot"
+            )
+        if asked["ask"] and not asked["activeInPicker"]:
+            bad.append(f"picker: the replace question left focus on {asked['activeClass']!r}")
+        if asked["ask"]:
+            if not press_in_picker(page, win_id, ".picker-ask .dialog-buttons button", "no"):
+                bad.append("picker: the replace question has no No to press")
+            time.sleep(0.5)
+            kept = picker_state(page, win_id)
+            if kept["answer"] != "pending" or not kept["picker"]:
+                bad.append(
+                    f"picker: No to the replace question answered {kept['answer']!r} and left "
+                    f"the picker {'up' if kept['picker'] else 'down'}"
+                )
+            press_in_picker(page, win_id, ".picker-go")
+            time.sleep(0.4)
+            press_in_picker(page, win_id, ".picker-ask .dialog-buttons button", "yes")
+            time.sleep(0.5)
+        replaced = picker_state(page, win_id)
+        if replaced["answer"] != f"{PICK_DIR}/note.txt":
+            bad.append(f"picker: Yes to the replace question answered {replaced['answer']!r}")
+        # Whatever happened, this window must not be left holding a dialog: the checks after
+        # this one open their own.
+        page.evaluate(
+            "(() => { const win = window.webxp.windows.find((w) => w.id === %s);"
+            " if (win) win.closeModal(); })()" % json.dumps(win_id)
+        )
+        time.sleep(0.3)
+
+    # 11. The caller's own options are refused on the caller's own line, synchronously: a
+    #     rejection one microtask later is indistinguishable from a cancel in a `catch`.
+    outcomes = page.evaluate(
+        """(async () => {
+          const d = await import('/src/dialogs.mjs');
+          const win = window.webxp.windows.find((w) => w.id === %s);
+          const out = {};
+          for (const [label, run] of [
+            ['no window', () => d.pickFile(null, {})],
+            ['unknown option', () => d.pickFile(win, { filter: ['.txt'] })],
+            ['extension with no dot', () => d.pickFile(win, { extensions: ['txt'] })],
+            ['name is a path', () => d.pickSaveAs(win, { name: '/tmp/x.txt' })],
+            ['types is empty', () => d.pickSaveAs(win, { types: [] })],
+          ]) {
+            try { const value = run(); out[label] = 'no throw'; if (value && value.then) value.catch(() => {}); }
+            catch (error) { out[label] = error.message; }
+          }
+          win.closeModal();
+          return out;
+        })()""" % json.dumps(win_id),
+        await_promise=True,
+    )
+    for label, wanted in (
+        ("no window", "needs the XPWindow"),
+        ("unknown option", 'unknown option "filter"'),
+        ("extension with no dot", "starts with a dot"),
+        ("name is a path", "not a path"),
+        ("types is empty", "non-empty array"),
+    ):
+        if wanted not in outcomes.get(label, ""):
+            bad.append(f"picker: {label} answered {outcomes.get(label)!r}, want {wanted!r}")
+
+    # Whatever failed above, no window is left holding a dialog. A check that leaves a modal
+    # up takes the next one down with it: every later `showModal` on that window throws, and
+    # the failures then name this check's subject in another check's voice.
+    page.evaluate("(() => { for (const w of window.webxp.windows) w.closeModal(); })()")
+    time.sleep(0.2)
+    # The shell again, because `expose` above minimised it. `term_run` on a minimised
+    # terminal clicks into nothing and hands back the bare prompt, so without this the two
+    # cleanups below would report success and delete nothing.
+    shell = ready_shell(page)
+    term_run(page, f"rm -rf {PICK_DIR}", shell)
+    term_run(page, "rm -f /tmp/picker-elsewhere.txt", shell)
+    return bad
+
+
+def wait_for_pad(page, path: str, timeout: float = 10.0) -> str:
+    """The id of the Notepad window holding `path`, once its content is in the document.
+
+    A flat sleep is not enough. `desktop.launch` holds its marquee for `minLoadMs` and the
+    text area does not exist until `setContent` has run, so measuring too early reported "no
+    .notepad-area in the Notepad window" — a harness fault wearing a product failure's
+    clothes. A timeout is a failure, not a skip.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        found = page.evaluate(
+            "(() => { const w = window.webxp.windows.find((x) => x.programId === 'notepad'"
+            "   && x.app && x.app.info && x.app.info().path === %s"
+            "   && x.el.querySelector('.notepad-area'));"
+            " return w ? w.id : null; })()" % json.dumps(path)
+        )
+        if found:
+            return found
+        time.sleep(0.2)
+    # What it saw, so a stalled launch cannot be mistaken for a picker that did not open.
+    # `desktop.launch` awaits its open animation beside `mount`, and a headless run that
+    # produces no frames can leave `Animation.finished` unsettled: the window is there, its
+    # `mount` has finished, and `setContent` has not run — the body still reads `is-loading`.
+    seen = page.evaluate(
+        "window.webxp.windows.filter((w) => w.programId === 'notepad')"
+        ".map((w) => [w.id, w.titleText, w.bodyEl.className])"
+    )
+    raise HarnessError(
+        f"no Notepad window finished opening on {path} within {timeout}s — Notepad windows "
+        f"are {seen}"
+    )
+
+
+def check_notepad_picker(page) -> list[str]:
+    """Notepad's File menu: the picker, and the question before a buffer is thrown away.
+
+    Driven through the menu with a real pointer, because the menu is the route a reader has.
+    XP's Notepad overwrote and discarded without a word, and win32.run's still does.
+    """
+    bad = []
+    wait_for_apps(page)
+    page.evaluate("(() => { for (const w of window.webxp.windows) w.closeModal(); })()")
+    shell = ready_shell(page)
+    term_run(page, "rm -rf /tmp/pad-probe", shell)
+    term_run(page, "mkdir -p /tmp/pad-probe", shell)
+    term_run(page, "echo first-file > /tmp/pad-probe/one.txt", shell)
+    term_run(page, "echo second-file > /tmp/pad-probe/two.txt", shell)
+    listing = term_run(page, "ls /tmp/pad-probe", shell)
+    if "one.txt" not in listing or "two.txt" not in listing:
+        return bad + [
+            "notepad picker: the harness did not create /tmp/pad-probe — the shell listed "
+            f"{listing.strip()[:120]!r}"
+        ]
+
+    page.evaluate("window.webxp.launch('notepad', { path: '/tmp/pad-probe/one.txt' })")
+    win_id = wait_for_pad(page, "/tmp/pad-probe/one.txt")
+    page.evaluate(
+        "(() => { const w = window.webxp.windows.find((x) => x.id === %s);"
+        " w.moveTo(60, 40); w.sizeTo(620, 440); })()" % json.dumps(win_id)
+    )
+    time.sleep(0.4)
+    # Measured after the move, never before it: the text area's coordinates are where the
+    # clicks below land, and a stale pair of them types into whatever is at the old spot.
+    pad = notepad_parts(page, win_id)
+
+    # The menu bar is in the client area and the document still has the keyboard: a window
+    # that opens with its File menu focused is a window you cannot type in.
+    opened = picker_state(page, win_id)
+    if "notepad-area" not in (opened["activeClass"] or ""):
+        bad.append(f"notepad picker: a new window gave the keyboard to {opened['activeClass']!r}")
+    # The bar and the document fill the client area between them, and nothing scrolls.
+    # Asserted as the two heights and not only as "it does not overflow": `.window-body` is a
+    # block box and the text area is sized `height: 100%`, so a missing row box gives either
+    # an overflowing document or — measured — a two-line one in a 390px window, and only one
+    # of those shows up as a scroll.
+    layout = page.evaluate(
+        "(() => { const w = window.webxp.windows.find((x) => x.id === %s);"
+        " const h = (s) => { const n = w.el.querySelector(s);"
+        "   return n ? Math.round(n.getBoundingClientRect().height) : 0; };"
+        " return { bar: h('.menu-bar'), area: h('.notepad-area'),"
+        "          body: Math.round(w.bodyEl.getBoundingClientRect().height),"
+        "          scroll: w.bodyEl.scrollHeight, client: w.bodyEl.clientHeight }; })()"
+        % json.dumps(win_id)
+    )
+    if not near(layout["bar"] + layout["area"], layout["body"], 2):
+        bad.append(
+            f"notepad picker: a {layout['bar']}px menu bar and a {layout['area']}px document "
+            f"in a {layout['body']}px client area — the two do not fill it between them"
+        )
+    if layout["scroll"] > layout["client"] + 1:
+        bad.append(
+            f"notepad picker: the client area scrolls — content {layout['scroll']}px in "
+            f"{layout['client']}px, so the foot of the document is out of reach"
+        )
+
+    # Type into it, then ask for another file: the question comes before the picker.
+    raise_window(page, win_id)
+    click_at(page, pad["x"], pad["y"])
+    page.type_text("unsaved-edit\n")
+    time.sleep(0.3)
+
+    def menu_pick(label: str) -> bool:
+        """Press File, then the row whose label starts with `label`. Real presses.
+
+        Measured inside this window by id, not by a document-wide selector: an earlier check
+        may have opened a Notepad of its own, and a selector that resolves to the first one
+        presses another window's File menu while these assertions read this one. That is the
+        one thing `centre` cannot express, which is why this reads its own box.
+        """
+        raise_window(page, win_id)
+        bar = page.evaluate(
+            "(() => { const w = window.webxp.windows.find((x) => x.id === %s);"
+            " const t = w && w.el.querySelector('.menu-title'); if (!t) return null;"
+            " const r = t.getBoundingClientRect();"
+            " return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()"
+            % json.dumps(win_id)
+        )
+        if bar is None:
+            return False
+        click_at(page, bar["x"], bar["y"])
+        # The row, inside this window's own popup, and only if it has a box to press.
+        spot = page.evaluate(
+            "(() => { const w = window.webxp.windows.find((x) => x.id === %s);"
+            " const row = [...w.el.querySelectorAll('.menu-popup .menu-item')]"
+            "   .find((r) => r.textContent.startsWith(%s));"
+            " if (!row) return null; const r = row.getBoundingClientRect();"
+            " if (!r.width || !r.height) return null;"
+            " return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()"
+            % (json.dumps(win_id), json.dumps(label))
+        )
+        if spot is None:
+            return False
+        click_at(page, spot["x"], spot["y"])
+        time.sleep(0.5)
+        return True
+
+    if not menu_pick("Open"):
+        return bad + ["notepad picker: the File menu has no Open row to press"]
+    asked = picker_state(page, win_id)
+    answers = page.evaluate(
+        "(() => { const w = window.webxp.windows.find((x) => x.id === %s);"
+        " return [...w.el.querySelectorAll('.dialog-buttons button')].map((b) => b.dataset.id); })()"
+        % json.dumps(win_id)
+    )
+    if answers != ["save", "discard", "cancel"]:
+        bad.append(
+            f"notepad picker: a dirty buffer offered {answers} — XP asked save, discard or "
+            "cancel before it threw a document away"
+        )
+    if asked["picker"]:
+        bad.append("notepad picker: the picker went up over an unsaved buffer with no question")
+    if "discard" not in answers:
+        return bad + [
+            f"notepad picker: no discard answer to press — the window offered {answers} with "
+            f"the document at {asked['info']!r}"
+        ]
+    page.evaluate(
+        "(() => { const w = window.webxp.windows.find((x) => x.id === %s);"
+        " [...w.el.querySelectorAll('.dialog-buttons button')]"
+        "   .find((b) => b.dataset.id === 'discard').click(); })()" % json.dumps(win_id)
+    )
+    time.sleep(0.9)
+    picking = picker_state(page, win_id)
+    if not picking["picker"]:
+        return bad + ["notepad picker: Don't Save did not reach the picker"]
+    # The picker opens where the document lives, which is the only folder the reader has
+    # given this window.
+    if picking["where"] != "/tmp/pad-probe":
+        bad.append(f"notepad picker: Open started in {picking['where']!r}")
+
+    type_into_name(page, win_id, "two.txt")
+    page.press("Enter")
+    time.sleep(0.9)
+    loaded = picker_state(page, win_id)
+    if loaded["info"] != {"path": "/tmp/pad-probe/two.txt", "dirty": False, "writable": True}:
+        bad.append(f"notepad picker: after Open the document is {loaded['info']!r}")
+    if "second-file" not in (loaded["buffer"] or ""):
+        bad.append(f"notepad picker: the buffer holds {loaded['buffer']!r}")
+    if loaded["title"] != "two.txt - Notepad":
+        bad.append(f"notepad picker: the title reads {loaded['title']!r}")
+    # One window: File > Open replaces this document, as XP's Notepad did. A second window
+    # would be the terminal's `open`, which is a different command.
+    if loaded["pads"] != opened["pads"]:
+        bad.append(
+            f"notepad picker: Open left {loaded['pads']} Notepad windows, was {opened['pads']}"
+        )
+
+    # Save As writes through to the one filesystem, and takes the type's extension when the
+    # name typed has none — which is why XP's `notes` saved as `notes.txt`.
+    click_at(page, pad["x"], pad["y"])
+    page.type_text("saved-by-save-as\n")
+    time.sleep(0.2)
+    if not menu_pick("Save As"):
+        return bad + ["notepad picker: the File menu has no Save As row"]
+    type_into_name(page, win_id, "/tmp/pad-probe/three")
+    page.press("Enter")
+    time.sleep(0.9)
+    saved = picker_state(page, win_id)
+    if saved["info"] != {"path": "/tmp/pad-probe/three.txt", "dirty": False, "writable": True}:
+        bad.append(f"notepad picker: after Save As the document is {saved['info']!r}")
+    on_disk = term_run(page, "cat /tmp/pad-probe/three.txt", shell)
+    if "saved-by-save-as" not in on_disk:
+        bad.append(
+            f"notepad picker: the shell reads {on_disk.strip()[:120]!r} — Save As wrote into a "
+            "different filesystem from the one the terminal holds"
+        )
+
+    # Exit with an unsaved buffer: Cancel keeps the window, and keeps the edit.
+    click_at(page, pad["x"], pad["y"])
+    page.type_text("last-edit\n")
+    time.sleep(0.2)
+    if not menu_pick("Exit"):
+        return bad + ["notepad picker: the File menu has no Exit row"]
+    page.evaluate(
+        "(() => { const w = window.webxp.windows.find((x) => x.id === %s);"
+        " [...w.el.querySelectorAll('.dialog-buttons button')]"
+        "   .find((b) => b.dataset.id === 'cancel').click(); })()" % json.dumps(win_id)
+    )
+    time.sleep(0.8)
+    alive = page.evaluate(
+        "Boolean(window.webxp.windows.find((w) => w.id === %s && !w.closed))"
+        % json.dumps(win_id)
+    )
+    if not alive:
+        bad.append(
+            "notepad picker: Cancel on the way out closed the window anyway, and the edit it "
+            "was asked to keep went with it"
+        )
+    else:
+        stayed = picker_state(page, win_id)
+        if not stayed["info"] or not stayed["info"]["dirty"]:
+            bad.append(
+                f"notepad picker: Cancel on the way out left the document {stayed['info']!r}"
+            )
+        if "last-edit" not in (stayed["buffer"] or ""):
+            bad.append("notepad picker: Cancel on the way out lost the edit it was asked to keep")
+
+    # Closed through the frame's own route, which does not ask: the question hangs off
+    # File > Exit and this check has already measured it.
+    page.evaluate(
+        "(() => { const w = window.webxp.windows.find((x) => x.id === %s);"
+        " if (w) w.close(); })()" % json.dumps(win_id)
+    )
+    time.sleep(0.6)
+    term_run(page, "rm -rf /tmp/pad-probe", shell)
+    return bad
+
+
 def check_launch_arguments(page) -> list[str]:
     """`launch(id, args)` reaches `mount`, and a singleton says it cannot take them."""
     bad = []
@@ -9993,6 +10751,10 @@ CHECKS = (
     # desktop back on a clean URL rather than leaving a route in the address bar.
     ("routes", check_routes),
     ("open across apps", check_open_across_apps),
+    # Both open their own windows and both need a terminal, which that group has already
+    # proved works.
+    ("picker", check_picker),
+    ("notepad picker", check_notepad_picker),
     ("launch arguments", check_launch_arguments),
     ("filesystem persists", check_fs_persistence),
     # Last: it writes a folder and reloads the page, so it hands the desktop back fresh.

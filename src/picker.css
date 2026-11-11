@@ -1,0 +1,300 @@
+/* The file picker: the places column, the list, and XP's two-row footer.
+ *
+ * Linked by `dialogs.pickFile` on first use, not by `index.html`, for the reason `menu.css`
+ * is: a picker is a control most windows never build. It loads after every app stylesheet, so
+ * an app rule that merely ties one of these loses on source order — the counts below are
+ * written to win on specificity instead, which is the only form of this that survives a
+ * reorder.
+ *
+ * The frame, the question body and the button row all come from `window.css`: a picker wears
+ * the same `.dialog` skin a message box does, and the confirm pane inside it is the same
+ * `.dialog-body` + `.dialog-buttons` pair. Nothing of those is repeated here.
+ */
+
+.dialog.picker {
+  /* The footer's two numbers, XP's by way of win32.run's `Viewer3.svelte` (lines 196-228),
+     and not derivable from anything else here: a 35px row is taller than `--control-h` by the
+     breathing room XP left around a field, and the 100px gutter is what makes "File name:"
+     and "Files of type:" share an edge with the controls beside them. Declared on the dialog
+     because the head's label column reads the same gutter. */
+  --picker-foot-h: 35px;
+  --picker-gutter: 100px;
+  /* Two classes, against `.dialog`'s one in `window.css`: the message box's 400x150 is the
+     wrong size for a list, and this has to win on specificity rather than on which sheet the
+     browser read last. */
+  width: min(520px, 100% - 1.5rem);
+  /* `.dialog` sets `min-height: 150px`, and a CSS minimum always beats a maximum — in a
+     window shorter than that the footer is pushed out of the scrim and the answers are
+     clipped away. The picker gives the height up instead: a size it would like, capped by the
+     frame, with the list as the part that shrinks. */
+  min-height: 0;
+  height: min(420px, 100%);
+  gap: 0;
+  /* The last resort, and measured: the head, the note and two 35px footer rows need about
+     126px, so in a window at `MIN_H` (120px of frame, less the title bar) something has to
+     give. Without this the footer is painted past the frame's foot — `elementFromPoint` at
+     Cancel's centre returned the wallpaper in a 400x150 window — and a dialog whose answers
+     are outside the window is a question with no way to answer it. Scrolled, Tab still
+     reaches them, because focusing a control scrolls it into view. */
+  overflow: auto;
+  /* Its own container, because the layer is a sibling of `.window-body` and so is outside the
+     `window` container the rest of the shell queries. Without this there is no way for a
+     dialog to respond to the frame it is clipped to. */
+  container: picker / inline-size;
+}
+
+/* ---------------------------------------------------------------------------
+   Look in: the folder on screen, and the way out of it.
+   --------------------------------------------------------------------------- */
+
+.picker-head {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  flex: 0 0 auto;
+  padding: .5rem .75rem .35rem;
+}
+
+/* The label column. One declaration for the head and both footer rows, so the gutter is one
+   number and the labels cannot fall out of line with each other. */
+.picker-label {
+  flex: 0 0 auto;
+  width: var(--picker-gutter);
+  font-size: 11px;
+  color: var(--ink);
+}
+
+.picker-where {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: .1rem .3rem;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--sunken);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-up {
+  flex: 0 0 auto;
+  min-height: 0;
+  padding: .1rem .4rem;
+  font-size: 11px;
+}
+
+/* ---------------------------------------------------------------------------
+   The places column and the list.
+   --------------------------------------------------------------------------- */
+
+.picker-main {
+  display: flex;
+  gap: .4rem;
+  /* The part that gives way when the frame is short: the footer is fixed and the list
+     scrolls, so the answers stay on screen at `MIN_H`. */
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0 .75rem;
+}
+
+.picker-places {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 0 0 7rem;
+  min-width: 0;
+  overflow: auto;
+  padding: 2px;
+  background: var(--face);
+  border: 1px solid var(--sunk);
+}
+
+/* Flat, like a menu row: the theme's button is a bevelled control and a place is a line of
+   text that happens to be activatable. One class beats `theme.css`'s bare `button`. */
+.picker-place {
+  min-height: 0;
+  padding: .2rem .35rem;
+  font-size: 11px;
+  color: var(--ink);
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  cursor: default;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.picker-place:hover { background: color-mix(in srgb, var(--title-b) 16%, transparent); }
+
+.picker-list {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: auto;
+  background: var(--bg);
+  border: 1px solid var(--sunken);
+  box-shadow: inset 1px 1px 2px rgb(0 0 0 / 14%);
+  /* As Explorer's list does: reserved always, so a classic scrollbar appearing does not
+     reflow every row's label. */
+  scrollbar-gutter: stable;
+}
+
+.picker-row {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  width: 100%;
+  padding: .15rem .4rem;
+  font-size: 11px;
+  color: var(--ink);
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  cursor: default;
+}
+.picker-row:hover { background: color-mix(in srgb, var(--title-b) 16%, transparent); }
+
+.picker-row[aria-selected="true"] {
+  /* XP's selection, and Explorer's: the title-bar blue with white text, 5.31:1. */
+  background: var(--title-b);
+  color: #fff;
+}
+
+/* Two classes and a pseudo-class, against `theme.css`'s `button:focus-visible` and
+   `[tabindex]:focus-visible` at one each. The theme's ring is a white inset line with a navy
+   halo, drawn for chrome; on a white list it is invisible. Explorer's answer, for the same
+   reason. */
+.picker-list .picker-row:focus-visible {
+  outline: 1px dotted var(--ink);
+  outline-offset: -2px;
+  box-shadow: none;
+}
+.picker-list .picker-row[aria-selected="true"]:focus-visible { outline-color: #fff; }
+
+/* The list holds the keyboard itself when the folder is empty, so where the keyboard is has
+   to be visible there too. Two classes, for the reason above. */
+.picker-main .picker-list:focus-visible {
+  outline: 1px dotted var(--ink);
+  outline-offset: -2px;
+  box-shadow: inset 1px 1px 2px rgb(0 0 0 / 14%);
+}
+
+/* A file of the wrong kind is greyed and left in place, never hidden: a reader can see it is
+   there, and `aria-disabled` plus the note say why it cannot be picked.
+   50% is XP's own greying and win32.run's. It resolves to #808080 on white, 3.95:1 — under AA
+   for body text, and relied on as decoration rather than as the message: the refusal is in
+   the accessibility tree and announced in `.picker-note`, so nothing here is carried by the
+   wash alone. It is also the more legible half of this project's two options — `button:disabled`
+   in `theme.css` greys to `--sunk`, which measures 1.9:1 on the face. */
+.picker-row[aria-disabled="true"] { opacity: .5; }
+
+.picker-row-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-empty {
+  margin: 0;
+  padding: .5rem;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* The one line in the dialog that is announced. `min-height` is a reserved line: a refusal
+   that appears must not move the list and the footer under the pointer. */
+.picker-note {
+  flex: 0 0 auto;
+  min-height: 1.4em;
+  margin: 0;
+  padding: .25rem .75rem 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ---------------------------------------------------------------------------
+   The footer: two fixed rows, labels in the gutter, answers on the right. Both numbers are
+   declared with the dialog, at the top of this file.
+   --------------------------------------------------------------------------- */
+
+.picker-foot {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: var(--picker-gutter) 1fr auto;
+  grid-auto-rows: var(--picker-foot-h);
+  align-items: center;
+  gap: .4rem;
+  padding: 0 .75rem .5rem;
+}
+
+.picker-name { min-width: 0; }
+
+/* The type row when there is nothing to choose: a fact, not a dropdown. win32.run renders the
+   dropdown anyway and never applies it. */
+.picker-kinds {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* `theme.css` styles `input` and `textarea` and leaves `select` alone, so the field skin is
+   repeated here against the same tokens rather than quoted from a rule that does not exist. */
+.picker-type {
+  font: inherit;
+  font-size: 11px;
+  min-width: 0;
+  min-height: var(--control-h);
+  padding: .1rem .2rem;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--sunken);
+  border-radius: 0;
+}
+
+.picker-go,
+.picker-cancel {
+  min-width: 75px;
+  font-size: 11px;
+}
+
+/* The confirm pane: the picker's panes come out of the tree and this takes their place, so
+   the host's Tab trap — which cycles every focus stop in the layer and cannot see `hidden` —
+   has only the question's own answers to cycle. */
+.picker-ask {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* ---------------------------------------------------------------------------
+   The narrow frame.
+
+   A window may be dragged to `MIN_W` (220px), which leaves the dialog about 196px wide: the
+   100px gutter would take half of it and the places column the rest. The gutter's labels move
+   above their controls and the places column becomes a row across the top — both measured at
+   220px, where the name box is otherwise 20px wide.
+   --------------------------------------------------------------------------- */
+
+@container picker (max-width: 22rem) {
+  .picker-main { flex-direction: column; }
+  .picker-places {
+    flex: 0 0 auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    max-height: 4.5em;
+  }
+  .picker-label { width: auto; }
+  .picker-foot {
+    grid-template-columns: 1fr auto;
+    grid-auto-rows: auto;
+    gap: .2rem .4rem;
+  }
+  .picker-foot .picker-label { grid-column: 1 / -1; }
+}
