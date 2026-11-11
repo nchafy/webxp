@@ -1029,6 +1029,9 @@ export function menuBar(spec) {
  * tile is a `disabled` button: a stop that takes the keyboard and then does nothing is worse
  * than one the tab order skips.
  *
+ * It renders once, and the refusal is read once: a caller that flips `disabled` on an item
+ * after the view is built has to build it again rather than expect this one to notice.
+ *
  * The caller owns `status: true` on its own spec: the object count goes in the window's
  * status bar, which is where XP put it, and this returns no chrome it does not own.
  *
@@ -1109,6 +1112,11 @@ export function folderView(spec) {
 
   const list = spec.items || [];
   const tiles = [];
+  //: Whether each item is refused, read once, when its tile was built. The greying and the
+  //: `aria-disabled` came off the same read, so a caller that flips `disabled` afterwards gets
+  //: a view that is stale in one place rather than one that looks pickable and refuses: this
+  //: renders once, and a change means building it again.
+  const refused = [];
 
   //: Which item is selected, or `-1`. What makes `onSelect` fire on a change and not on every
   //: press: an arrow at either end of the list clamps onto the tile it started from, and a
@@ -1128,7 +1136,7 @@ export function folderView(spec) {
   };
 
   const select = (index) => {
-    if (list[index].disabled) {
+    if (refused[index]) {
       refuse(index);
       return;
     }
@@ -1147,7 +1155,7 @@ export function folderView(spec) {
   };
 
   const open = (index) => {
-    if (list[index].disabled) {
+    if (refused[index]) {
       refuse(index);
       return;
     }
@@ -1179,7 +1187,7 @@ export function folderView(spec) {
   const onFocus = (event) => {
     const tile = event.target.closest ? event.target.closest('.folder-item') : null;
     const at = tile ? tiles.indexOf(tile) : -1;
-    if (at >= 0 && list[at].disabled) refuse(at);
+    if (at >= 0 && refused[at]) refuse(at);
   };
 
   /* The list's keyboard, bound on the list rather than on each tile.
@@ -1221,6 +1229,7 @@ export function folderView(spec) {
   }
 
   list.forEach((item, index) => {
+    refused.push(Boolean(item.disabled));
     const cell = document.createElement('li');
     if (selects) {
       // `role="none"` is what keeps the tiles options of the listbox in the ARIA tree, as it
@@ -1242,7 +1251,7 @@ export function folderView(spec) {
       onOpen: () => (selects ? select(index) : open(index)),
     });
 
-    if (item.disabled) {
+    if (refused[index]) {
       // Shown and refused, not hidden: a reader can see the thing is there and read why.
       tile.classList.add('is-refused');
       if (selects) {
