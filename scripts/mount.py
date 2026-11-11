@@ -33,12 +33,14 @@ keeps one fact in one place. `isText` is decided here, by extension, because the
 holds text and a `.png` is a file it can describe and cannot read — refusing it before the
 fetch costs nothing and says why.
 
-**`size` is a character count for text, and a byte count for everything else.** The
-filesystem it feeds measures files in characters — a JS string is the contents — so an index
-in bytes made `ls -l` print one number before a file was read and a different one after, for
-93 of this repository's 124 text files. Counting characters here costs one read per text file
-in a generator that already walks the tree, and makes the unit one thing. A non-text file is
-never read, so its byte size is the only figure available and the only one anybody sees.
+**`size` is a UTF-16 code-unit count for text, and a byte count for everything else.** The
+filesystem it feeds measures files in `String.length` — a JS string is the contents — so an
+index in bytes made `ls -l` print one number before a file was read and a different one
+after, for 93 of this repository's 124 text files. Counting string length here costs one read
+per text file in a generator that already walks the tree, and makes the unit one thing.
+`utf16_units` is where the unit is pinned down, and why a code point is the wrong one. A
+non-text file is never read, so its byte size is the only figure available and the only one
+anybody sees.
 
 Sorted, and with no timestamp of its own, so regenerating on an unchanged tree produces no
 diff.
@@ -101,6 +103,22 @@ def tracked() -> list[str]:
     return [name for name in result.stdout.decode().split("\0") if name]
 
 
+def utf16_units(text: str) -> int:
+    """What `String.length` will say about `text` once the browser holds it.
+
+    The unit is a UTF-16 code unit, which is not a code point. Python's `len` counts code
+    points, so a single emoji is 1 here and 2 in JavaScript, and the index would sit one
+    short per character above U+FFFF — the same read-it-and-the-size-changes defect the
+    column exists to kill, one character class later. No tracked file contains such a
+    character today, so nothing fails; the arithmetic is still wrong.
+
+    Encoded rather than counted, so the number comes from the UTF-16 encoder instead of a
+    hand-written surrogate rule that can be wrong on its own. `-le` and not bare `utf-16`,
+    which prepends a byte-order mark and would add one unit to every file.
+    """
+    return len(text.encode("utf-16-le")) // 2
+
+
 def indexed() -> list[list]:
     """Every tracked file, as index rows, sorted by path."""
     rows = []
@@ -121,7 +139,8 @@ def indexed() -> list[list]:
         size = stat.st_size
         if is_text:
             try:
-                # Characters, not bytes — see the schema note above.
+                # UTF-16 code units, not bytes and not code points — the unit is the one the
+                # browser measures the string in, and `utf16_units` says why.
                 #
                 # Decoded from the bytes rather than read with `read_text`, which applies
                 # universal-newline translation and collapses every CRLF to one character.
@@ -129,7 +148,7 @@ def indexed() -> list[list]:
                 # `apps/day-02-lines/fixture/activities.csv` by exactly its 7 CRLFs — and the
                 # mismatch would have reappeared as a size that changes when the file is read,
                 # which is the defect this whole column is fixing.
-                size = len(path.read_bytes().decode("utf-8"))
+                size = utf16_units(path.read_bytes().decode("utf-8"))
             except UnicodeDecodeError:
                 # A file with a text extension that is not valid UTF-8 cannot be held by a
                 # filesystem of strings. Indexed as unreadable rather than as a character

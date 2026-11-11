@@ -38,6 +38,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import mount  # noqa: E402
 from cdp import Browser, CDPError, Session  # noqa: E402
 from css_ties import check as check_css_ties  # noqa: E402
 from serve import ServeError, serve  # noqa: E402
@@ -7924,19 +7925,57 @@ def check_routes(page) -> list[str]:
     fs_reset(page)
     return bad
 
-def check_mount_index(page) -> list[str]:
-    """The index agrees with the tracked files, and lists nothing it must not.
+#: A string whose Python and JavaScript lengths differ, and the length JavaScript gives it.
+#:
+#: `🎉` is U+1F389, above U+FFFF, so it is one code point and two UTF-16 code units: `len`
+#: says 3 and `String.length` says 4. The literal is the whole point — it is an expectation
+#: that does not come from `mount.py`, and the unit defect cannot be caught by any
+#: expectation that does.
+ASTRAL_FIXTURE = "a\U0001F389b"
+ASTRAL_UTF16_UNITS = 4
 
-    Two separate claims. The first is the stale-generated-file problem `manifest is current`
-    already guards for `apps/`. The second is a privacy rule: `.gitignore` excludes
+
+def check_mount_index(page) -> list[str]:
+    """The index agrees with the tracked files, lists nothing it must not, and counts right.
+
+    Three separate claims. The first is the stale-generated-file problem `manifest is
+    current` already guards for `apps/`. The second is a privacy rule: `.gitignore` excludes
     `apps/day-*/private/` because it holds real Strava traces, and an index built by walking
     the working tree would mount them into a filesystem with a browsable `ls`. That
     directory is absent from some worktrees and present in others, so the walk produces a
     clean index on one machine and publishes the traces from another — and the clean run is
     the one you would trust. Asserted against the index rather than against the generator's
     intent, because the index is what ships.
+
+    The third is the unit the sizes are counted in, and it is here rather than in
+    `mount.py --check` because `--check` structurally cannot see it: it recomputes sizes with
+    the same function that wrote them, so a wrong unit is wrong identically on both sides and
+    compares equal — and it tolerates size drift by design anyway, printing a note and
+    exiting 0. A wrong unit needs an expectation from outside the generator.
     """
     bad = []
+
+    # The unit, against a literal and against the browser that reads the index.
+    #
+    # No tracked file holds a character above U+FFFF today, so every real row agrees whether
+    # the generator counts code points or code units, and this fixture is the only thing that
+    # can tell the two apart. Counting code points puts `ls -l` one short per such character
+    # until the file is read and `inode.data.length` replaces the figure — the size-changes-
+    # on-read defect the column was added to remove.
+    units = mount.utf16_units(ASTRAL_FIXTURE)
+    if units != ASTRAL_UTF16_UNITS:
+        bad.append(
+            f"mount index: mount.utf16_units({ASTRAL_FIXTURE!r}) is {units}, not "
+            f"{ASTRAL_UTF16_UNITS} — the index is not counting UTF-16 code units, so a file "
+            "with an astral character gets a size that changes when it is read"
+        )
+    in_browser = page.evaluate(f"{json.dumps(ASTRAL_FIXTURE)}.length")
+    if in_browser != units:
+        bad.append(
+            f"mount index: {ASTRAL_FIXTURE!r} is {units} to mount.py and {in_browser} to the "
+            "browser holding the filesystem — the writer and the reader of mount.json "
+            "disagree on the unit"
+        )
     result = subprocess.run(
         [sys.executable, str(REPO_ROOT / "scripts" / "mount.py"), "--check"],
         capture_output=True,
