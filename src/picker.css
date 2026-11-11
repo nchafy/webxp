@@ -158,7 +158,12 @@
 }
 .picker-row:hover { background: color-mix(in srgb, var(--title-b) 16%, transparent); }
 
-.picker-row[aria-selected="true"] {
+/* Two classes and an attribute, against the hover rule's class and pseudo-class. Both set
+   `background`, so at equal counts the selection won by sitting below hover and nothing else.
+   Reordered, a selected row under the pointer keeps `color: #fff` over hover's wash — white on
+   rgb(223 232 241) is 1.24:1, against the 5.31:1 this pairing is chosen for. Order is a real
+   cascade rule; resting a contrast floor on it is the defect. */
+.picker-list .picker-row[aria-selected="true"] {
   /* XP's selection, and Explorer's: the title-bar blue with white text, 5.31:1. */
   background: var(--title-b);
   color: #fff;

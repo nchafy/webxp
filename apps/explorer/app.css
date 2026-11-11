@@ -111,7 +111,10 @@
   background: color-mix(in srgb, var(--title-b) 16%, transparent);
 }
 
-.app-explorer .exp-row[aria-selected="true"] {
+/* Scoped under `.exp-list` for the count, not for the reach: this and the hover rule above
+   both set `background`, and at equal counts the selection won on source order alone.
+   Reordered, a selected row under the pointer measures 1.24:1 — white on rgb(223 232 241). */
+.app-explorer .exp-list .exp-row[aria-selected="true"] {
   /* XP's selection: the title-bar blue with white text, measured at 5.31:1 — clear of AA
      for body text, and the same pairing the title bar already uses. */
   background: var(--title-b);

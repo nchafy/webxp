@@ -209,8 +209,14 @@
 }
 
 /* The selected item, in selecting mode. Luna's selection blue, which is the same pair the
-   Start menu and the title bar use; white on `--title-a` measures 14.25:1. */
-.folder-item[aria-selected='true'] {
+   Start menu and the title bar use; white on `--title-a` measures 14.25:1.
+ *
+ * Scoped under `.folder-items` for the count. This and the hover rule above both set
+ * `background` and `border-color`, and at equal counts the outcome was source order alone.
+ * Reordered, a selected tile under the pointer keeps `color: #fff` over hover's 20% wash —
+ * white on rgb(216 226 237) is 1.31:1. The third class is what lets `scripts/css_ties.py`
+ * pin the decision instead of asserting the order it happened to rest on. */
+.folder-items .folder-item[aria-selected='true'] {
   background: var(--title-a);
   color: #fff;
   border-color: var(--title-a);

@@ -258,11 +258,20 @@ SELF_TEST = {
     ".dialog.picker": (0, 2, 0),
     ".picker-row:hover": (0, 2, 0),
     '.picker-row[aria-selected="true"]': (0, 2, 0),
+    '.picker-list .picker-row[aria-selected="true"]': (0, 3, 0),
     ".picker-list .picker-row:focus-visible": (0, 3, 0),
     "[tabindex]:focus-visible": (0, 2, 0),
     ".window-body.app-explorer": (0, 2, 0),
+    ".app-explorer .exp-row:hover": (0, 3, 0),
+    '.app-explorer .exp-row[aria-selected="true"]': (0, 3, 0),
+    '.app-explorer .exp-list .exp-row[aria-selected="true"]': (0, 4, 0),
     '.app-explorer .exp-row[aria-selected="true"] .exp-type': (0, 4, 0),
     ".app-explorer .exp-type": (0, 2, 0),
+    # Single-quoted attribute value, which is the spelling `src/folder.css` uses. The
+    # calculator must not read the quote style as part of the count.
+    ".folder-item:hover": (0, 2, 0),
+    ".folder-item[aria-selected='true']": (0, 2, 0),
+    ".folder-items .folder-item[aria-selected='true']": (0, 3, 0),
 }
 
 
@@ -424,6 +433,38 @@ OUTRANKS = (
         "color",
         "selected row's grey cells inherit white",
     ),
+    # A selected row or tile under the pointer. Each of the three pairs below tied on
+    # `background` at equal counts, so the selection won by sitting below hover and nothing
+    # else; the selected side now carries a third class and wins on the count. What the tie
+    # was holding up is a contrast floor: hover's wash over `--bg` leaves `color: #fff` at
+    # 1.24:1 on the two 16% lists and 1.31:1 on the folder's 20% one, against the 5.31:1 and
+    # 14.25:1 the two selection blues are chosen for.
+    (
+        '.picker-list .picker-row[aria-selected="true"]',
+        ".picker-row:hover",
+        "background",
+        "picker selection is not washed out by hover",
+    ),
+    (
+        '.app-explorer .exp-list .exp-row[aria-selected="true"]',
+        ".app-explorer .exp-row:hover",
+        "background",
+        "explorer selection is not washed out by hover",
+    ),
+    # Two properties, because the folder's two rules overlap on both. `border-color` alone
+    # decides whether a selected tile keeps its own edge or hover's.
+    (
+        ".folder-items .folder-item[aria-selected='true']",
+        ".folder-item:hover",
+        "background",
+        "folder selection is not washed out by hover",
+    ),
+    (
+        ".folder-items .folder-item[aria-selected='true']",
+        ".folder-item:hover",
+        "border-color",
+        "folder selection keeps its own edge",
+    ),
 )
 
 #: (a, b, label). These pairs tie on purpose and must therefore share no property at all, so
@@ -469,23 +510,11 @@ REACHES = {
 #: text: the old spelling goes absent and the run fails. The equality assertion is therefore a
 #: guard on this table rather than on the sheets, in the same role as `SELF_TEST` — it catches a
 #: row whose two sides never tied, and so asserted an order that nothing rested on.
-ORDERED = (
-    # In `src/picker.css` these two are both (0,2,0) — a class and a pseudo-class against a
-    # class and an attribute — and both set `background`. The selection wins by sitting below
-    # the hover rule, and nothing else. Reorder them and a selected row under the pointer gets
-    # hover's 16% wash of `--title-b` over `--bg`, while `color: #fff` still comes from the
-    # selection block: white on rgb(223 232 241) measures 1.24:1, against the 5.31:1 the
-    # selection is chosen for. That composite is computed from the two declarations — 16% of
-    # #3a6ea5 over #fff — and not read back off the painted pixel: `getComputedStyle` hands
-    # back the unresolved `color-mix`.
-    # Order is a real cascade rule, not a defect on its own; resting a contrast floor on it is.
-    (
-        ".picker-row:hover",
-        '.picker-row[aria-selected="true"]',
-        "background",
-        "selection is not washed out by hover",
-    ),
-)
+#:
+#: Empty, and kept rather than deleted: it is the only pin available when neither side of a
+#: tie can be raised. Every tie it would hold is instead in `OUTRANKS`, where the outcome does
+#: not depend on the order of two blocks in one file.
+ORDERED: tuple[tuple[str, str, str, str], ...] = ()
 
 #: Selectors that must not exist. Dead rules, hand-synced duplicates, and the pre-fix
 #: spelling of every selector `OUTRANKS` names — so a fix that is reverted by rewriting the
@@ -536,6 +565,11 @@ GONE = (
     ".picker",
     ".picker-row:focus-visible",
     ".app-explorer",
+    # The flattened spelling of the three selection rules. Each tied its own sheet's hover
+    # rule on `background` at equal counts, which handed a contrast floor to source order.
+    '.picker-row[aria-selected="true"]',
+    '.app-explorer .exp-row[aria-selected="true"]',
+    ".folder-item[aria-selected='true']",
 )
 
 #: (sheet, find, replace, label) — undoes one fix. Applied to the text in memory by
@@ -705,15 +739,28 @@ REVERTS = (
         ".picker-row:focus-visible {",
         "picker row's own focus ring",
     ),
-    # An order pin can only be reverted by moving a block, and restating the hover wash below
-    # the selection is how the regression arrives: the second copy reads as a tidy-up, and the
-    # rule it overrides is twenty lines above it.
+    # Each of the three flattens one selection rule back to the spelling that tied its sheet's
+    # hover rule. Flattening is the revert these fixes actually get in life: the scope looks
+    # redundant to a reader who does not know it is carrying the count, and deleting it leaves
+    # a rule that still matches everything it matched before and still paints the same blue —
+    # until a pointer is over the selected row.
     (
         "src/picker.css",
-        '.picker-row[aria-disabled="true"] { opacity: .5; }',
-        '.picker-row[aria-disabled="true"] { opacity: .5; }\n'
-        ".picker-row:hover { background: color-mix(in srgb, var(--title-b) 16%, transparent); }",
-        "selection is not washed out by hover",
+        '.picker-list .picker-row[aria-selected="true"] {',
+        '.picker-row[aria-selected="true"] {',
+        "picker selection is not washed out by hover",
+    ),
+    (
+        "apps/explorer/app.css",
+        '.app-explorer .exp-list .exp-row[aria-selected="true"] {',
+        '.app-explorer .exp-row[aria-selected="true"] {',
+        "explorer selection is not washed out by hover",
+    ),
+    (
+        "src/folder.css",
+        ".folder-items .folder-item[aria-selected='true'] {",
+        ".folder-item[aria-selected='true'] {",
+        "folder selection is not washed out by hover",
     ),
     (
         "apps/explorer/app.css",
