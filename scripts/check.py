@@ -1942,23 +1942,17 @@ def check_cascade_across_close(page) -> list[str]:
 
         # And the thing all of that is for: no pile — among the windows that hold a lane.
         #
-        # Not every open window: `cascade` wraps with `index % lanes`, and `lanes` is what the
-        # desktop's height affords this window, so once more windows are open than there are
-        # lanes two of them share an origin by design. Asserting distinctness across all of
-        # them made this check a count of how many apps the tree happens to ship — it passed
-        # at thirty-nine and failed at forty with nothing about the cascade having changed.
+        # Not every open window: `cascade` takes `index % lanes` (`src/window.mjs`), and the
+        # comment on `lanes` there says why — it wraps rather than letting the cascade walk off
+        # the desktop and get clamped into a pile in the corner. `lanes` is what the desktop's
+        # height affords this window, so once more windows are open than there are lanes two of
+        # them share an origin by design. Asserting distinctness across all of them would make
+        # this check a count of how many apps the tree ships. Distinct lanes while there are
+        # lanes to be distinct in, and not one window further.
         #
         # The lane assignment is the invariant, and `cascadeSlot` is where it is readable. A
         # window placed from an explicit `x`/`y` never cascades and holds no slot, which is
         # why those are excluded rather than counted as collisions.
-        # Distinct lanes while there are lanes to be distinct in, and not one window further.
-        #
-        # `cascade` ends with `index % lanes` (`src/window.mjs`), and the comment above it
-        # says why: it wraps rather than letting the cascade walk off the bottom and get
-        # clamped into a pile in the corner. So two windows sharing a lane past the budget is
-        # the documented behaviour, not a defect, and asserting otherwise made this check a
-        # count of how many apps the tree ships — it passed at thirty-nine and failed at forty
-        # with nothing about the cascade having changed.
         #
         # What `cascadeIndex` does promise is a lane nobody holds *when one exists*. That is
         # the half worth asserting, and the budget is what separates the two.
@@ -8674,7 +8668,9 @@ def wait_for_apps(page, timeout: float = 8.0) -> None:
     """Block until the desktop has finished loading its apps.
 
     `demo/boot.mjs` publishes `window.webxpApps` once `loadApps` resolves, which is the only
-    signal that the forty-odd module fetches a boot makes are done.
+    signal that a boot's module fetches are done. `loadApps` (`src/apps.mjs`) `Promise.all`s
+    one `loadApp` per id in `apps/manifest.mjs`, and the shell's own modules are fetched on
+    top of those, so the count rises with every app added.
 
     This exists because of a flake that cost two runs: `python3 -m http.server` is
     single-threaded, and a check's own `import()` arriving while those fetches are in flight

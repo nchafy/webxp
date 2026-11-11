@@ -1,7 +1,8 @@
 # Review findings
 
-Findings raised against this work, their addresses, and what was done. Every defect below is
-fixed, and each entry names the check that guards it where one does.
+Findings raised against this work, their addresses, and what was done. Every numbered finding
+below is fixed, and each entry names the check that guards it where one does. What was not
+fixed is under "Not addressed" at the end.
 
 Findings 1–5 are from a self-review. Findings 6–12 are from a second agent that reviewed the
 window manager without the author's conclusions, driving the live page rather than reading the
