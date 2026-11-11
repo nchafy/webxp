@@ -169,6 +169,39 @@
   background: var(--bg);
 }
 
+/* The icons and the refusal note as one column, in selecting mode only.
+ *
+ * It exists so that `.folder-view`'s two columns above need no second spelling: a note added
+ * as a third child of that grid takes an implicit row and shares the height with the task
+ * pane, and holding it to one row means restating `grid-template-rows` under a second class —
+ * which would then outrank the `@container` rule below and break the narrow layout. `1fr
+ * auto` is the list taking what is left and the note taking what it needs.
+ */
+.folder-right {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  min-height: 0;
+}
+
+/* Why a refused tile is not silent.
+ *
+ * `aria-disabled` keeps that tile a focus stop, and this is the only place arriving at it says
+ * why; the reason used to live in `title`, which no keyboard opens. `role="status"` is on the
+ * element, so a reader who cannot see it is told.
+ *
+ * `min-height` holds the row empty, so filling it does not shift the icons above. `--muted` on
+ * `--bg` is 11.4:1, which is the pair `.picker-note` already uses for the same sentence.
+ */
+.folder-note {
+  min-height: 1.4em;
+  margin: 0;
+  padding: .25rem .5rem;
+  background: var(--bg);
+  border-top: 1px solid var(--rule);
+  font-size: 11px;
+  color: var(--muted);
+}
+
 .folder-item {
   color: var(--ink);
 }
@@ -202,6 +235,10 @@
  *
  * 55%: `--ink` on `--bg` is 21:1, so this lands near 11.5:1 and stays legible. Greying to
  * the point of illegibility would hide it by another means.
+ *
+ * A class and not a state selector, which is what lets the two modes refuse differently —
+ * `aria-disabled` in a selecting list, `disabled` in a grid of launchers — with one rule and
+ * no pair of state selectors competing over the same property.
  */
 .folder-item.is-refused {
   opacity: .55;

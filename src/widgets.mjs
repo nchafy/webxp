@@ -1022,6 +1022,13 @@ export function menuBar(spec) {
  * there and learn why it is refused. Extension filtering is the caller's to compute — this
  * widget does not know what a file is.
  *
+ * The two modes refuse it differently, because the two modes are different controls. A
+ * selecting list is a listbox the keyboard arrives at and asks about, so a refused tile keeps
+ * its focus stop through `aria-disabled` and the note below the icons says why. A grid of
+ * launchers has neither a selection to arrive with nor a note to hear, so there a refused
+ * tile is a `disabled` button: a stop that takes the keyboard and then does nothing is worse
+ * than one the tab order skips.
+ *
  * The caller owns `status: true` on its own spec: the object count goes in the window's
  * status bar, which is where XP put it, and this returns no chrome it does not own.
  *
@@ -1083,16 +1090,45 @@ export function folderView(spec) {
     items.setAttribute('aria-multiselectable', 'false');
   }
 
+  // The refusal's voice, and the widget's own rather than the caller's.
+  //
+  // `aria-disabled` below keeps a refused tile reachable, which is only worth doing if
+  // arriving at it says why — the reason used to sit in `title`, where a pointer is the only
+  // thing that can open it. A note the caller passes in is a note the caller can leave out,
+  // and leaving it out restores the silent refusal; the widget is what refuses, so the widget
+  // owns saying so. `role="status"` is how the picker's `.picker-note` does the same job.
+  const note = selects ? document.createElement('p') : null;
+  if (note) {
+    note.className = 'folder-note';
+    note.setAttribute('role', 'status');
+  }
+  const say = (text) => { if (note) note.textContent = text; };
+
   const list = spec.items || [];
   const tiles = [];
 
+  const refuse = (index) => {
+    const item = list[index];
+    say(item.hint ? `${item.name}: ${item.hint}` : `${item.name} cannot be chosen.`);
+  };
+
   const select = (index) => {
+    if (list[index].disabled) {
+      refuse(index);
+      return;
+    }
     tiles.forEach((tile, at) => tile.setAttribute('aria-selected', String(at === index)));
+    // Cleared, so a refusal read a moment ago is not still standing under a selection that
+    // worked. An empty write is not announced, which is why it is not a sentence.
+    say('');
     if (spec.onSelect) spec.onSelect(list[index], index);
   };
 
   const open = (index) => {
-    if (list[index].disabled) return;
+    if (list[index].disabled) {
+      refuse(index);
+      return;
+    }
     list[index].onOpen();
   };
 
@@ -1100,7 +1136,7 @@ export function folderView(spec) {
    *
    * Selection follows focus, as it does in the picker (`src/dialogs.mjs`'s `focusRow`) and as
    * a single-select listbox is expected to: arrowing onto a tile is how a reader with no
-   * pointer reads the list at all.
+   * pointer both reads the list and hears a refusal.
    */
   const rove = (index) => {
     if (!tiles.length) return;
@@ -1155,9 +1191,17 @@ export function folderView(spec) {
 
     if (item.disabled) {
       // Shown and refused, not hidden: a reader can see the thing is there and read why.
-      tile.disabled = true;
       tile.classList.add('is-refused');
-      if (item.hint) tile.title = item.hint;
+      if (selects) {
+        // Greyed and still a focus stop, as a disabled menu row is. `FOCUSABLE` in
+        // `src/window.mjs` excludes `button[disabled]`, so the `disabled` this replaces took
+        // the refused tile out of the tab order with its reason in a `title` no keyboard
+        // opens.
+        tile.setAttribute('aria-disabled', 'true');
+      } else {
+        tile.disabled = true;
+        if (item.hint) tile.title = item.hint;
+      }
     }
     if (selects) {
       tile.setAttribute('role', 'option');
@@ -1173,7 +1217,17 @@ export function folderView(spec) {
     cell.append(tile);
     items.append(cell);
   });
-  view.append(items);
+
+  if (selects) {
+    // The icons and the note as one column, so `.folder-view`'s two columns are left alone: a
+    // third child of that grid takes an implicit row and shares the height with the pane.
+    const column = document.createElement('div');
+    column.className = 'folder-right';
+    column.append(items, note);
+    view.append(column);
+  } else {
+    view.append(items);
+  }
   return view;
 }
 
