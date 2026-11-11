@@ -7794,7 +7794,7 @@ def check_routes(page) -> list[str]:
         ("#/notepad/etc/motd", "notepad", "motd"),
     ):
         open_link(hash_)
-        console_errors(page)
+        drain(page)
         state = page.evaluate(
             "(() => { const route = window.webxpRoute;"
             " const win = window.webxp.windows.find((w) => w.programId === %s);"
@@ -7823,14 +7823,14 @@ def check_routes(page) -> list[str]:
     dead = page.evaluate("window.webxpRoute")
     if not dead or dead.get("opened") is not False:
         bad.append(f"routes: a link to a missing program reported {dead!r}")
-    console_errors(page)
+    drain(page)
 
     # And the other direction: a window publishes a link to itself as it moves.
     page.evaluate("window.history.replaceState(null, '', window.location.pathname)")
     page.call("Page.reload", ignoreCache=True)
     time.sleep(0.8)
     wait_for_route(page)
-    console_errors(page)
+    drain(page)
     shell = terminal_session(page)
     term_run(page, "cd /usr/src/webxp/docs", shell)
     time.sleep(0.2)
@@ -7886,7 +7886,7 @@ def check_routes(page) -> list[str]:
         page.call("Page.reload", ignoreCache=True)
         time.sleep(1.0)
         wait_for_apps(page)
-        console_errors(page)
+        drain(page)
         shell = terminal_session(page)
 
     # Read-only, and refused by the mode bits like the repository mount.
@@ -9173,9 +9173,11 @@ def check_terminal(page, *, invert: bool = False) -> list[str]:
         bad.append(f"terminal: a defect inside cat printed {swallowed.strip()[:90]!r}, which "
                    "reads as a refusal from the filesystem")
     # Drained here on purpose: this one console error is the assertion, and left in the
-    # buffer the end-of-run sweep would attribute it to whatever check runs next.
-    if not any("cat threw" in line for line in console_errors(page)):
-        bad.append("terminal: a defect inside cat did not reach the console under its name")
+    # buffer the end-of-run sweep would attribute it to whatever check runs next. Through
+    # `drain_expecting`, because a bare read is destructive: the patch and its restore above
+    # can raise a second error, and a read that asks only for the needle consumes that one
+    # too and reports clean.
+    bad += drain_expecting(page, "cat threw", "terminal")
     # And the mount is unpatched again, or every check after this one is measuring a stub.
     if "read the window model" not in term_run(page, "cat notes/todo.txt", shell):
         bad.append("terminal: the defect control left the filesystem patched")
