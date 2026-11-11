@@ -495,6 +495,42 @@ but what it proves is that the measurement responds to the page and that a failu
 log, not that the un-inverted assertion catches the defect it was written for. Both questions
 are worth asking. Only the second is answered by breaking the subject.
 
+## The rule that came with it, narrowed: what one link per href hides
+
+`src/apps.mjs` links a stylesheet once per session, keyed by resolved href (`linked`, `:172`;
+`addStylesheet`, `:181`; each declared path resolved against the app's own folder, `:316`).
+That is deliberate — a second app declaring the same sheet should not get a second `<link>`.
+**One mechanism, two defects, two instruments**, and running the two together is how the first
+version of this rule was wrong.
+
+- A **wrong** declaration is invisible whenever another app declares the same sheet correctly.
+  Misspell the path in one app and the sheet is still in the document, still applying, put
+  there by the other app. The loader sees nothing wrong; nor does a suite that opens several
+  apps, because the app that declares it correctly links it for everything after. One app
+  alone in a fresh document is the instrument — `scripts/check_styles_isolated.py`, which is
+  what it does.
+- A **missing** declaration is hidden by the same single link and is *not* found by that
+  sweep. The sweep derives what an app needs from what the app declares, so an absent line is
+  something nothing expects. The reasoning is circular and no control rescues it: the break
+  for an absent declaration is an absent declaration. It is found by asserting a **styling
+  property** per app — the border the app's own sheet removes, the grid it sets. One assertion
+  per app, not a sweep. That is what found `apps/showup/`, which rendered its folder correctly
+  for an afternoon with no `src/folder.css` entry because `apps/map-challenge/` had linked it.
+
+The broad version offered first — "dedupe hides a missing declaration and isolation finds
+it" — is half true, and the false half is the half that would have been acted on.
+
+**The masking needs one resolved href declared by two apps, and on `main` there is exactly
+one:** `/shared/map/map.css`, by `apps/basemap/app.mjs:66` and `apps/day-02-lines/app.mjs:39`.
+No `app.css` declaration is shared, because `new URL(path, appBase)` gives each one its own
+app's folder, so no `app.css` can mask another. `feat/showup-apps` carries three
+shared sheets (`shared/map/map.css`, `src/folder.css`, `shared/showup/links.css`), which is
+why it bit there first. Re-read with `grep -h "styles:" apps/*/app.mjs`, resolving each path
+against its app folder.
+
+`scripts/check_styles_isolated.py` is absent from `main` and referenced by no suite on either
+branch. The rule is recorded here so it outlives the branch.
+
 ## Not addressed
 
 - **The Start button fails SC 1.4.3 at 2.16:1.** Deliberate, excluded from the sweep, and
