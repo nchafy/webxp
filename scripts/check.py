@@ -10704,7 +10704,7 @@ def check_fs_persistence(page) -> list[str]:
 # select options, so the selecting seam had no caller at all and nothing in this suite
 # touched it. That is how three accessibility defects shipped in it. The suite is the caller
 # now: the fixture below builds both of the widget's modes from the same five items, in a
-# modal layer, and the five checks after it drive them.
+# modal layer, and the checks after it drive them.
 # ---------------------------------------------------------------------------
 
 #: The ids the fixture puts on its own two views, so every read below addresses the widget
@@ -11001,6 +11001,94 @@ def check_folder_roles(page) -> list[str]:
         bad.append(
             f"folder view: {trap['notAStop']} are in the trap's cycle with tabindex=-1 — the "
             "trap and the roving tabindex disagree about what Tab does"
+        )
+    return bad
+
+
+def ax_nodes(page, selector: str, role: str) -> list[dict]:
+    """Every node of one ARIA role under `selector`, read out of Chrome's own tree.
+
+    The accessibility tree and not the attributes, because the attributes are the means and
+    the tree is the claim. Measured: `ul[role=listbox] > li > button[role=option]` reaches
+    this tree as plain buttons with no selected state, since an `<li>`'s own semantics
+    outrank `role="option"` on its child — so every attribute assertion in
+    `check_folder_roles` can pass while a screen reader is told nothing about the selection.
+    A `<div>` wrapper does not do it; the five shapes were compared in Chrome 157 and only
+    the `<li>` one lost the role.
+    """
+    page.call("Accessibility.enable")
+    handle = page.call(
+        "Runtime.evaluate",
+        expression=f"document.querySelector({json.dumps(selector)})",
+        returnByValue=False,
+    )
+    object_id = (handle.get("result") or {}).get("objectId")
+    if not object_id:
+        raise HarnessError(f"accessibility: nothing matches {selector!r} to read a tree under")
+    try:
+        found = page.call("Accessibility.queryAXTree", objectId=object_id, role=role)
+    finally:
+        page.call("Runtime.releaseObject", objectId=object_id)
+    return found.get("nodes") or []
+
+
+def ax_flag(node: dict, name: str):
+    """One AX property of a node, or `None` when the tree does not carry it."""
+    for prop in node.get("properties", []):
+        if prop["name"] == name:
+            return prop["value"].get("value")
+    return None
+
+
+def check_folder_ax_tree(page) -> list[str]:
+    """What a screen reader is handed: five options, one selected, one refused.
+
+    The criterion the roles exist for, asserted where it is decided. `check_folder_roles`
+    reads the attributes, which is the proximate cause; this reads Chrome's accessibility
+    tree, which is the outcome — and the two came apart once already, at the `<li>` between
+    the listbox and its options.
+    """
+    bad = []
+    folder_fixture(page)
+    # A selection to find, made the way a reader makes one.
+    folder_click(page, 1)
+
+    options = ax_nodes(page, f"{FOLDER_PROBE} .folder-items", "option")
+    if len(options) != 5:
+        return bad + [
+            f"folder view: {len(options)} of 5 tiles reach the accessibility tree as options — "
+            "`aria-selected` on anything else is ignored, so a reader is told what is there "
+            "and never which of it is chosen"
+        ]
+    names = [(node.get("name") or {}).get("value") for node in options]
+    if names != list(FOLDER_NAMES):
+        bad.append(f"folder view: the options are named {names}, want {list(FOLDER_NAMES)}")
+    selected = [ax_flag(node, "selected") for node in options]
+    if selected != [False, True, False, False, False]:
+        bad.append(
+            f"folder view: the tree's selected flags are {selected} after clicking Bravo, want "
+            "it true on Bravo alone and present on all five"
+        )
+    if ax_flag(options[FOLDER_REFUSED], "disabled") is not True:
+        bad.append(
+            "folder view: the refused option does not reach the tree as disabled, so nothing "
+            "tells a reader it is refused before they press it"
+        )
+    if ax_flag(options[FOLDER_REFUSED], "focusable") is not True:
+        bad.append(
+            "folder view: the refused option is not focusable in the tree — the reason it "
+            "carries is reachable by nothing"
+        )
+
+    boxes = ax_nodes(page, FOLDER_PROBE, "listbox")
+    if len(boxes) != 1:
+        bad.append(f"folder view: {len(boxes)} listboxes in the tree under the probe, want 1")
+
+    # The off switch, in the tree rather than in the markup.
+    if ax_nodes(page, FOLDER_PLAIN, "option") or ax_nodes(page, FOLDER_PLAIN, "listbox"):
+        bad.append(
+            "folder view: without `select` the view still reaches the accessibility tree as a "
+            "listbox of options — a grid of launchers offers no selection to announce"
         )
     return bad
 
@@ -11438,6 +11526,7 @@ CHECKS = (
     # misses is cleared by something other than its own cleanup. Order within the group is
     # free except for the last, which takes the fixture down.
     ("folder view roles", check_folder_roles),
+    ("folder view accessibility tree", check_folder_ax_tree),
     ("folder view tab route", check_folder_tab_route),
     ("folder view selection", check_folder_selection),
     ("folder view keyboard", check_folder_keyboard),
