@@ -9972,6 +9972,18 @@ def press_in_picker(page, win_id: str, selector: str, answer: str | None = None)
 SOURCE_WINDOW = (REPO_ROOT / "src" / "window.mjs").read_text(encoding="utf-8")
 
 
+def focusable_selector() -> str:
+    """The selector `window.mjs`'s modal trap cycles, read out of the product.
+
+    Read rather than copied, so a probe carrying its own copy cannot measure the copy — and a
+    shape it can no longer parse is a failure, not a skip.
+    """
+    found = re.search(r"const FOCUSABLE = \[(.*?)\]\.join", SOURCE_WINDOW, re.S)
+    if not found:
+        raise HarnessError("no `const FOCUSABLE = [...]` in src/window.mjs to read")
+    return ", ".join(re.findall(r"'([^']+)'", found.group(1)))
+
+
 def picker_tab_stops(page, win_id: str, bad: list[str]) -> list[str]:
     """One tab stop for the whole file list, asserted against the trap that decides it.
 
@@ -9985,10 +9997,7 @@ def picker_tab_stops(page, win_id: str, bad: list[str]) -> list[str]:
     The selector is read out of the product rather than copied, so a probe carrying its own
     copy cannot measure the copy — and a shape it can no longer parse is a failure, not a skip.
     """
-    focusable = re.search(r"const FOCUSABLE = \[(.*?)\]\.join", SOURCE_WINDOW, re.S)
-    if not focusable:
-        return bad + ["picker: no `const FOCUSABLE = [...]` in src/window.mjs to read"]
-    selector = ", ".join(re.findall(r"'([^']+)'", focusable.group(1)))
+    selector = focusable_selector()
     trap = page.evaluate(
         "((sel) => { const win = window.webxp.windows.find((w) => w.id === %s);"
         " const layer = win && win.el.querySelector('.window-modal');"
