@@ -1008,6 +1008,20 @@ export function menuBar(spec) {
  * belongs here when something can switch — a mode nobody can reach is dead code, and
  * `segment` above is the control it would use.
  *
+ * Selection is the one thing parameterised ahead of its caller, and deliberately: a file
+ * picker is a folder listing plus a footer, so without a seam here the picker gets a second
+ * lister. win32.run is the worked example of not having one — three copies of its listing,
+ * two of them a 200-line copy-paste, and the save side's type filter left as
+ * `is_desired(){ return true }` because the fix went into the other copy.
+ *
+ * `select: 'one'` therefore exists before the picker does. `'many'` does not, because
+ * nothing needs it and a mode with no caller is the thing this comment warns about.
+ *
+ * An item may be `disabled` with a `hint` saying why. XP greyed a file it would not let you
+ * pick rather than hiding it, which is the better behaviour: a visitor can see the file is
+ * there and learn why it is refused. Extension filtering is the caller's to compute — this
+ * widget does not know what a file is.
+ *
  * The caller owns `status: true` on its own spec: the object count goes in the window's
  * status bar, which is where XP put it, and this returns no chrome it does not own.
  *
@@ -1022,6 +1036,8 @@ export function menuBar(spec) {
  *        "Other Places" — where a reader goes instead of here.
  * @param {[string, string][]} [spec.details]  "Details": label and value rows.
  * @param {string} [spec.itemClass]  Surface class for each tile, as `iconTile` takes.
+ * @param {'none'|'one'} [spec.select]  `'one'` makes a click select and a double click open.
+ * @param {(item: object, index: number) => void} [spec.onSelect]  Fired on selection change.
  * @returns {HTMLDivElement}
  */
 export function folderView(spec) {
@@ -1054,16 +1070,47 @@ export function folderView(spec) {
 
   const items = document.createElement('ul');
   items.className = 'folder-items';
-  for (const item of spec.items || []) {
+  const selects = spec.select === 'one';
+  if (selects) items.setAttribute('aria-multiselectable', 'false');
+
+  const tiles = [];
+  (spec.items || []).forEach((item, index) => {
     const cell = document.createElement('li');
-    cell.append(iconTile({
+    const tile = iconTile({
       name: item.name,
       icon: item.icon,
       className: spec.itemClass ? `folder-item ${spec.itemClass}` : 'folder-item',
-      onOpen: item.onOpen,
-    }));
+      // `iconTile` binds this to click. In selecting mode a click selects and a double
+      // click opens, as Explorer does, so the open is moved to `dblclick` below and this
+      // becomes the selection.
+      onOpen: () => {
+        if (!selects) {
+          item.onOpen();
+          return;
+        }
+        for (const other of tiles) other.setAttribute('aria-selected', 'false');
+        tile.setAttribute('aria-selected', 'true');
+        if (spec.onSelect) spec.onSelect(item, index);
+      },
+    });
+
+    if (item.disabled) {
+      // Shown and refused, not hidden: a reader can see the thing is there and read why.
+      tile.disabled = true;
+      tile.classList.add('is-refused');
+      if (item.hint) tile.title = item.hint;
+    }
+    if (selects) {
+      tile.setAttribute('aria-selected', 'false');
+      tile.addEventListener('dblclick', () => {
+        if (!item.disabled) item.onOpen();
+      });
+    }
+
+    tiles.push(tile);
+    cell.append(tile);
     items.append(cell);
-  }
+  });
   view.append(items);
   return view;
 }
