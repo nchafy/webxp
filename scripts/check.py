@@ -10823,6 +10823,19 @@ CHECKS = (
     ("scaffold a new app", check_scaffold),
 )
 
+#: The names `--prove-failure` inverts, derived from `INVERTIBLE` rather than listed beside
+#: it. The hand-kept list went stale against three other renderings of the same fact, so
+#: `--help` told an operator the flag inverted "the drag and shell assertions" and
+#: `--only "file associations" --prove-failure` looked invalid.
+INVERTIBLE_NAMES = tuple(name for name, check in CHECKS if check in INVERTIBLE)
+
+#: Every invertible check is in `CHECKS`, or `--prove-failure` silently inverts nothing while
+#: `INVERTIBLE` still names it. Asserted at import, because a harness that cannot reach what
+#: it was pointed at must fail rather than report.
+assert len(INVERTIBLE_NAMES) == len(INVERTIBLE), (
+    f"{len(INVERTIBLE) - len(INVERTIBLE_NAMES)} of INVERTIBLE is not in CHECKS"
+)
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -10836,7 +10849,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--prove-failure",
         action="store_true",
-        help="invert the drag and shell assertions, so the run must report a failure",
+        help="invert the assertions of " + ", ".join(INVERTIBLE_NAMES) + ", so the run must "
+        "report those failures and no others",
     )
     parser.add_argument(
         "--only",

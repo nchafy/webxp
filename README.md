@@ -40,11 +40,11 @@ The checks drive real input through the Chrome DevTools Protocol and read the ge
 back. A window manager cannot be checked by screenshot: an inert frame and a working one are
 the same picture, and what separates them is whether the numbers changed after a drag.
 
-Two things keep the harness honest:
+What keeps the harness honest:
 
-- `scripts/check.py --prove-failure` inverts the drag assertion and one of the shell's, so
-  the run must report a failure. A harness nobody has seen fail is a harness nobody has
-  checked.
+- `scripts/check.py --prove-failure` inverts the assertion of every check in `INVERTIBLE`, so
+  the run must report a failure. The tuple is the list: `grep -n "^INVERTIBLE" scripts/check.py`.
+  A harness nobody has seen fail is a harness nobody has checked.
 - `drag is title-bar only` is a negative control: the identical drag, started inside the
   window body, must move nothing.
 - `scripts/check.py --only <substring>` runs one check, which is how a new one is shown
