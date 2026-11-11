@@ -1232,13 +1232,13 @@ export function folderView(spec) {
     refused.push(Boolean(item.disabled));
     const cell = document.createElement('li');
     if (selects) {
-      // `role="none"` is what keeps the tiles options of the listbox in the ARIA tree, as it
-      // does for the menu bar's slots above. An `<li>`'s own semantics outrank
-      // `role="option"` on its child, and the whole mode rests on that not happening:
-      // measured in Chrome 157, `ul[role=listbox] > li > button[role=option]` reaches the
-      // accessibility tree as plain buttons carrying no selected state at all, and the same
-      // tree with this line reaches it as options carrying it. A `<div>` wrapper does not do
-      // this — it is the `<li>` specifically.
+      // `role="none"` is what keeps the tiles options of the listbox in the ARIA tree, and
+      // the whole mode rests on it: an `<li>`'s own semantics outrank `role="option"` on its
+      // child, so without this line Chrome exposes the tiles as plain buttons and
+      // `aria-selected` is set on nothing at all. A wrapper with no implicit role of its own,
+      // like the `<div class="menu-slot">` above, needs nothing. `check_folder_ax_tree` in
+      // `scripts/check.py` is the standing measurement: with this line removed it read five
+      // buttons and no selected state, on headless Chrome 157.
       cell.setAttribute('role', 'none');
     }
     const tile = iconTile({

@@ -199,8 +199,8 @@
  * One line, and one line is what this widget's refusals are. A note long enough to wrap still
  * moves the grid.
  *
- * `--muted` on `--bg` is 11.4:1, which is the pair `.picker-note` already uses for the same
- * sentence.
+ * `--muted` #3a3a3a on `--bg` #fff is 11.4:1. The arithmetic is here rather than borrowed
+ * from `.picker-note`, which sets no background of its own and sits on the dialog face.
  */
 .folder-note {
   /* The line box, named once: `min-height` reserves it and `line-height` is it. */
@@ -251,8 +251,8 @@
  * the point of illegibility would hide it by another means.
  *
  * A class and not a state selector, which is what lets the two modes refuse differently —
- * `aria-disabled` in a selecting list, `disabled` in a grid of launchers — with one rule and
- * no pair of state selectors competing over the same property.
+ * `aria-disabled` in a selecting list, `disabled` in a grid of launchers — out of one rule
+ * rather than a pair of state selectors at equal counts.
  */
 .folder-item.is-refused {
   opacity: .55;
