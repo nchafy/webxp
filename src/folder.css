@@ -189,11 +189,25 @@
  * why; the reason used to live in `title`, which no keyboard opens. `role="status"` is on the
  * element, so a reader who cannot see it is told.
  *
- * `min-height` holds the row empty, so filling it does not shift the icons above. `--muted` on
- * `--bg` is 11.4:1, which is the pair `.picker-note` already uses for the same sentence.
+ * The row is reserved before anything is written into it, so a refusal does not shift the
+ * icons above it. `content-box` is a departure from the `border-box` `theme.css` sets on
+ * everything, and it is what lets the reservation be one line of text and nothing else: under
+ * `border-box` the same number also has to carry this rule's own padding and rule, and a
+ * padding change then un-reserves the row silently. `folder view refusals` in
+ * `scripts/check.py` measures the empty row against a written one, so it cannot drift.
+ *
+ * One line, and one line is what this widget's refusals are. A note long enough to wrap still
+ * moves the grid.
+ *
+ * `--muted` on `--bg` is 11.4:1, which is the pair `.picker-note` already uses for the same
+ * sentence.
  */
 .folder-note {
-  min-height: 1.4em;
+  /* The line box, named once: `min-height` reserves it and `line-height` is it. */
+  --note-line: 1.45;
+  box-sizing: content-box;
+  min-height: calc(var(--note-line) * 1em);
+  line-height: var(--note-line);
   margin: 0;
   padding: .25rem .5rem;
   background: var(--bg);
