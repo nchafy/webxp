@@ -328,6 +328,11 @@ TEXTLESS_MODIFIERS = ALT | CTRL | META
 #: silently does nothing.
 MENU_KEYS = {
     **Session.KEYS,
+    # The spacebar under the name a page sees. `Session.KEYS` carries it as `"Space"`, which
+    # is the `code`; `event.key` for that key is a single space, so a listener matching `' '`
+    # reads nothing from a press dispatched under the other name. Call it as
+    # `press_key(page, " ", code="Space")`.
+    " ": (32, " "),
     "ArrowLeft": (37, ""),
     "ArrowRight": (39, ""),
     "Home": (36, ""),
@@ -10692,6 +10697,606 @@ def check_fs_persistence(page) -> list[str]:
     return bad
 
 
+# ---------------------------------------------------------------------------
+# The folder view's selecting mode.
+#
+# `folderView` has one caller — `apps/map-challenge/app.mjs` — and it passes none of the
+# select options, so the selecting seam had no caller at all and nothing in this suite
+# touched it. That is how three accessibility defects shipped in it. The suite is the caller
+# now: the fixture below builds both of the widget's modes from the same five items, in a
+# modal layer, and the five checks after it drive them.
+# ---------------------------------------------------------------------------
+
+#: The ids the fixture puts on its own two views, so every read below addresses the widget
+#: this file built and not whichever `.folder-view` the suite has left open.
+#:
+#: Not cosmetic. `apps/map-challenge/app.mjs` renders the same `.folder-items` and
+#: `.folder-item` classes, the fixture is parented over that app's own window, and
+#: `check_map_challenge_folder` reads that window's tiles — so a bare `.folder-item` resolves
+#: to whichever of the two is first in the tree, and a check that measures a different widget
+#: from the one it names reports the wrong verdict about the wrong thing.
+FOLDER_PROBE = "#folder-probe"
+FOLDER_PLAIN = "#folder-probe-plain"
+
+FOLDER_LOG = "window.__folderLog"
+
+#: Where the one disabled item sits among the five, and what it refuses with.
+#:
+#: In the middle, so the arrows cross it rather than stopping at it, and so neither end of
+#: the list is the refused one. Five items because three is the floor at which one tab stop
+#: can be told from one stop per tile.
+FOLDER_REFUSED = 2
+FOLDER_HINT = "Not a text file."
+FOLDER_NAMES = ("Alpha", "Bravo", "Charlie", "Delta", "Echo")
+
+FOLDER_BUILD = """
+(async () => {
+  const { folderView } = await import('/src/widgets.mjs');
+  window.__folderLog = [];
+  const say = (what) => window.__folderLog.push(what);
+  // The host window. `map-challenge` and not a window of the probe's own, because it is the
+  // one app that declares `/src/folder.css` in its `styles`: the sheet under test is linked
+  // the way a folder app links it rather than by the harness. It is a singleton, so this
+  // either takes the window over or opens the only one there is.
+  const win = await window.webxp.launch('map-challenge');
+  // Bigger than the app declares, and raised: the checks below aim a real pointer at real
+  // tiles, so every tile has to be laid out and nothing may be over it. The teardown closes
+  // this window rather than putting the size back.
+  win.sizeTo(720, 560);
+  window.webxp.focus(win);
+  const spec = (name, extra) => Object.assign(
+    { name, icon: 'document', onOpen: () => say(`open:${name}`) }, extra || {});
+  const items = () => [
+    spec('Alpha'), spec('Bravo'),
+    spec('Charlie', { disabled: true, hint: %(hint)s }),
+    spec('Delta'), spec('Echo'),
+  ];
+  // `places` is not decoration either. `.folder-view` is a two-column grid and the icons are
+  // the second column, so a view with no task pane puts its icons in the 11.5rem one.
+  const pane = () => ([{ name: 'Up one level', icon: 'folder', onOpen: () => say('place') }]);
+  const picking = folderView({
+    items: items(),
+    places: pane(),
+    select: 'one',
+    onSelect: (item, index) => say(`select:${item.name}:${index}`),
+  });
+  picking.id = 'folder-probe';
+  // The same five items with the one knob omitted, so every claim about selecting mode has
+  // the other mode beside it. Without this view, setting the roles unconditionally satisfies
+  // every role assertion the checks make.
+  const plain = folderView({ items: items(), places: pane() });
+  plain.id = 'folder-probe-plain';
+  const wrap = document.createElement('div');
+  wrap.id = 'folder-probe-wrap';
+  // Sized here and not in a stylesheet: this is the harness's box, not the product's, and
+  // `.window-modal` centres whatever it is handed.
+  wrap.style.cssText =
+    'display: grid; grid-template-rows: 1fr 1fr; gap: 8px;'
+    + ' width: 560px; height: 420px; background: #fff';
+  wrap.append(picking, plain);
+  // In a modal layer, which is the context the tab-stop claim is about: `wrapTab` consumes
+  // every Tab inside a layer and cycles its own `FOCUSABLE` matches, so inside a dialog the
+  // trap is the tab order and a roving tabindex it cannot see decides nothing.
+  win.showModal(wrap);
+  window.__folderWin = win;
+  return { ok: true };
+})()
+""" % {"hint": json.dumps(FOLDER_HINT)}
+
+#: Whether the fixture is still standing, asked of the document rather than of a flag: a flag
+#: survives a page reload and the DOM it describes does not.
+FOLDER_STANDING = """
+(() => {
+  const win = window.__folderWin;
+  const probe = document.querySelector('%s');
+  const plain = document.querySelector('%s');
+  if (!win || win.closed || !probe || !plain || !win.el.contains(probe)) return null;
+  return { id: win.id,
+    tiles: probe.querySelectorAll('.folder-item').length,
+    plainTiles: plain.querySelectorAll('.folder-item').length };
+})()
+""" % (FOLDER_PROBE, FOLDER_PLAIN)
+
+
+def folder_fixture(page) -> None:
+    """Build the two folder views if they are not already standing, and raise their window.
+
+    Raises rather than returning a problem list: a check that could not build what it is
+    pointed at has measured nothing.
+    """
+    standing = page.evaluate(FOLDER_STANDING)
+    if not standing or standing["tiles"] != 5 or standing["plainTiles"] != 5:
+        # Runnable alone: on a fresh page `window.webxp` is not there yet, and the fixture's
+        # own `launch` would read it off undefined.
+        wait_for_apps(page)
+        built = page.evaluate(FOLDER_BUILD, await_promise=True)
+        if not built or not built.get("ok"):
+            raise HarnessError(f"the folder fixture did not build: {built!r}")
+        time.sleep(SETTLE_S + 0.3)
+        standing = page.evaluate(FOLDER_STANDING)
+        if not standing or standing["tiles"] != 5 or standing["plainTiles"] != 5:
+            raise HarnessError(f"the folder fixture built but is not in the document: {standing!r}")
+    # Raised every time, not only on the build. A real press is aimed at a point, and a
+    # window another check left on top of this one would take it.
+    page.evaluate(
+        "(() => { window.webxp.focus(window.__folderWin); return true; })()"
+    )
+    time.sleep(0.1)
+
+
+#: One read of both views: the roles, the selection, the refusal, and the stops.
+FOLDER_STATE = """
+(() => {
+  const read = (selector) => {
+    const root = document.querySelector(selector);
+    if (!root) return null;
+    const list = root.querySelector('.folder-items');
+    const tiles = [...root.querySelectorAll('.folder-item')];
+    const note = root.querySelector('.folder-note');
+    return {
+      listRole: list ? list.getAttribute('role') : 'NO-LIST',
+      multi: list ? list.getAttribute('aria-multiselectable') : null,
+      roles: tiles.map((t) => t.getAttribute('role')),
+      selected: tiles.map((t) => t.getAttribute('aria-selected')),
+      refused: tiles.map((t) => t.getAttribute('aria-disabled')),
+      disabled: tiles.map((t) => t.disabled),
+      titles: tiles.map((t) => t.getAttribute('title')),
+      stops: tiles.map((t) => t.tabIndex),
+      names: tiles.map((t) => t.textContent),
+      notes: root.querySelectorAll('.folder-note').length,
+      noteRole: note ? note.getAttribute('role') : null,
+      noteText: note ? note.textContent : null,
+    };
+  };
+  return { picking: read('%s'), plain: read('%s') };
+})()
+""" % (FOLDER_PROBE, FOLDER_PLAIN)
+
+
+def folder_state(page) -> tuple[dict, dict]:
+    """Both views' state, with the absence of either reported as a harness failure."""
+    state = page.evaluate(FOLDER_STATE)
+    if not state or not state["picking"] or not state["plain"]:
+        raise HarnessError(f"folder view: the fixture's views are not readable: {state!r}")
+    return state["picking"], state["plain"]
+
+
+def folder_focus(page, index: int) -> None:
+    """Put the keyboard on one tile of the selecting view, and say so if it did not take.
+
+    By script, and only ever to *position* the keyboard: what the checks assert is what a real
+    press then does. Focus cannot be taken by clicking here — Chrome on this platform does not
+    focus a button a pointer presses — and `showModal` hands the layer's first stop the
+    keyboard, which is the task pane's link rather than a tile.
+    """
+    landed = page.evaluate(
+        "(() => { const tile = document.querySelectorAll('%s .folder-item')[%d];"
+        " if (!tile) return 'no such tile'; tile.focus();"
+        " return document.activeElement === tile ? '' : (document.activeElement.className"
+        "   || document.activeElement.tagName); })()" % (FOLDER_PROBE, index)
+    )
+    if landed:
+        raise HarnessError(
+            f"folder view: tile {index} would not take the keyboard — it went to {landed!r}"
+        )
+
+
+def folder_click(page, index: int, *, double: bool = False) -> None:
+    """A real press on one tile of the selecting view, aimed at what is actually there.
+
+    The hit test is not decoration: this computes a point and presses it blind, so a window
+    or a dialog over that point gets the press and the result reads as a product failure —
+    "a click did not select" is a true sentence about a click that never arrived.
+    """
+    x, y = centre(page, f"{FOLDER_PROBE} .folder-item", index=index)
+    hit = page.evaluate(
+        "(() => { const el = document.elementFromPoint(%f, %f);"
+        " const tile = el && el.closest ? el.closest('.folder-item') : null;"
+        " if (!tile) return el ? (el.className || el.tagName) : 'nothing';"
+        " const at = [...document.querySelectorAll('%s .folder-item')].indexOf(tile);"
+        " return at === %d ? '' : ('tile ' + at); })()"
+        % (x, y, FOLDER_PROBE, index)
+    )
+    if hit:
+        raise HarnessError(
+            f"folder view: aiming at tile {index} ({FOLDER_NAMES[index]}) at "
+            f"({x:.0f}, {y:.0f}) would press {hit} instead"
+        )
+    if double:
+        double_click(page, x, y)
+    else:
+        click_at(page, x, y)
+
+
+def check_folder_roles(page) -> list[str]:
+    """`folderView` is a listbox when it selects, and a grid of buttons when it does not.
+
+    Both arms are measured on the same five items, because the claim is about the one knob:
+    `role` set unconditionally passes every assertion about the selecting view and fails the
+    plain one, and a `role` nobody sets fails the selecting one. Neither can be satisfied
+    alone.
+
+    What the roles are for: `aria-multiselectable` on a `<ul>` and `aria-selected` on a
+    `<button>` are set on implicit roles that do not support them, so both were ignored — the
+    selection was drawn and nothing said it out loud.
+    """
+    bad = []
+    folder_fixture(page)
+    picking, plain = folder_state(page)
+
+    if list(picking["names"]) != list(FOLDER_NAMES):
+        return bad + [
+            f"folder view: the probe lists {picking['names']}, want {list(FOLDER_NAMES)} — "
+            "the fixture is not the five items the assertions below are written about"
+        ]
+    if picking["listRole"] != "listbox":
+        bad.append(
+            f"folder view: the selecting list carries role {picking['listRole']!r}, want "
+            "listbox — `aria-multiselectable` on a <ul>'s implicit `list` role is ignored"
+        )
+    if picking["roles"] != ["option"] * 5:
+        bad.append(
+            f"folder view: tile roles are {picking['roles']}, want option on all five — "
+            "`aria-selected` on a <button>'s implicit role is ignored, so nothing tells a "
+            "screen reader which item is chosen"
+        )
+    if picking["notes"] != 1 or picking["noteRole"] != "status":
+        bad.append(
+            f"folder view: the selecting view has {picking['notes']} notes carrying role "
+            f"{picking['noteRole']!r}, want one with role=status — it is the only thing that "
+            "says why a tile is refused"
+        )
+
+    # The off switch, on the same five items.
+    if plain["listRole"] is not None or any(role is not None for role in plain["roles"]):
+        bad.append(
+            f"folder view: without `select` the list carries role {plain['listRole']!r} and "
+            f"its tiles {plain['roles']} — a grid of launchers is not a listbox, and "
+            "`apps/map-challenge/app.mjs` uses this widget as exactly that"
+        )
+    if any(value is not None for value in plain["selected"]):
+        bad.append(
+            f"folder view: without `select` the tiles carry aria-selected {plain['selected']}"
+        )
+    if plain["notes"]:
+        bad.append(
+            f"folder view: without `select` the view carries {plain['notes']} note elements — "
+            "nothing in that mode refuses anything, so there is nothing to announce"
+        )
+
+    # One tab stop for the whole selecting list, read off the trap that decides it.
+    #
+    # `tile.tabIndex === 0` is a property of the tile, not of the cycle: the modal trap
+    # consumes every Tab and walks its own `FOCUSABLE` list, so inside a dialog the trap *is*
+    # the tab order. The plain view is the control — the same five items, one stop each,
+    # which is correct for a grid of launchers and is what 41 files in a dialog looks like.
+    selector = focusable_selector()
+    trap = page.evaluate(
+        "((sel) => { const win = window.__folderWin;"
+        " const layer = win && win.el.querySelector('.window-modal');"
+        " if (!layer) return null;"
+        " const stops = [...layer.querySelectorAll(sel)];"
+        " const within = (id) => stops.filter((s) => s.closest(id)"
+        "   && s.classList.contains('folder-item')).length;"
+        " return { picking: within(%s), plain: within(%s),"
+        "   notAStop: stops.filter((s) => s.tabIndex === -1).map((s) => s.className) }; })(%s)"
+        % (json.dumps(FOLDER_PROBE), json.dumps(FOLDER_PLAIN), json.dumps(selector))
+    )
+    if trap is None:
+        raise HarnessError("folder view: no modal layer to read the trap's stop list from")
+    if trap["picking"] != 1:
+        bad.append(
+            f"folder view: the modal trap cycles {trap['picking']} of 5 tiles in selecting "
+            "mode, want 1 — the list is one tab stop walked with the arrows, and a stop per "
+            "tile puts a folder's whole contents between whatever precedes it and whatever "
+            "follows"
+        )
+    if trap["plain"] != 4:
+        bad.append(
+            f"folder view: the modal trap cycles {trap['plain']} of the plain view's 5 tiles, "
+            "want 4 — one stop per launcher, with the `disabled` one skipped, is what the "
+            "mode with a live caller does and what the selecting arm is measured against"
+        )
+    if trap["notAStop"]:
+        bad.append(
+            f"folder view: {trap['notAStop']} are in the trap's cycle with tabindex=-1 — the "
+            "trap and the roving tabindex disagree about what Tab does"
+        )
+    return bad
+
+
+def check_folder_tab_route(page) -> list[str]:
+    """Tab into the selecting list lands on its one stop, and Tab again leaves it.
+
+    The press, not the attribute. `check_folder_roles` counts what the trap would cycle;
+    this walks it, so the count cannot be right while the route is wrong.
+    """
+    bad = []
+    folder_fixture(page)
+    # The stop before the list, which is where `showModal` itself puts the keyboard.
+    entered = page.evaluate(
+        "(() => { const link = document.querySelector('%s .pane-link');"
+        " if (!link) return 'no pane link'; link.focus();"
+        " return document.activeElement === link ? '' : 'the pane link refused the keyboard';"
+        " })()" % FOLDER_PROBE
+    )
+    if entered:
+        raise HarnessError(f"folder view: {entered}")
+
+    press_key(page, "Tab")
+    landed = page.evaluate(
+        "(() => { const el = document.activeElement;"
+        " const tile = el && el.closest ? el.closest('%s .folder-item') : null;"
+        " return { onTile: Boolean(tile), stop: tile ? tile.tabIndex : null,"
+        "   where: el ? (el.className || el.tagName) : null }; })()" % FOLDER_PROBE
+    )
+    if not landed["onTile"] or landed["stop"] != 0:
+        bad.append(
+            f"folder view: Tab out of the task pane landed on {landed['where']!r}, want the "
+            "tile carrying tabindex 0 — the roving stop is the list's whole entrance"
+        )
+    press_key(page, "Tab")
+    left = page.evaluate(
+        "(() => { const el = document.activeElement;"
+        " return { inside: Boolean(el && el.closest && el.closest('%s .folder-items')),"
+        "   where: el ? (el.className || el.tagName) : null }; })()" % FOLDER_PROBE
+    )
+    if left["inside"]:
+        bad.append(
+            f"folder view: a second Tab is still inside the list, on {left['where']!r} — five "
+            "items means five presses, and a real folder means forty-one"
+        )
+    return bad
+
+
+def check_folder_selection(page) -> list[str]:
+    """A click selects and does not open, and `aria-selected` follows it one at a time."""
+    bad = []
+    folder_fixture(page)
+    take_log(page, FOLDER_LOG)
+
+    folder_click(page, 1)
+    log = take_log(page, FOLDER_LOG)
+    if log != ["select:Bravo:1"]:
+        bad.append(
+            f"folder view: one click on Bravo logged {log}, want exactly ['select:Bravo:1'] — "
+            "a click selects, and opening on a single click is what the double click is for"
+        )
+    picking, _ = folder_state(page)
+    if picking["selected"] != ["false", "true", "false", "false", "false"]:
+        bad.append(
+            f"folder view: after clicking Bravo aria-selected reads {picking['selected']}, "
+            "want exactly one true, on Bravo"
+        )
+
+    folder_click(page, 3)
+    log = take_log(page, FOLDER_LOG)
+    if log != ["select:Delta:3"]:
+        bad.append(f"folder view: one click on Delta logged {log}, want ['select:Delta:3']")
+    picking, _ = folder_state(page)
+    if picking["selected"] != ["false", "false", "false", "true", "false"]:
+        bad.append(
+            f"folder view: after clicking Delta aria-selected reads {picking['selected']} — a "
+            "single-select list that leaves the old selection behind says two items are chosen"
+        )
+
+    # The double click, which is the pointer's route to opening.
+    folder_click(page, 1, double=True)
+    log = take_log(page, FOLDER_LOG)
+    if "open:Bravo" not in log:
+        bad.append(
+            f"folder view: a double click on Bravo logged {log}, with no open in it — Explorer "
+            "opens on the second press and this widget is modelled on it"
+        )
+    return bad
+
+
+def check_folder_keyboard(page) -> list[str]:
+    """Enter opens, Space opens, and the arrows move the one stop.
+
+    The defect this is the check for: `iconTile` binds the open to `click`, and in selecting
+    mode that handler selects. Enter and Space on a focused button both fire `click` and
+    never `dblclick`, so a reader with no pointer could select every item in a folder and
+    open none of them.
+    """
+    bad = []
+    folder_fixture(page)
+
+    for key, extra in (("Enter", {}), (" ", {"code": "Space"})):
+        folder_focus(page, 4)
+        take_log(page, FOLDER_LOG)
+        press_key(page, key, **extra)
+        log = take_log(page, FOLDER_LOG)
+        name = "Space" if key == " " else key
+        if log != ["open:Echo"]:
+            bad.append(
+                f"folder view: {name} on Echo logged {log}, want exactly ['open:Echo'] — an "
+                "open and nothing else, since a selection beside it means Blink's own "
+                "activation still reached the click handler"
+            )
+
+    # The arrows, which are what a single tab stop costs and what it buys.
+    folder_focus(page, 0)
+    take_log(page, FOLDER_LOG)
+    press_key(page, "ArrowRight")
+    moved = page.evaluate(
+        "(() => { const tiles = [...document.querySelectorAll('%s .folder-item')];"
+        " return { at: tiles.indexOf(document.activeElement),"
+        "   stops: tiles.map((t) => t.tabIndex) }; })()" % FOLDER_PROBE
+    )
+    if moved["at"] != 1 or moved["stops"] != [-1, 0, -1, -1, -1]:
+        bad.append(
+            f"folder view: ArrowRight from Alpha left the keyboard on tile {moved['at']} with "
+            f"stops {moved['stops']}, want tile 1 holding the only 0 — a stop that does not "
+            "move is a list Tab enters at the top however far the reader has walked"
+        )
+    if take_log(page, FOLDER_LOG) != ["select:Bravo:1"]:
+        bad.append(
+            "folder view: arrowing onto Bravo did not select it — selection follows focus in "
+            "a single-select listbox, and it is the whole route for a reader with no pointer"
+        )
+
+    press_key(page, "End")
+    at_end = page.evaluate(
+        "(() => { const tiles = [...document.querySelectorAll('%s .folder-item')];"
+        " return tiles.indexOf(document.activeElement); })()" % FOLDER_PROBE
+    )
+    if at_end != 4:
+        bad.append(f"folder view: End left the keyboard on tile {at_end}, want the last one")
+    press_key(page, "Home")
+    at_home = page.evaluate(
+        "(() => { const tiles = [...document.querySelectorAll('%s .folder-item')];"
+        " return tiles.indexOf(document.activeElement); })()" % FOLDER_PROBE
+    )
+    if at_home != 0:
+        bad.append(f"folder view: Home left the keyboard on tile {at_home}, want the first one")
+    return bad
+
+
+def check_folder_refusals(page) -> list[str]:
+    """A refused tile is reachable, says why, and opens nothing.
+
+    The defect this is the check for: the refusal was `tile.disabled = true` with its reason
+    in `tile.title`. `FOCUSABLE` in `src/window.mjs` excludes `button[disabled]`, so the tile
+    dropped out of the tab order altogether and the only route to the reason was a pointer
+    hovering it. A reader with neither saw a greyed icon and was told nothing.
+    """
+    bad = []
+    folder_fixture(page)
+    picking, plain = folder_state(page)
+
+    want_refused = [None] * 5
+    want_refused[FOLDER_REFUSED] = "true"
+    if picking["refused"] != want_refused:
+        bad.append(
+            f"folder view: aria-disabled reads {picking['refused']}, want true on Charlie "
+            "alone"
+        )
+    if any(picking["disabled"]):
+        bad.append(
+            f"folder view: the selecting tiles' `disabled` reads {picking['disabled']} — a "
+            "disabled button is not a focus stop, so the refusal cannot be arrived at or heard"
+        )
+    if any(title is not None for title in picking["titles"]):
+        bad.append(
+            f"folder view: the selecting tiles carry titles {picking['titles']} — a tooltip is "
+            "a pointer's route to the reason and it is the only one this used to have"
+        )
+    # The other mode is unchanged: there a refused launcher is a `disabled` button with its
+    # hint in a tooltip, which is what it was before any of this.
+    if plain["disabled"] != [i == FOLDER_REFUSED for i in range(5)]:
+        bad.append(
+            f"folder view: without `select` the tiles' `disabled` reads {plain['disabled']}, "
+            f"want it on Charlie alone"
+        )
+    if plain["titles"][FOLDER_REFUSED] != FOLDER_HINT:
+        bad.append(
+            f"folder view: without `select` Charlie's title is "
+            f"{plain['titles'][FOLDER_REFUSED]!r}, want the hint"
+        )
+
+    # Reachable: the arrows walk onto it, and the keyboard stays there.
+    folder_focus(page, FOLDER_REFUSED - 1)
+    take_log(page, FOLDER_LOG)
+    press_key(page, "ArrowRight")
+    arrived = page.evaluate(
+        "(() => { const tiles = [...document.querySelectorAll('%s .folder-item')];"
+        " const note = document.querySelector('%s .folder-note');"
+        " return { at: tiles.indexOf(document.activeElement),"
+        "   stop: tiles[%d].tabIndex, note: note ? note.textContent : null }; })()"
+        % (FOLDER_PROBE, FOLDER_PROBE, FOLDER_REFUSED)
+    )
+    if arrived["at"] != FOLDER_REFUSED or arrived["stop"] != 0:
+        bad.append(
+            f"folder view: arrowing onto the refused tile left the keyboard on tile "
+            f"{arrived['at']} with the refused tile's stop at {arrived['stop']} — a refusal "
+            "nothing can arrive at is a refusal nobody is told about"
+        )
+    if FOLDER_HINT not in (arrived["note"] or ""):
+        bad.append(
+            f"folder view: arriving at the refused tile left the note reading "
+            f"{arrived['note']!r}, want the hint in it — `role=status` on that note is what "
+            "says the reason out loud"
+        )
+    if take_log(page, FOLDER_LOG) != []:
+        bad.append("folder view: arriving at the refused tile selected it")
+
+    # And it opens nothing, by either route.
+    take_log(page, FOLDER_LOG)
+    press_key(page, "Enter")
+    press_key(page, " ", code="Space")
+    folder_click(page, FOLDER_REFUSED, double=True)
+    log = take_log(page, FOLDER_LOG)
+    if log:
+        bad.append(
+            f"folder view: Enter, Space and a double click on the refused tile logged {log}, "
+            "want nothing — it is shown and refused, not shown and openable"
+        )
+    refused_note = page.evaluate(
+        "(() => { const note = document.querySelector('%s .folder-note');"
+        " return note ? note.textContent : null; })()" % FOLDER_PROBE
+    )
+    if FOLDER_HINT not in (refused_note or ""):
+        bad.append(
+            f"folder view: after three refused presses the note reads {refused_note!r}, want "
+            "the hint — a press that appears to do nothing is how this defect read"
+        )
+    return bad
+
+
+def check_folder_handed_back(page) -> list[str]:
+    """The window the folder fixture took over is handed back, and the fixture is gone.
+
+    A check of its own rather than a `finally` in the last folder check, because the loop in
+    `main` catches a raise per check and carries on: a teardown that hangs off one check is
+    skipped by exactly the failure that makes it necessary.
+
+    What there is to put back: the fixture launches `map-challenge`, resizes it, and puts a
+    modal layer over it — which makes the window's client area `inert`. Left standing, that is
+    a folder window nothing can click and two stray `.folder-view`s answering the selectors
+    `check_map_challenge_folder` reads.
+
+    Builds the fixture first, which looks redundant after four checks that already have and
+    is not. Run alone — `--only "folder view handed back"` — there is no fixture, so every
+    assertion below would pass on an absence.
+    """
+    bad = []
+    folder_fixture(page)
+    released = page.evaluate(
+        "(() => { const win = window.__folderWin; win.closeModal();"
+        " return { inert: win.bodyEl.inert, layers: win.el.querySelectorAll('.window-modal')"
+        "   .length, probes: document.querySelectorAll('%s, %s').length }; })()"
+        % (FOLDER_PROBE, FOLDER_PLAIN)
+    )
+    if released["inert"] or released["layers"] or released["probes"]:
+        bad.append(
+            f"folder view: closing the modal left {released} — a window whose body is still "
+            "`inert` answers neither the pointer nor the keyboard"
+        )
+    page.evaluate(
+        "(() => { const win = window.__folderWin;"
+        " delete window.__folderWin; delete window.__folderLog;"
+        " if (win && !win.closed) win.close(); return true; })()"
+    )
+    time.sleep(SETTLE_S + 0.3)
+    state = page.evaluate(
+        "(() => ({ wins: window.webxp.windows.filter((w) => w.programId === 'map-challenge')"
+        "   .length,"
+        "   views: document.querySelectorAll('.folder-view').length,"
+        "   left: ['__folderWin', '__folderLog'].filter((name) => name in window) }))()"
+    )
+    if state["wins"]:
+        bad.append(f"folder view: {state['wins']} map-challenge windows after the teardown, want 0")
+    if state["views"]:
+        bad.append(
+            f"folder view: {state['views']} folder views still in the document — a stray one "
+            "answers the selectors `check_map_challenge_folder` reads"
+        )
+    if state["left"]:
+        bad.append(f"folder view: {state['left']} are still on `window` after the teardown")
+    return bad
+
+
 #: The checks `--prove-failure` knows how to invert.
 #:
 #: Each takes `invert=True` and asserts the opposite of its usual claim, so a run with the
@@ -10827,6 +11432,17 @@ CHECKS = (
     ("notepad picker", check_notepad_picker),
     ("launch arguments", check_launch_arguments),
     ("filesystem persists", check_fs_persistence),
+    # The folder view's selecting mode, which has no caller in the tree: this group builds
+    # its own and is the caller. Here because the fixture opens a window and puts a modal
+    # over it, and `scaffold a new app` below reloads the page — so anything the teardown
+    # misses is cleared by something other than its own cleanup. Order within the group is
+    # free except for the last, which takes the fixture down.
+    ("folder view roles", check_folder_roles),
+    ("folder view tab route", check_folder_tab_route),
+    ("folder view selection", check_folder_selection),
+    ("folder view keyboard", check_folder_keyboard),
+    ("folder view refusals", check_folder_refusals),
+    ("folder view handed back", check_folder_handed_back),
     # Last: it writes a folder and reloads the page, so it hands the desktop back fresh.
     ("scaffold a new app", check_scaffold),
 )
