@@ -1,0 +1,239 @@
+/* Luna's scrollbar.
+ *
+ * Every window with content longer than its client area shows a scrollbar, so an unskinned
+ * one is the most visible seam in the illusion: XP chrome down to the resize grip, and a
+ * macOS or Chrome overlay bar sliding over the top of it.
+ *
+ * Nothing else in this tree styles a scrollbar. `apps/explorer/app.css` and
+ * `shared/map/map.css` reserve the gutter with `scrollbar-gutter: stable` and set nothing
+ * else, so this file is the only owner of the skin and the only cascade layer it sits in.
+ * The selectors are pseudo-elements with no class, which keeps their specificity at zero
+ * and lets an app override the bar in its own window without `!important` — an app sheet
+ * scoped under `.app-<id>` already outranks these by a class.
+ *
+ * It stops at the document boundary. An app that mounts an `<iframe>` gets the host
+ * browser's scrollbar inside it, because a stylesheet does not cross into another document
+ * and a cross-origin one cannot be styled from here at all.
+ *
+ * TWO ENGINES, TWO MECHANISMS
+ * ---------------------------
+ * `::-webkit-scrollbar` and its parts are Chromium and Safari only; `scrollbar-width` and
+ * `scrollbar-color` are the standard properties and the only route in Firefox. They are not
+ * additive, and the `@supports` guard at the foot of this file is load-bearing, not
+ * defensive: in Chromium, specifying either standard property on an element switches that
+ * element to the standard scrollbar and its `::-webkit-scrollbar` rules stop applying.
+ * Declaring them unguarded here would delete this whole skin in the engine that can draw it.
+ * Measured, not assumed: a scroller reserves 17px with the guard in place and 15px — the
+ * standard width — the moment `scrollbar-color` is declared on the root without it.
+ *
+ * NO BITMAPS, AND NO TRACED ONES
+ * ------------------------------
+ * The four arrows are hand-drawn triangles — one `<path>` each, written here. Everything
+ * else below is a gradient. Nothing is an image file and nothing is a traced one.
+ *
+ * The look was read off win32.run (MIT, © ducbao414), whose scrollbar is at
+ * https://github.com/ducbao414/win32.run/blob/27170afcac956eb6d7c616d2ccb3433c2f41aff2/src/app.css#L65-L117
+ * — seven of the colours here are its samples of XP's bitmaps. Its declarations are not:
+ * every track, face, grip and arrow there is a data URI with one `stroke` run per row of
+ * pixels, which is a re-encoding of a Microsoft bitmap rather than a drawing of one, and
+ * `LICENSE` says this project contains no Microsoft files. That is the reason these are
+ * gradients, and the reason `LICENSE` carries no stanza for this file: nothing copyrightable
+ * was copied, and a notice claiming otherwise would be as wrong as a missing one.
+ *
+ * CONTRAST
+ * --------
+ * A scrollbar is an interactive control, so SC 1.4.11 wants 3:1 between it and what it sits
+ * on. Luna's thumb is #c8d6fb on a near-white track: 1.44:1, and a 1px white border around
+ * it. That is another place Luna fails and it is corrected the same way `--muted` and
+ * `--accent` are in `theme.css` — the white border becomes `--sb-edge`, XP's own slate,
+ * which is 6.18:1 on the light end of the track and 5.32:1 on the dark end. Every ratio in
+ * this file came out of `contrast()` in `scripts/check.py`.
+ *
+ * NOT VISIBLE TO THIS REPO'S SCREENSHOTS
+ * --------------------------------------
+ * `scripts/cdp.py` launches Chrome with `--hide-scrollbars`, so the suite's browser paints
+ * no scrollbar at all: a scroller reserves 0px there instead of 17, and no file under
+ * `screenshots/` contains a scrollbar. Anyone changing this file has to look at it in a
+ * browser without that flag; the suite can say the rules arrived and cannot say what they
+ * drew.
+ */
+
+:root {
+  /* These live here, not in `theme.css`, because nothing outside this file uses them: the
+     scrollbar palette is a closed family that no other control shares. A token that escapes
+     this file belongs in the theme instead. */
+
+  /* XP's `SM_CXVSCROLL` at 96 DPI, and the width every XP screenshot measures. */
+  --sb-size: 17px;
+
+  /* The track: a ramp across the bar's short axis, steep for the first fifth then flat. */
+  --sb-track-edge: #eeede5;
+  --sb-track-mid: #f7f6f1;
+  --sb-track-face: #fefefb;
+
+  /* The thumb, and the arrow buttons, which wear the same face in Luna. */
+  --sb-thumb-lit: #eef4fe;
+  --sb-thumb-face: #c8d6fb;
+  --sb-thumb-shade: #bad1fc;
+  /* The grip ridges. Decoration: they say nothing the thumb's own outline does not, so this
+     one stays at Luna's value (1.49:1 on the thumb) and `--sb-edge` carries identification. */
+  --sb-thumb-grip: #8cb0f8;
+
+  /* The outline of anything draggable or clickable on the bar, and the arrow glyphs. One
+     value for thumb border, button border and glyph fill, because they are one fact: the
+     edge of a control. 6.18:1 on `--sb-track-face`, 5.32:1 on `--sb-track-edge`. */
+  --sb-edge: #4d6185;
+
+  /* Composed once and used by both the thumb and the buttons on that axis. */
+  --sb-face-v: linear-gradient(
+    to right,
+    var(--sb-thumb-lit),
+    var(--sb-thumb-face) 45%,
+    var(--sb-thumb-shade)
+  );
+  --sb-face-h: linear-gradient(
+    to bottom,
+    var(--sb-thumb-lit),
+    var(--sb-thumb-face) 45%,
+    var(--sb-thumb-shade)
+  );
+
+  /* Four ridges in an 8px tile, sized and centred by the rules that use it. */
+  --sb-grip-v: repeating-linear-gradient(
+    to bottom,
+    var(--sb-thumb-grip) 0 1px,
+    transparent 1px 2px
+  );
+  --sb-grip-h: repeating-linear-gradient(
+    to right,
+    var(--sb-thumb-grip) 0 1px,
+    transparent 1px 2px
+  );
+
+  /* The arrow glyphs. A `url()` string cannot read a custom property, so `--sb-edge`'s value
+     is spelled out in each of the four — the one duplication in this file that CSS has no
+     way to remove. Five spellings of one colour: changing `--sb-edge` means changing all
+     five, and missing one leaves that arrow a different colour from its three neighbours. */
+  --sb-arrow-up: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='4'%3E%3Cpath fill='%234d6185' d='M3.5 0 7 4H0z'/%3E%3C/svg%3E");
+  --sb-arrow-down: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='4'%3E%3Cpath fill='%234d6185' d='M3.5 4 0 0h7z'/%3E%3C/svg%3E");
+  --sb-arrow-left: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='7'%3E%3Cpath fill='%234d6185' d='M0 3.5 4 0v7z'/%3E%3C/svg%3E");
+  --sb-arrow-right: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='7'%3E%3Cpath fill='%234d6185' d='M4 3.5 0 7V0z'/%3E%3C/svg%3E");
+}
+
+/* ---------------------------------------------------------------------------
+   Chromium and Safari.
+   --------------------------------------------------------------------------- */
+
+::-webkit-scrollbar {
+  width: var(--sb-size);
+  height: var(--sb-size);
+}
+
+/* Where a vertical and a horizontal bar meet. The control face, which is what XP put there
+   and what `theme.css` already names. */
+::-webkit-scrollbar-corner {
+  background: var(--face);
+}
+
+::-webkit-scrollbar-track:vertical {
+  background: linear-gradient(
+    to right,
+    var(--sb-track-edge),
+    var(--sb-track-mid) 18%,
+    var(--sb-track-face)
+  );
+}
+::-webkit-scrollbar-track:horizontal {
+  background: linear-gradient(
+    to bottom,
+    var(--sb-track-edge),
+    var(--sb-track-mid) 18%,
+    var(--sb-track-face)
+  );
+}
+
+::-webkit-scrollbar-thumb {
+  border: 1px solid var(--sb-edge);
+  border-radius: 2px;
+  /* Two layers on both axes: the grip tile, then the face. `background-repeat` and
+     `background-size` are per-layer lists in the same order, which is what confines the
+     ridges to one 8px tile in the middle of a thumb of any length. */
+  background-repeat: no-repeat, repeat;
+  background-position: center, 0 0;
+}
+::-webkit-scrollbar-thumb:vertical {
+  background-image: var(--sb-grip-v), var(--sb-face-v);
+  background-size: 7px 8px, auto;
+}
+::-webkit-scrollbar-thumb:horizontal {
+  background-image: var(--sb-grip-h), var(--sb-face-h);
+  background-size: 8px 7px, auto;
+}
+
+/* The arrow buttons. `display: block` is what makes them exist: a size alone is not enough,
+   and deleting that one declaration removes all four buttons from both bars — measured, by
+   deleting it and looking. A width and a height are not the switch.
+
+   Chromium offers four slots XP never used: `:start:increment` and `:end:decrement` on each
+   axis, the Mac double-arrow positions. Naming only the four XP has leaves those four
+   absent — one up arrow and one down arrow per vertical bar, looked at rather than inferred.
+
+   Every selector here carries all three parts (`:vertical:start:decrement`) so no two rules
+   in this file differ only in specificity. `docs/apps.md` has the table of collisions this
+   project has already paid for; none of them is worth repeating on a scrollbar. */
+::-webkit-scrollbar-button:vertical:start:decrement,
+::-webkit-scrollbar-button:vertical:end:increment,
+::-webkit-scrollbar-button:horizontal:start:decrement,
+::-webkit-scrollbar-button:horizontal:end:increment {
+  display: block;
+  width: var(--sb-size);
+  height: var(--sb-size);
+  border: 1px solid var(--sb-edge);
+  border-radius: 2px;
+  background-repeat: no-repeat, repeat;
+  background-position: center, 0 0;
+}
+::-webkit-scrollbar-button:vertical:start:decrement {
+  background-image: var(--sb-arrow-up), var(--sb-face-v);
+}
+::-webkit-scrollbar-button:vertical:end:increment {
+  background-image: var(--sb-arrow-down), var(--sb-face-v);
+}
+::-webkit-scrollbar-button:horizontal:start:decrement {
+  background-image: var(--sb-arrow-left), var(--sb-face-h);
+}
+::-webkit-scrollbar-button:horizontal:end:increment {
+  background-image: var(--sb-arrow-right), var(--sb-face-h);
+}
+
+/* ---------------------------------------------------------------------------
+   Firefox.
+   --------------------------------------------------------------------------- */
+
+/* `scrollbar-color` is inherited, so one declaration on the root reaches every scroller in
+   the document, including app content mounted later.
+
+   The guard asks whether this engine has the pseudo-element, not which engine it is. In
+   Chromium and Safari it is true and this block is skipped, which is the point: see the
+   header. In Firefox it is false and these two properties are the whole skin — Firefox draws
+   a flat thumb with no border and no arrows, so the thumb colour itself has to carry SC
+   1.4.11 rather than an outline. `#5a7ab5` on `#f4f2ec` is 3.84:1. It is darker than Luna's
+   `#c8d6fb`, which is the same correction the Chromium side makes with `--sb-edge`, arrived
+   at differently because Firefox gives nothing to put an edge on.
+
+   Unverified: there is no Firefox on this harness, so neither the guard's value nor the
+   colours were seen there. If Firefox does parse `::-webkit-scrollbar` for compatibility the
+   guard is true and this block never applies, leaving Firefox the host bar — degraded, not
+   broken. What is measured is the Chromium half: the guard is true there, and an unguarded
+   `scrollbar-color` takes the bar from 17px to the standard 15px. */
+@supports not selector(::-webkit-scrollbar) {
+  :root {
+    /* Declared here rather than beside the rest: these two are the Firefox skin and have no
+       meaning in an engine that never reads this block. */
+    --sb-flat-thumb: #5a7ab5;
+    --sb-flat-track: #f4f2ec;
+
+    scrollbar-width: auto;
+    scrollbar-color: var(--sb-flat-thumb) var(--sb-flat-track);
+  }
+}

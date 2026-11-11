@@ -902,6 +902,10 @@ window.__wxColours = (css) => {
 #: WCAG 2.2 SC 1.4.3 for text below 18.66px bold / 24px regular.
 AA_NORMAL = 4.5
 
+#: WCAG 2.2 SC 1.4.11, for the boundary of a control against what it sits on. `AA_NORMAL`
+#: above it is SC 1.4.3, for text.
+AA_NON_TEXT = 3.0
+
 
 def rgb_stops(values) -> list[tuple[int, int, int]]:
     """Opaque colours out of `__wxColours`' normalised output.
@@ -2906,6 +2910,244 @@ def check_app_styles(page) -> list[str]:
         )
     if "app-notepad" in probe_result["readmeClass"]:
         bad.append("app styles: another app's window carries the app-notepad class")
+    return bad
+
+
+#: XP's `SM_CXVSCROLL` at 96 DPI, which `src/scrollbar.css` declares as `--sb-size`.
+SCROLLBAR_PX = 17
+
+#: The scroller the skin is measured on, named rather than discovered.
+#:
+#: `windows.find(w => w.bodyEl.scrollHeight > w.bodyEl.clientHeight)` is what this probe asked
+#: first, and it is the wrong question: it answers with whichever window happens to overflow,
+#: so the check silently retargeted to the `windows` app and went on reporting ok while Read
+#: me — the window the docstring names and the one the skin was tuned against — had stopped
+#: overflowing. A check that picks its own subject cannot fail by losing it.
+SCROLLBAR_WINDOW = "readme"
+
+SCROLLBAR_PROBE = """
+((wanted) => {
+  const root = getComputedStyle(document.documentElement);
+  const token = (name) => root.getPropertyValue(name).trim();
+  const links = [...document.querySelectorAll('link[rel=stylesheet]')]
+    .filter((l) => new URL(l.href).pathname === '/src/scrollbar.css');
+  const sheet = [...document.styleSheets]
+    .find((s) => (s.href || '').endsWith('/src/scrollbar.css'));
+  let rules = 0;
+  try { rules = sheet ? sheet.cssRules.length : 0; } catch (e) { rules = 'UNREADABLE:' + e.name; }
+  const win = (window.webxp.windows || []).find((w) => w.programId === wanted);
+  const el = win ? win.bodyEl : null;
+  const names = ['--sb-size', '--sb-edge', '--sb-track-edge', '--sb-track-face',
+                 '--sb-thumb-face', '--sb-thumb-lit', '--sb-thumb-shade', '--sb-thumb-grip'];
+  return {
+    links: links.length,
+    rules,
+    found: Boolean(win),
+    overflows: el ? el.scrollHeight > el.clientHeight : null,
+    scrollHeight: el ? el.scrollHeight : null,
+    clientHeight: el ? el.clientHeight : null,
+    reserved: el ? el.offsetWidth - el.clientWidth : null,
+    barWidth: el ? getComputedStyle(el, '::-webkit-scrollbar').width : null,
+    thumbEdge: el ? getComputedStyle(el, '::-webkit-scrollbar-thumb').borderTopColor : null,
+    supportsPseudo: CSS.supports('selector(::-webkit-scrollbar)'),
+    tokens: Object.fromEntries(names.map((n) => [n, token(n)])),
+  };
+})(WANTED)
+"""
+
+
+def check_scrollbar_skin(page, *, invert: bool = False) -> list[str]:
+    """The XP scrollbar is linked, reaches a real scroller, and keeps its contrast.
+
+    Nothing else in the tree styles a scrollbar, so `src/scrollbar.css` is the whole skin and
+    a dropped `<link>` in `index.html` silently restores the host browser's bar in every
+    window with content — the most visible seam available, and invisible to every other check
+    here.
+
+    WHAT THIS DOES NOT PROVE
+    ------------------------
+    It does not prove the bar paints. `scripts/cdp.py` launches Chrome with
+    `--hide-scrollbars`, so no scrollbar exists in this run and no screenshot under
+    `screenshots/` contains one: the Read me body reserves 0px rather than 17. With that one
+    flag stripped the same body reserves 17. The flag is read below rather than assumed, so
+    the day it goes the 17px assertion starts running in place of the 0px one and this check
+    cannot go on reporting ok over a harness that stopped looking.
+
+    `getComputedStyle(el, '::-webkit-scrollbar').width` resolves the declaration whether or
+    not the pseudo-element is live, so it is asserted as "the rule reached this element",
+    which is all it is. The thumb's border colour is read the same way and is the value SC
+    1.4.11 rests on, so it is the computed colour that goes into the ratio rather than the
+    token text.
+
+    Invertible on the two readings that would be zero if the sheet had not arrived: the
+    `<link>` count and the width the rule computes to on the element a reader scrolls.
+    """
+    bad = []
+    launch(page, SCROLLBAR_WINDOW)
+    got = page.evaluate(SCROLLBAR_PROBE.replace("WANTED", json.dumps(SCROLLBAR_WINDOW)))
+
+    if invert:
+        # --prove-failure. The sheet is linked once and its width reached the scroller, so
+        # asserting that it did neither must fail.
+        if got["links"] == 1 and got["barWidth"] == f"{SCROLLBAR_PX}px":
+            bad.append(
+                f"scrollbar skin[--prove-failure]: /src/scrollbar.css is linked "
+                f"{got['links']} time(s) and computes to {got['barWidth']} on the "
+                f"{SCROLLBAR_WINDOW} body as it should — the inverted assertion failed, so "
+                "this check can fail"
+            )
+        return bad
+
+    if got["links"] != 1:
+        bad.append(
+            f"scrollbar skin: index.html has {got['links']} links to /src/scrollbar.css, want "
+            "exactly 1 — nothing else in the tree styles a scrollbar, so at 0 every window "
+            "with content shows the host browser's bar"
+        )
+    if not isinstance(got["rules"], int) or got["rules"] < 1:
+        bad.append(
+            f"scrollbar skin: src/scrollbar.css contributed {got['rules']!r} rules — the "
+            "stylesheet 404'd, was blocked, or parsed to nothing"
+        )
+    # Named, both times. Either absence is this check losing its subject, and the skin then
+    # goes unmeasured — which must be a failure and not a quiet retarget.
+    if not got["found"]:
+        return bad + [
+            f"scrollbar skin: no {SCROLLBAR_WINDOW} window is open, so the skin was measured "
+            "on nothing"
+        ]
+    if not got["overflows"]:
+        return bad + [
+            f"scrollbar skin: the {SCROLLBAR_WINDOW} window holds {got['scrollHeight']}px of "
+            f"content in {got['clientHeight']}px and so has nothing to scroll — this check "
+            "needs a real scroller, and silently measuring some other window's would be worse"
+        ]
+    where = f"the {SCROLLBAR_WINDOW} window body"
+    if got["barWidth"] != f"{SCROLLBAR_PX}px":
+        bad.append(
+            f"scrollbar skin: ::-webkit-scrollbar width on {where} computes to "
+            f"{got['barWidth']!r}, want '{SCROLLBAR_PX}px' — the rule did not reach the "
+            "element the reader scrolls"
+        )
+
+    # The harness's own blind spot, stated rather than papered over.
+    hidden = "--hide-scrollbars" in (REPO_ROOT / "scripts" / "cdp.py").read_text(encoding="utf-8")
+    if hidden and got["reserved"] != 0:
+        bad.append(
+            f"scrollbar skin: {where} reserves {got['reserved']}px for a scrollbar while "
+            "scripts/cdp.py still passes --hide-scrollbars, which should leave 0 — the two "
+            "disagree, so one of them is not what this check thinks it is"
+        )
+    if not hidden and got["reserved"] != SCROLLBAR_PX:
+        bad.append(
+            f"scrollbar skin: {where} reserves {got['reserved']}px, want {SCROLLBAR_PX} — "
+            "scripts/cdp.py no longer hides scrollbars, so the skin is observable now and it "
+            "is not laying out at XP's width"
+        )
+
+    tokens = got["tokens"]
+    missing = sorted(name for name, value in tokens.items() if not value)
+    if missing:
+        bad.append(
+            f"scrollbar skin: src/scrollbar.css declares none of {', '.join(missing)} on the "
+            "root — renamed or moved, and every rule reading them falls back to its initial "
+            "value"
+        )
+    if tokens.get("--sb-size") and tokens["--sb-size"] != f"{SCROLLBAR_PX}px":
+        bad.append(
+            f"scrollbar skin: --sb-size is {tokens['--sb-size']!r}, want '{SCROLLBAR_PX}px' — "
+            "XP's SM_CXVSCROLL at 96 DPI"
+        )
+
+    # The correction. Luna's thumb is #c8d6fb inside a white border on a near-white track:
+    # 1.44:1, and the only thing on the bar that says where the control is. The border
+    # carries it instead, measured on the element rather than read out of the token.
+    edge = rgb_stops([got["thumbEdge"]])
+    if not edge:
+        bad.append(
+            f"scrollbar skin: the thumb's border colour on {where} is {got['thumbEdge']!r}, "
+            "which did not parse as a colour — the contrast correction went unmeasured"
+        )
+    for name in ("--sb-track-edge", "--sb-track-face"):
+        track = rgb_stops([tokens.get(name)])
+        if not edge or not track:
+            continue
+        ratio = contrast(edge[0], track[0])
+        if ratio < AA_NON_TEXT:
+            bad.append(
+                f"scrollbar skin: the thumb's border on {name} is {ratio:.2f}:1, under SC "
+                f"1.4.11's {AA_NON_TEXT}:1 — the thumb's outline is the only thing marking "
+                "where the bar is, and Luna's own 1px white border is what this value "
+                "replaced"
+            )
+    thumb = rgb_stops([tokens.get("--sb-thumb-face")])
+    if edge and thumb and contrast(edge[0], thumb[0]) < AA_NON_TEXT:
+        bad.append(
+            f"scrollbar skin: the thumb's border on its own face is "
+            f"{contrast(edge[0], thumb[0]):.2f}:1, under {AA_NON_TEXT}:1 — the outline has "
+            "merged into the thumb it is outlining"
+        )
+
+    source = (REPO_ROOT / "src" / "scrollbar.css").read_text(encoding="utf-8")
+
+    # The one duplication CSS forces: a url() cannot read a custom property, so each arrow
+    # glyph spells --sb-edge's value. Pinned so the five cannot drift apart in silence.
+    declared = re.search(r"--sb-edge:\s*(#[0-9a-fA-F]{3,8})\s*;", source)
+    if not declared:
+        bad.append(
+            "scrollbar skin: src/scrollbar.css no longer declares --sb-edge as a hex literal, "
+            "so the arrow glyphs cannot be compared against it"
+        )
+    else:
+        want = declared.group(1).lower().lstrip("#")
+        glyphs = re.findall(r"--sb-arrow-(\w+):\s*url\(\"([^\"]*)\"\)", source)
+        if len(glyphs) != 4:
+            bad.append(
+                f"scrollbar skin: {len(glyphs)} --sb-arrow-* glyphs in src/scrollbar.css, want "
+                "4 — one per direction, and a missing one leaves that button blank"
+            )
+        for direction, uri in glyphs:
+            fills = [f.lower() for f in re.findall(r"fill='%23([0-9a-fA-F]{3,8})'", uri)]
+            if fills != [want]:
+                bad.append(
+                    f"scrollbar skin: --sb-arrow-{direction} fills with {fills!r} but "
+                    f"--sb-edge is '#{want}' — a url() cannot read a custom property, so "
+                    "these two are hand-matched and have come apart"
+                )
+
+    # `display: block` is what makes the four arrow buttons exist; a size alone leaves the
+    # bar with none. `getComputedStyle` cannot address `:vertical:start:decrement`, so this
+    # is a pin on the spelling in the same shape as `scripts/css_ties.py`'s OUTRANKS
+    # entries, and it is worth having: dropping the declaration removes all four buttons and
+    # changes nothing else any assertion here can see.
+    buttons = re.search(
+        r"::-webkit-scrollbar-button:vertical:start:decrement,.*?\{(.*?)\}", source, re.S
+    )
+    if not buttons:
+        bad.append(
+            "scrollbar skin: src/scrollbar.css has no rule starting "
+            "`::-webkit-scrollbar-button:vertical:start:decrement,` — the shared button rule "
+            "was renamed or split, so the `display: block` pin asserts nothing"
+        )
+    elif "display: block" not in buttons.group(1):
+        bad.append(
+            "scrollbar skin: the shared arrow-button rule does not set `display: block` — a "
+            "width and a height alone leave the bar with no buttons at all, and nothing else "
+            "in this check would notice"
+        )
+
+    # The guard that keeps the standard properties away from Chromium.
+    if not re.search(r"@supports\s+not\s+selector\(::-webkit-scrollbar\)", source):
+        bad.append(
+            "scrollbar skin: src/scrollbar.css has no `@supports not "
+            "selector(::-webkit-scrollbar)` guard — an unguarded scrollbar-color switches "
+            "Chromium to the standard scrollbar and discards every ::-webkit- rule above it"
+        )
+    elif not got["supportsPseudo"]:
+        bad.append(
+            "scrollbar skin: this engine reports no support for selector(::-webkit-scrollbar), "
+            "so the Firefox block is live here and the XP skin is not being drawn at all"
+        )
     return bad
 
 
@@ -6932,6 +7174,7 @@ INVERTIBLE = (
     # page read with no input and no state change, so the control re-runs on every
     # `--prove-failure` rather than being a measurement somebody took once.
     check_file_associations,
+    check_scrollbar_skin,
     # `css_ties.check` carries its own inversion: `invert=True` applies its `REVERTS` to the
     # stylesheet text in memory and asserts against the undone tree. Listing it here runs
     # that control on every `--prove-failure` rather than only when somebody runs the file by
@@ -6956,6 +7199,7 @@ CHECKS = (
     ("file associations", check_file_associations),
     ("autostart", check_autostart),
     ("app styles", check_app_styles),
+    ("scrollbar skin", check_scrollbar_skin),
     ("broken app", check_broken_app),
     ("iframe app", check_iframe_app),
     ("basemap app", check_basemap_app),
