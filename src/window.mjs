@@ -47,6 +47,25 @@ const MIN_VISIBLE = 72;
 //: desktop in a few seconds and fine enough to place a window against an edge.
 const KEY_STEP = 10;
 
+//: What counts as a focus stop: for moving focus into a window, and for keeping it inside a
+//: modal. One definition, because a trap that disagrees with `takeFocus` about what is
+//: focusable lets Tab reach a control the trap will not cycle back to.
+//:
+//: `tabindex="-1"` is excluded from every arm, not only from the bare `[tabindex]` one. A
+//: control carrying it is focusable by script and is deliberately not a tab stop, which is how
+//: a roving tabindex works — one stop for a list, walked with the arrows. Without the exclusion
+//: on the type selectors the trap cycles every row: measured at 14 stops for a 6-file picker,
+//: 5 of them `tabIndex === -1`, so Tab crossed every file between the places column and the
+//: name box and the roving tabindex decided nothing.
+const FOCUSABLE = [
+  'a[href]:not([tabindex="-1"])',
+  'button:not([disabled]):not([tabindex="-1"])',
+  'input:not([disabled]):not([tabindex="-1"])',
+  'select:not([tabindex="-1"])',
+  'textarea:not([tabindex="-1"])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(', ');
+
 //: The cascade. Each new window steps `CASCADE_STEP` down and right of the one before,
 //: starting at `CASCADE_TOP`; `docs/windows.md` states the step. `CASCADE_FOOT` is the room
 //: left below the last lane, so a cascaded window's foot is not under the taskbar, and
@@ -195,6 +214,8 @@ export class XPWindow {
     this.placed = { ...this.box };
     this.drag = null;
     this.closed = false;
+    /** The open modal, or `null`. The one place that answers "is this window waiting". */
+    this.modal = null;
 
     this.build(spec);
     if (!Number.isFinite(spec.x) || !Number.isFinite(spec.y)) this.cascade();
@@ -214,9 +235,10 @@ export class XPWindow {
     const el = document.createElement('section');
     el.className = 'window';
     el.id = this.id;
-    // A labelled `section` is a region, which is the closest honest match: these are not
-    // dialogs — nothing is modal and nothing is waiting on an answer — and ARIA has no
-    // role for "an application window". The name comes from the title, as XP's did.
+    // A labelled `section` is a region, which is the closest honest match: a window is not
+    // itself a dialog, and ARIA has no role for "an application window". The name comes from
+    // the title, as XP's did. A window waiting on an answer carries a `role="dialog"` node
+    // inside it instead — see `showModal` — rather than becoming one.
     el.setAttribute('aria-labelledby', `${this.id}-title`);
     if (!this.resizable) el.classList.add('is-fixed-size');
 
@@ -582,6 +604,11 @@ export class XPWindow {
   async close() {
     if (this.closed) return;
     this.closed = true;
+    // The question goes before the window does. A modal taken down with the frame leaves
+    // whoever asked it awaiting an answer for the rest of the session, which is a hang with
+    // no error and no window to point at. `closed` is already set, so the teardown knows not
+    // to hand focus back to a frame that is leaving.
+    this.closeModal();
     if (this.onClose) this.onClose();
     if (!this.el.hidden) await zoom(this.el, this.host.anchorRect(this), 'out');
     this.el.remove();
@@ -595,10 +622,135 @@ export class XPWindow {
   /** Move keyboard focus into the window: the content if it has any, else the title bar. */
   takeFocus() {
     if (this.el.contains(document.activeElement)) return;
-    const first = this.bodyEl.querySelector(
-      'a[href], button:not([disabled]), input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])',
-    );
+    // A window with a modal up is waiting on an answer, and its body is `inert`: focusing a
+    // control in there is a no-op, so the window would be raised with no focus in it at all.
+    if (this.modal) {
+      focusModal(this.modal.layer);
+      return;
+    }
+    const first = this.bodyEl.querySelector(FOCUSABLE);
     (first || this.bar).focus();
+  }
+
+  /* -------------------------------------------------------------------------
+     The modal layer.
+
+     A dialog belongs to the window that asked the question, not to the desktop: it is
+     parented inside the frame and moves, maximises and minimises with it. XP's dialogs were
+     window-modal — the rest of the shell stayed live — and `inert` on the client area is what
+     makes that real here rather than drawn.
+
+     Two methods, and the layer has exactly one way down. Everything that ends a modal —
+     Escape, a press on one of its own buttons, the window closing — goes through
+     `closeModal`, which is what lets it be the single place `onDismiss` is called from. An
+     owner awaiting an answer therefore cannot be left waiting by a route it did not think of.
+     ------------------------------------------------------------------------- */
+
+  /**
+   * Put a dialog up over this window's content.
+   *
+   * @param {Node} node                      The dialog. `dialogs.mjs` builds the message box.
+   * @param {object} [options]
+   * @param {() => void} [options.onDismiss] Called by `closeModal`, once the layer is down.
+   *        It is how an owner holding a promise resolves it, and it is called on *every*
+   *        route the modal comes down by — so it must be safe to call after the owner has
+   *        already answered. `messageBox` is: it answers once and ignores the rest.
+   * @returns {HTMLElement} The scrim layer the dialog was parented to.
+   */
+  showModal(node, { onDismiss } = {}) {
+    if (this.closed) {
+      // Nothing can press a button on a detached frame, so a dialog here is a question that
+      // can never be answered.
+      throw new Error(`${this.id}: the window is closed, so it has nothing left to ask`);
+    }
+    if (this.modal) {
+      // Not stacked, and not silently replaced: two dialogs over one window have no defined
+      // close order, and the one underneath is a question whose asker is still waiting.
+      throw new Error(
+        `${this.id}: a modal is already open on this window, so a second one has nowhere to go`,
+      );
+    }
+
+    const layer = document.createElement('div');
+    layer.className = 'window-modal';
+    // The layer is the focus holder of last resort, which is what keeps Escape reaching the
+    // handler below when the dialog itself has no focusable control.
+    layer.tabIndex = -1;
+    layer.append(node);
+
+    const onKey = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        // The shell has other Escape handlers — the Start menu's is on the document — and a
+        // dialog is the innermost thing listening, so it answers and nothing else does.
+        event.stopPropagation();
+        this.closeModal();
+        return;
+      }
+      if (event.key === 'Tab') wrapTab(layer, event);
+    };
+    // A press on the scrim is not a route out: the window is waiting on an answer. Focus goes
+    // back into the dialog, which is the feedback win32.run reaches for by blinking a dialog
+    // whose window underneath is still live.
+    const onScrim = (event) => {
+      if (event.target !== layer) return;
+      event.preventDefault();
+      focusModal(layer);
+    };
+    // The pointer is the route `wrapTab` cannot see. The title bar stays live while a modal
+    // is up — only the body goes `inert` — so a press on it would leave the dialog up with
+    // focus elsewhere in the same window.
+    const onFocusIn = (event) => {
+      if (!this.el.contains(event.target) || layer.contains(event.target)) return;
+      focusModal(layer);
+    };
+
+    layer.addEventListener('keydown', onKey);
+    layer.addEventListener('pointerdown', onScrim);
+    document.addEventListener('focusin', onFocusIn);
+
+    this.modal = {
+      layer,
+      onDismiss,
+      prevFocus: document.activeElement,
+      release: () => document.removeEventListener('focusin', onFocusIn),
+    };
+    this.bodyEl.inert = true;
+    this.el.append(layer);
+    focusModal(layer);
+    return layer;
+  }
+
+  /**
+   * Take the modal down, give the keyboard back, and tell its owner. Nothing, if none is up.
+   *
+   * The owner is told last, so a handler that awaits the answer and then touches the window
+   * runs with the dialog already gone and the client area live again.
+   */
+  closeModal() {
+    const modal = this.modal;
+    if (!modal) return;
+    // Cleared first, and the listener dropped before anything is focused: `focus()` below
+    // re-enters through `focusin`, and a modal still recorded here would pull focus straight
+    // back into a layer that is on its way out. It is also what makes this safe to re-enter —
+    // `onDismiss` calling back in here finds nothing to do.
+    this.modal = null;
+    modal.release();
+    modal.layer.remove();
+    this.bodyEl.inert = false;
+    // Focus goes back where it came from, if that is still in this window. A dialog that
+    // hands focus to the document body loses the keyboard: the next Tab starts from the top
+    // of the page. A window on its way out gets neither — there is nothing to focus.
+    if (!this.closed) {
+      const prev = modal.prevFocus;
+      if (prev && prev.isConnected && this.el.contains(prev)) prev.focus();
+      else this.takeFocus();
+    }
+    if (modal.onDismiss) modal.onDismiss();
+  }
+
+  get hasModal() {
+    return Boolean(this.modal);
   }
 
   /* -------------------------------------------------------------------------
@@ -627,6 +779,43 @@ export class XPWindow {
   get isOpen() {
     return !this.closed;
   }
+}
+
+/**
+ * Move focus into a modal layer.
+ *
+ * `autofocus` picks the stop when the dialog names one — the platform's own attribute, so a
+ * dialog needs no second vocabulary for "this is the default button", and it is honoured only
+ * on something that is actually a focus stop. A layer with nothing focusable in it takes the
+ * focus itself, which is what keeps Escape reaching the layer's own handler.
+ */
+function focusModal(layer) {
+  const stops = [...layer.querySelectorAll(FOCUSABLE)];
+  const first = stops.find((stop) => stop.hasAttribute('autofocus')) || stops[0];
+  (first || layer).focus();
+}
+
+/**
+ * Keep Tab inside the modal.
+ *
+ * The press is always consumed: the stops in here are the whole cycle, and letting the last
+ * one fall through walks focus into the taskbar, behind a dialog that is still waiting. Focus
+ * sitting on the layer itself is off the list, and enters from whichever end the press came
+ * from.
+ */
+function wrapTab(layer, event) {
+  event.preventDefault();
+  const stops = [...layer.querySelectorAll(FOCUSABLE)];
+  if (!stops.length) {
+    layer.focus();
+    return;
+  }
+  const at = stops.indexOf(document.activeElement);
+  const step = event.shiftKey ? -1 : 1;
+  const next = at < 0
+    ? (step > 0 ? 0 : stops.length - 1)
+    : (at + step + stops.length) % stops.length;
+  stops[next].focus();
 }
 
 /** The marquee that fills a window between the frame arriving and the content arriving. */

@@ -2053,6 +2053,523 @@ def check_announce_states(page) -> list[str]:
     return bad
 
 
+#: The box `check_modal` puts up: three answers, a default, and a cancel.
+#:
+#: One spec, because every assertion below is about this same box — a second spelling of it
+#: could disagree with the first and the check would still pass.
+MODAL_SPEC = {
+    "title": "Notepad",
+    "text": "The text in this file has changed. Save it?",
+    "icon": "notepad",
+    "buttons": [
+        {"id": "save", "text": "Save", "default": True},
+        {"id": "discard", "text": "Don't Save"},
+        {"id": "cancel", "text": "Cancel", "cancel": True},
+    ],
+}
+
+#: `src/dialogs.mjs`, imported into the page and parked on `window`.
+#:
+#: Nothing in the shipped graph imports it yet — the file picker is what will — so the module
+#: is reached the way its first caller will reach it, by path. A path that 404s raises out of
+#: `evaluate` rather than returning, so a renamed file is a failed check and not a skipped one.
+LOAD_DIALOGS = """(async () => {
+  window.__dialogs = await import('/src/dialogs.mjs');
+  return { keys: Object.keys(window.__dialogs).sort(), dismissed: window.__dialogs.DISMISSED };
+})()"""
+
+#: A focusable control in the Read me window's own client area, and the focus on it.
+#:
+#: The check makes its own: `inert` is only observable against something that would otherwise
+#: take the keyboard, and the Read me is prose. It is also the element focus must come back to
+#: when the dialog goes, which is why it is focused here rather than merely appended.
+MODAL_PROBE = """(() => {
+  const win = window.webxp.windows.find((w) => w.programId === 'readme');
+  if (!win) return 'no Read me window to put a dialog on';
+  let button = win.bodyEl.querySelector('#modal-probe');
+  if (!button) {
+    button = document.createElement('button');
+    button.id = 'modal-probe';
+    button.type = 'button';
+    button.textContent = 'probe';
+    win.bodyEl.append(button);
+  }
+  button.focus();
+  return document.activeElement === button
+    ? ''
+    : 'the probe button in the client area would not take focus, so nothing below measures inert';
+})()"""
+
+#: Open a box on the Read me window and park its answer on `window.__answer`.
+#:
+#: `'pending'` until the promise settles, so "the box resolved" and "the box resolved to the
+#: wrong id" are different readings — an unresolved promise is the defect a dangling `await`
+#: is made of, and a check that only compared ids would call it a pass.
+OPEN_BOX = """((spec) => {
+  const win = window.webxp.windows.find((w) => w.programId === 'readme');
+  if (!win) return 'no Read me window to put a dialog on';
+  window.__answer = 'pending';
+  try {
+    window.__dialogs.messageBox(win, spec).then((id) => { window.__answer = id; });
+  } catch (error) {
+    return String((error && error.message) || error);
+  }
+  return '';
+})(%s)"""
+
+#: What a refused spec said, and whether it got as far as the screen.
+MODAL_REFUSAL = """((spec) => {
+  const win = window.webxp.windows.find((w) => w.programId === 'readme');
+  if (!win) return { error: 'no Read me window to put a dialog on' };
+  try {
+    window.__dialogs.messageBox(win, spec);
+    return { threw: '', layers: win.el.querySelectorAll('.window-modal').length };
+  } catch (error) {
+    return {
+      threw: String((error && error.message) || error),
+      layers: win.el.querySelectorAll('.window-modal').length,
+    };
+  }
+})(%s)"""
+
+#: A second modal on a window that already has one.
+MODAL_SECOND = """(() => {
+  const win = window.webxp.windows.find((w) => w.programId === 'readme');
+  if (!win) return { error: 'no Read me window to put a dialog on' };
+  try {
+    win.showModal(document.createElement('div'));
+    return { threw: '', layers: win.el.querySelectorAll('.window-modal').length };
+  } catch (error) {
+    return {
+      threw: String((error && error.message) || error),
+      layers: win.el.querySelectorAll('.window-modal').length,
+    };
+  }
+})()"""
+
+#: Close the window the question is on, keeping the window object reachable afterwards.
+#:
+#: The object outliving its frame is the point: `messageBox` on it must refuse, because a
+#: detached frame has no button anyone can press and the promise could never settle.
+CLOSE_OWNER = """(() => {
+  const win = window.webxp.windows.find((w) => w.programId === 'readme');
+  if (!win) return 'no Read me window to close';
+  window.__closedWin = win;
+  win.close();
+  return '';
+})()"""
+
+#: A box asked for in a window that has already closed.
+STALE_BOX = """((spec) => {
+  if (!window.__closedWin) return 'no closed window was kept';
+  try {
+    window.__dialogs.messageBox(window.__closedWin, spec);
+    return '';
+  } catch (error) {
+    return String((error && error.message) || error);
+  }
+})(%s)"""
+
+#: Everything one reading of the modal layer can answer.
+#:
+#: `inert` is asked by trying it, not by reading the property: the property being set is a
+#: statement about the code, and "the keyboard cannot reach the content behind the dialog" is
+#: the statement the visitor is affected by. The poke is undone unless it worked, in which case
+#: the check is already failing and where the focus sits no longer matters.
+MODAL_STATE = """(() => {
+  const win = window.webxp.windows.find((w) => w.programId === 'readme');
+  if (!win) return { error: 'no Read me window' };
+  const layer = win.el.querySelector('.window-modal');
+  const dialog = layer ? layer.querySelector('.dialog') : null;
+  const active = document.activeElement;
+  const probeButton = win.bodyEl.querySelector('#modal-probe');
+  const box = (el) => {
+    const r = el.getBoundingClientRect();
+    return { x: Math.round(r.left), y: Math.round(r.top),
+             w: Math.round(r.width), h: Math.round(r.height) };
+  };
+  const named = (attr) => {
+    if (!dialog) return null;
+    const target = document.getElementById(dialog.getAttribute(attr) || '');
+    return target ? target.textContent : null;
+  };
+  let bodyTookFocus = null;
+  if (probeButton) {
+    probeButton.focus();
+    bodyTookFocus = document.activeElement === probeButton;
+    if (!bodyTookFocus && active && active.focus) active.focus();
+  }
+  return {
+    answer: window.__answer,
+    hasModal: win.hasModal === true,
+    layers: win.el.querySelectorAll('.window-modal').length,
+    parentedToWindow: layer ? layer.parentElement === win.el : null,
+    inBody: layer ? win.bodyEl.contains(layer) : null,
+    inert: win.bodyEl.inert === true,
+    bodyTookFocus: bodyTookFocus,
+    role: dialog ? dialog.getAttribute('role') : null,
+    ariaModal: dialog ? dialog.getAttribute('aria-modal') : null,
+    label: named('aria-labelledby'),
+    description: named('aria-describedby'),
+    buttons: [...(dialog ? dialog.querySelectorAll('.dialog-buttons button') : [])]
+      .map((b) => Object.assign({ id: b.dataset.id || '' }, box(b))),
+    activeId: active && active.dataset ? (active.dataset.id || '') : '',
+    activeInDialog: dialog ? dialog.contains(active) : false,
+    activeIsProbe: Boolean(probeButton) && active === probeButton,
+    activeWhere: active ? (active.id || active.className || active.tagName) : 'nothing',
+    win: box(win.el),
+    bar: box(win.bar),
+    layerBox: layer ? box(layer) : null,
+    dialogBox: dialog ? box(dialog) : null,
+  };
+})()"""
+
+
+def modal_state(page) -> dict:
+    """One reading of the modal layer, with the window it needs proved present."""
+    state = page.evaluate(MODAL_STATE)
+    if not isinstance(state, dict) or state.get("error"):
+        raise HarnessError(f"modal: {(state or {}).get('error', state)}")
+    return state
+
+
+def check_modal(page) -> list[str]:
+    """A window can ask a question, and while it is asking, the question is the only answer.
+
+    Four properties, and each one is reachable without the others — which is why all four are
+    measured rather than inferred from a dialog being on screen:
+
+    - *parented to the window*, not to the desktop. A dialog floating over the whole shell is
+      a web app's modal; XP's belonged to the window that asked, and this one is a child of
+      the frame so a drag and a maximise carry it for free.
+    - *modal*. The client area is `inert`, so the control behind the dialog refuses the
+      keyboard. win32.run's scrim only blinks: the window underneath stays live, and this is
+      the assertion that tells the two apart.
+    - *trapped*. Tab cycles the dialog's own buttons and wraps, instead of walking out into
+      the taskbar behind a question that is still waiting.
+    - *resolvable*. Escape, a press, and the owning window closing all settle the promise. An
+      unresolved promise is a dangling `await` with no error and no window to point at, so
+      `'pending'` is read back explicitly rather than compared against an id.
+
+    The box is Notepad's dirty-buffer question, because that is the thing this shell could not
+    previously ask: closing a modified file threw the buffer away with no prompt.
+    """
+    bad = []
+    expose(page, "readme")
+
+    module = page.evaluate(LOAD_DIALOGS, await_promise=True)
+    for name in ("DISMISSED", "messageBox"):
+        if name not in module["keys"]:
+            return [f"modal: src/dialogs.mjs exports {module['keys']} — no {name!r} to call"]
+    dismissed = module["dismissed"]
+
+    refused = page.evaluate(MODAL_PROBE)
+    if refused:
+        return [f"modal: {refused}"]
+
+    # --- the box goes up -----------------------------------------------------
+    rejected = page.evaluate(OPEN_BOX % json.dumps(MODAL_SPEC))
+    if rejected:
+        return [f"modal: messageBox refused a usable spec — {rejected}"]
+    time.sleep(0.15)
+    state = modal_state(page)
+
+    if not state["hasModal"] or state["layers"] != 1:
+        return [
+            f"modal: hasModal={state['hasModal']} with {state['layers']} layer(s) in the "
+            "window — the box never reached the screen, so nothing below was measured"
+        ]
+    if not state["parentedToWindow"]:
+        bad.append(
+            "modal: the layer is not a child of the window element — a dialog parented "
+            "anywhere else does not travel with a drag or a maximise"
+        )
+    if state["inBody"]:
+        bad.append(
+            "modal: the layer is inside .window-body, which is the element that goes inert — "
+            "the dialog would make itself unreachable"
+        )
+
+    # Over the content and not over the title bar. The bar stays live while a modal is up, so
+    # a scrim across it would dim a strip that still answers the pointer.
+    layer, win, bar = state["layerBox"], state["win"], state["bar"]
+    if not near(layer["y"], win["y"] + bar["h"], 2):
+        bad.append(
+            f"modal: the layer starts at y={layer['y']} with the title bar ending at "
+            f"{win['y'] + bar['h']} — it is over the bar, or short of the content"
+        )
+    for edge, got, want in (
+        ("left", layer["x"], win["x"]),
+        ("right", layer["x"] + layer["w"], win["x"] + win["w"]),
+        ("bottom", layer["y"] + layer["h"], win["y"] + win["h"]),
+    ):
+        if not near(got, want, 2):
+            bad.append(
+                f"modal: the layer's {edge} edge is at {got} and the window's is at {want} — "
+                "the scrim does not cover the window's own content"
+            )
+    dialog = state["dialogBox"]
+    if dialog["x"] < layer["x"] or dialog["x"] + dialog["w"] > layer["x"] + layer["w"]:
+        bad.append(
+            f"modal: the dialog {dialog} hangs outside the layer {layer} — a window at "
+            "MIN_W is the case this breaks in"
+        )
+
+    if state["role"] != "dialog" or state["ariaModal"] != "true":
+        bad.append(
+            f"modal: the dialog is role={state['role']!r} aria-modal={state['ariaModal']!r} — "
+            "a screen reader in browse mode reads the tree, not the focus rules"
+        )
+    if state["label"] != MODAL_SPEC["title"]:
+        bad.append(
+            f"modal: aria-labelledby resolves to {state['label']!r}, not the title "
+            f"{MODAL_SPEC['title']!r} — the dialog is announced unnamed"
+        )
+    if state["description"] != MODAL_SPEC["text"]:
+        bad.append(
+            f"modal: aria-describedby resolves to {state['description']!r}, not the question "
+            f"{MODAL_SPEC['text']!r}"
+        )
+    want_buttons = [button["id"] for button in MODAL_SPEC["buttons"]]
+    got_buttons = [button["id"] for button in state["buttons"]]
+    if got_buttons != want_buttons:
+        bad.append(
+            f"modal: the button row is {got_buttons} and the spec asked for "
+            f"{want_buttons} — in that order, left to right"
+        )
+
+    # --- it is actually modal ------------------------------------------------
+    if not state["inert"]:
+        bad.append(
+            "modal: .window-body is not inert while a dialog is up — the content behind it "
+            "is live, which is win32.run's blinking scrim rather than a modal"
+        )
+    if state["bodyTookFocus"]:
+        bad.append(
+            "modal: a button in the client area took the focus with the dialog up — the "
+            "keyboard reaches behind the question"
+        )
+    if not state["activeInDialog"] or state["activeId"] != "save":
+        bad.append(
+            f"modal: focus opened on {state['activeWhere']!r} (data-id {state['activeId']!r}) "
+            "instead of the button marked default — the dialog opened with the keyboard "
+            "somewhere else"
+        )
+
+    # --- and it fits at the narrowest a window goes -----------------------------
+    #
+    # `min(400px, ...)` on the dialog and the wrap on its button row are the load-bearing half
+    # of the box's size, and the default window is too wide to show either. A window can be
+    # dragged to MIN_W; a flat 400px dialog hangs out of both sides of the frame that owns it,
+    # and three 75px buttons do not fit across what is left.
+    page.evaluate(
+        "window.webxp.windows.find((w) => w.programId === 'readme')"
+        ".sizeTo(%d, %d)" % (MIN_W, MIN_H * 3)
+    )
+    time.sleep(0.2)
+    narrow = modal_state(page)
+    inside = narrow["layerBox"]
+    for name, got in (("the dialog", narrow["dialogBox"]), *[
+        (f"the {button['id']} button", button) for button in narrow["buttons"]
+    ]):
+        if got["x"] < inside["x"] or got["x"] + got["w"] > inside["x"] + inside["w"]:
+            bad.append(
+                f"modal: in a {MIN_W}px window, {name} spans "
+                f"{got['x']}..{got['x'] + got['w']} and the window's content is "
+                f"{inside['x']}..{inside['x'] + inside['w']} — an answer is off the edge of "
+                "the frame that is asking"
+            )
+    # Back to the size it was found at, which is the one the rest of this check presses
+    # buttons in.
+    page.evaluate(
+        "window.webxp.windows.find((w) => w.programId === 'readme').sizeTo(%d, %d)"
+        % (state["win"]["w"], state["win"]["h"])
+    )
+    time.sleep(0.2)
+
+    # --- Tab is trapped and wraps -------------------------------------------
+    for step, want in enumerate(("discard", "cancel", "save"), start=1):
+        page.press("Tab")
+        time.sleep(0.05)
+        got = modal_state(page)
+        if got["activeId"] != want or not got["activeInDialog"]:
+            bad.append(
+                f"modal: Tab {step} of 3 landed on {got['activeWhere']!r} (data-id "
+                f"{got['activeId']!r}) instead of {want!r} — focus is not cycling the "
+                "dialog's own buttons"
+            )
+            break
+    page.press("Tab", shift=True)
+    time.sleep(0.05)
+    back = modal_state(page)
+    if back["activeId"] != "cancel":
+        bad.append(
+            f"modal: Shift+Tab off the first button landed on {back['activeWhere']!r} "
+            f"(data-id {back['activeId']!r}) instead of the last — the wrap is one-way"
+        )
+
+    # --- Escape resolves it, and hands the keyboard back --------------------
+    page.press("Escape")
+    time.sleep(0.15)
+    after = modal_state(page)
+    if after["answer"] != "cancel":
+        bad.append(
+            f"modal: Escape resolved {after['answer']!r} — the box marks 'cancel' as the "
+            "dismissal, and 'pending' means the promise is still unresolved with the dialog "
+            "already gone"
+        )
+    if after["hasModal"] or after["layers"]:
+        bad.append(
+            f"modal: after Escape, hasModal={after['hasModal']} with {after['layers']} "
+            "layer(s) still in the window"
+        )
+    if after["inert"]:
+        bad.append(
+            "modal: .window-body is still inert after the dialog closed — the window is left "
+            "unusable, which is worse than never having asked"
+        )
+    if not after["activeIsProbe"]:
+        bad.append(
+            f"modal: focus landed on {after['activeWhere']!r} after the dialog closed, not "
+            "back on the control that had it — the next Tab starts from the top of the page"
+        )
+
+    # --- a box with no cancel still has an answer ---------------------------
+    page.evaluate(OPEN_BOX % json.dumps({
+        "title": "Notepad",
+        "text": "Saved.",
+        "buttons": [{"id": "ok", "text": "OK"}],
+    }))
+    time.sleep(0.1)
+    page.press("Escape")
+    time.sleep(0.15)
+    plain = modal_state(page)
+    if plain["answer"] != dismissed:
+        bad.append(
+            f"modal: a box with no button marked cancel resolved {plain['answer']!r} on "
+            f"Escape, not {dismissed!r} — a promise that can be left pending is a leak, and "
+            "an id a button carries would be indistinguishable from a press"
+        )
+
+    # --- and taking the layer down by hand still answers it -----------------
+    #
+    # `closeModal` is public and a caller will reach for it. Every route down goes through it,
+    # so it is the one place the owner is told; a teardown that only removed the layer would
+    # strand the promise exactly as a close once did.
+    page.evaluate(OPEN_BOX % json.dumps(MODAL_SPEC))
+    time.sleep(0.1)
+    page.evaluate("window.webxp.windows.find((w) => w.programId === 'readme').closeModal()")
+    time.sleep(0.15)
+    by_hand = modal_state(page)
+    if by_hand["answer"] != "cancel":
+        bad.append(
+            f"modal: closeModal() left the question at {by_hand['answer']!r} — the layer came "
+            "down without its owner being told, which is a promise nobody resolves"
+        )
+
+    # --- a press resolves its own id ----------------------------------------
+    page.evaluate(OPEN_BOX % json.dumps(MODAL_SPEC))
+    time.sleep(0.1)
+    selector = f'{win_selector(page, "readme")} .dialog-buttons button[data-id="discard"]'
+    target = rect_of(page, selector)
+    if target is None:
+        bad.append(f"modal: no laid-out button at {selector} to press")
+        page.press("Escape")
+    else:
+        x = target["x"] + target["w"] / 2
+        y = target["y"] + target["h"] / 2
+        on_top = page.evaluate(
+            "(() => { const hit = document.elementFromPoint(%f, %f);"
+            " return hit ? (hit.dataset.id || hit.className) : 'nothing'; })()" % (x, y)
+        )
+        if on_top != "discard":
+            # The harness's problem, not the product's: a press that lands elsewhere would be
+            # reported as the dialog ignoring its own button.
+            bad.append(
+                f"modal: {on_top!r} is over the Don't Save button at ({x:.0f}, {y:.0f}), so a "
+                "press there measures whatever is covering it"
+            )
+            page.press("Escape")
+        else:
+            mouse(page, "mousePressed", x, y, buttons=1)
+            mouse(page, "mouseReleased", x, y)
+            time.sleep(0.15)
+            pressed = modal_state(page)
+            if pressed["answer"] != "discard":
+                bad.append(
+                    f"modal: pressing Don't Save resolved {pressed['answer']!r} — a box "
+                    "resolves the id of the button that was pressed"
+                )
+            if pressed["hasModal"]:
+                bad.append("modal: the dialog is still up after its own button was pressed")
+
+    # --- a second modal is refused, not stacked -----------------------------
+    page.evaluate(OPEN_BOX % json.dumps(MODAL_SPEC))
+    time.sleep(0.1)
+    second = page.evaluate(MODAL_SECOND)
+    if "already open" not in (second["threw"] or ""):
+        bad.append(
+            f"modal: a second showModal on the same window said {second['threw']!r} — two "
+            "dialogs over one window have no close order, and the one underneath is a "
+            "question somebody is awaiting"
+        )
+    if second["layers"] != 1:
+        bad.append(f"modal: {second['layers']} layers in the window after the refusal")
+
+    # --- the owning window closing answers the open question ----------------
+    missing = page.evaluate(CLOSE_OWNER)
+    if missing:
+        return bad + [f"modal: {missing}"]
+    time.sleep(SETTLE_S + 0.3)
+    closed = page.evaluate(
+        "({ answer: window.__answer,"
+        " windows: window.webxp.windows.filter((w) => w.programId === 'readme').length })"
+    )
+    if closed["answer"] != "cancel":
+        bad.append(
+            f"modal: closing the window left the question at {closed['answer']!r} — whoever "
+            "awaited the answer waits for the rest of the session, with no error and no "
+            "window left to point at"
+        )
+    if closed["windows"]:
+        bad.append(f"modal: {closed['windows']} Read me window(s) survived the close")
+
+    stale = page.evaluate(STALE_BOX % json.dumps(MODAL_SPEC))
+    if "closed" not in (stale or ""):
+        bad.append(
+            f"modal: asking a question in a window that has closed said {stale!r} — nothing "
+            "can press a button on a detached frame, so the box has to be refused rather "
+            "than returning a promise that cannot settle"
+        )
+
+    # Put the desktop back: every later check that wants a Read me window expects to find one.
+    launch(page, "readme")
+    time.sleep(0.2)
+    if page.evaluate("window.webxp.windows.filter((w) => w.programId === 'readme').length") != 1:
+        bad.append("modal: the Read me window was not relaunched — the desktop is not as found")
+
+    # --- a malformed question is refused before it reaches the visitor ------
+    for spec, needle in (
+        ({"title": "x", "text": "y", "buttons": [{"id": "ok", "label": "OK"}]}, "label"),
+        ({"title": "x", "text": "y", "buttons": []}, "non-empty array"),
+        ({"title": "", "text": "y", "buttons": [{"id": "ok", "text": "OK"}]}, "title"),
+        ({"title": "x", "text": "y", "buttons": [
+            {"id": "ok", "text": "OK"}, {"id": "ok", "text": "Fine"},
+        ]}, "repeats the id"),
+    ):
+        refusal = page.evaluate(MODAL_REFUSAL % json.dumps(spec))
+        if needle not in (refusal["threw"] or ""):
+            bad.append(
+                f"modal: messageBox({spec}) said {refusal['threw']!r}, which does not name "
+                f"{needle!r} — a box whose answer the caller cannot handle must be refused "
+                "where the defect is, not rendered"
+            )
+        if refusal["layers"]:
+            bad.append(f"modal: a refused spec still put {refusal['layers']} layer(s) up")
+
+    return bad
+
+
 def check_reentrant_gesture(page, *, invert: bool = False) -> list[str]:
     """A second pointer arriving mid-drag takes the gesture over; only its release ends it.
 
@@ -7230,6 +7747,12 @@ CHECKS = (
     ("keyboard move and resize", check_keyboard),
     ("re-entrant gesture", check_reentrant_gesture),
     ("state announcements", check_announce_states),
+    # After `state announcements`, which also drives the Read me window. This one closes that
+    # window to prove a pending question is answered by the close, and relaunches it, so it
+    # hands the desktop back the way it found it. Before `picker`: both exercise `showModal`,
+    # and a broken host should be named by the check about the host, not by the one about its
+    # occupant.
+    ("modal and message box", check_modal),
     ("icon tokens", check_icon_tokens),
     ("focus order", check_focus_order),
     ("desktop blur", check_desktop_blur),

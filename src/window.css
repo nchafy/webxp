@@ -6,6 +6,22 @@
    The frame.
    --------------------------------------------------------------------------- */
 
+/* What a frame looks like: the bisque face, the navy hairline, the drop shadow, and XP's
+   rounded top with square feet. Declared once for the window and for a dialog parented to
+   one, because two copies of a frame's skin drift and the dialog is meant to read as the same
+   object class as the window it sits on.
+
+   Both selectors are one class, so neither outranks the other and nothing in this block ties
+   with a rule below: `.window.is-max` and `.window:not(.is-active)` are two and three, and
+   both still take the shadow and the radius off a maximised or sleeping frame. */
+.window,
+.dialog {
+  background: var(--face);
+  border: 1px solid var(--title-a);
+  box-shadow: 2px 2px 8px rgb(0 0 0 / 35%);
+  border-radius: 7px 7px 0 0;
+}
+
 .window {
   position: absolute;
   /* Written by window.mjs through the CSSOM, never as a `style` attribute: CSP's
@@ -19,11 +35,6 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
-  background: var(--face);
-  border: 1px solid var(--title-a);
-  box-shadow: 2px 2px 8px rgb(0 0 0 / 35%);
-  /* XP's frame had a rounded top and square feet. */
-  border-radius: 7px 7px 0 0;
 }
 
 /* `hidden` has to be spelled out: the `display: flex` above outranks the UA sheet's
@@ -191,6 +202,85 @@
   min-height: 20px;
 }
 .window-status[hidden] { display: none; }
+
+/* ---------------------------------------------------------------------------
+   The modal layer: a dialog over the window that asked the question.
+
+   XP's dialogs belonged to a window, not to the screen, and `window.mjs` keeps that — the
+   layer is parented inside the frame, so it travels with a drag and a maximise for free.
+   --------------------------------------------------------------------------- */
+
+.window-modal {
+  position: absolute;
+  /* Below the title bar, not over it. `window.mjs` leaves the bar live while a modal is up —
+     only `.window-body` goes `inert` — so a scrim across the bar would dim a strip that still
+     answers the pointer and the keyboard. The inset is the token the bar is sized with, so
+     the two cannot drift apart. */
+  top: var(--titlebar-h);
+  right: 0;
+  bottom: 0;
+  left: 0;
+  /* Above the iframe focus shim (1) and below the resize grips (3). A window with a dialog up
+     can still be resized, which is what XP allowed, and the grips sit inside this box. */
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  /* A dialog taller than the window it belongs to stays reachable instead of being clipped
+     into a box with no buttons in it. */
+  overflow: auto;
+  /* XP drew no scrim at all, and win32.run washes white; white over the bisque face reads as
+     fog rather than as shade. Black at 22% instead, which is the one colour that dims the
+     face without tinting it.
+
+     It sits over the status strip as well as the client area, so both were re-measured
+     against it: the strip's `--muted` on `--face` goes from 9.32:1 to 6.75:1, and the
+     dialog's own navy hairline reads 6.99:1 against the dimmed face, so the boundary of the
+     thing that is still live clears SC 1.4.11. The content behind the scrim is `inert`. */
+  background: rgb(0 0 0 / 22%);
+}
+/* The layer is the focus holder of last resort — `window.mjs` gives it `tabindex="-1"` so a
+   dialog with no control in it still receives Escape. It keeps the theme's focus ring rather
+   than suppressing it: focus on the layer is a real place for the keyboard to be, and
+   `theme.css` draws that ring inset, so it lands just inside the scrim's edge. Suppressing it
+   would need three classes to beat `[tabindex]:focus-visible` and would cost SC 2.4.7. */
+
+.dialog {
+  /* 400 wide, 150 tall is the XP message box and win32.run's `Dialog.svelte`. `min()` is
+     load-bearing rather than tidy: a window may be dragged down to `MIN_W`, 220px, and a flat
+     400px dialog would then hang out of both sides of the frame that owns it. The height is a
+     minimum, not a size, because the text is the content and a fixed 150px clips it. */
+  width: min(400px, 100% - 1.5rem);
+  min-height: 150px;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.dialog-body {
+  flex: 1 1 auto;
+  display: flex;
+  gap: .75rem;
+  padding: 1rem .75rem .75rem;
+  overflow: auto;
+}
+/* 11px, which is the size XP set a message box's prose at — a line shorter than the dialog is
+   wide, read once. */
+.dialog-text { margin: 0; font-size: 11px; }
+
+.dialog-buttons {
+  flex: 0 0 auto;
+  display: flex;
+  /* Three 75px buttons do not fit across a dialog in a 220px window, and a row that cannot
+     fit is a row with an answer off the right-hand edge. It wraps instead, and the dialog's
+     height follows. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: .4rem;
+  padding: 0 .75rem .75rem;
+}
+/* XP's dialog buttons were a fixed 75px, which is what makes a row of them read as a row
+   rather than as three labels of three widths. A longer label still grows past it. */
+.dialog-buttons button { min-width: 75px; }
 
 /* ---------------------------------------------------------------------------
    Loading. The frame arrives before the content does, which is the thing XP did and a
