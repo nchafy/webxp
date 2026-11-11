@@ -1112,11 +1112,20 @@ export function folderView(spec) {
     say(item.hint ? `${item.name}: ${item.hint}` : `${item.name} cannot be chosen.`);
   };
 
+  /* Where Tab enters the list: one stop for the whole of it, moved rather than added to. */
+  const stop = (index) => {
+    tiles.forEach((tile, at) => { tile.tabIndex = at === index ? 0 : -1; });
+  };
+
   const select = (index) => {
     if (list[index].disabled) {
       refuse(index);
       return;
     }
+    // The stop follows the selection, so Tab back into the list lands where the reader left
+    // off. Without this a click selected one tile while the stop stayed on the first, and
+    // Enter after a Tab then opened a tile nobody had chosen.
+    stop(index);
     tiles.forEach((tile, at) => tile.setAttribute('aria-selected', String(at === index)));
     // Cleared, so a refusal read a moment ago is not still standing under a selection that
     // worked. An empty write is not announced, which is why it is not a sentence.
@@ -1141,7 +1150,9 @@ export function folderView(spec) {
   const rove = (index) => {
     if (!tiles.length) return;
     const at = Math.max(0, Math.min(index, tiles.length - 1));
-    tiles.forEach((tile, i) => { tile.tabIndex = i === at ? 0 : -1; });
+    // Before `select`, which will not move the stop onto a tile it refuses. A refused tile
+    // the arrows can reach has to keep the stop they gave it.
+    stop(at);
     tiles[at].focus();
     select(at);
   };
