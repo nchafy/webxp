@@ -6738,6 +6738,27 @@ def check_focus_order(page) -> list[str]:
     # raises it, so it has to start underneath something.
     state = expose(page, "notepad", "readme")
     notepad = need(state, "notepad")
+    # The underneath precondition, asserted rather than assumed.
+    #
+    # `expose` launches whichever of the two is missing, and a launched window lands on top.
+    # With Notepad already topmost the click has nothing to raise it above, and the z
+    # assertion below then reports a z that did not rise — a sentence about a window manager
+    # that did nothing wrong. Minimised and hidden windows do not count: a click cannot be
+    # shown to raise anything above a window that is not on screen.
+    #
+    # A harness MUST fail when it cannot reach what it was pointed at, and MUST say which
+    # kind of failure it is. This is the harness's problem, not the window manager's.
+    under_something = any(
+        w["state"] != "min" and not w["hidden"] and w["z"] > notepad["z"]
+        for w in state["wins"]
+    )
+    if not under_something:
+        return [
+            f"focus: cannot start Notepad underneath another window — it is already topmost "
+            f"at z {notepad['z']}. This is a harness problem, not a product one: the "
+            "precondition is a window on screen over Notepad, and the state this check "
+            "inherited has none."
+        ]
 
     selector = win_selector(page, "notepad")
     body = rect_of(page, f"{selector} .window-title")
