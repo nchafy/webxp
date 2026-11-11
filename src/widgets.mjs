@@ -1110,6 +1110,11 @@ export function folderView(spec) {
   const list = spec.items || [];
   const tiles = [];
 
+  //: Which item is selected, or `-1`. What makes `onSelect` fire on a change and not on every
+  //: press: an arrow at either end of the list clamps onto the tile it started from, and a
+  //: second click on one tile is not a second choice.
+  let chosen = -1;
+
   const refuse = (index) => {
     const item = list[index];
     // Neutral about which press was refused: this answers a click, an arrow, Enter, Space
@@ -1131,10 +1136,13 @@ export function folderView(spec) {
     // off. Without this a click selected one tile while the stop stayed on the first, and
     // Enter after a Tab then opened a tile nobody had chosen.
     stop(index);
-    tiles.forEach((tile, at) => tile.setAttribute('aria-selected', String(at === index)));
     // Cleared, so a refusal read a moment ago is not still standing under a selection that
-    // worked. An empty write is not announced, which is why it is not a sentence.
+    // worked. An empty write is not announced, which is why it is not a sentence. Before the
+    // guard below, because a refusal is stale whether or not the choice changed.
     say('');
+    if (index === chosen) return;
+    chosen = index;
+    tiles.forEach((tile, at) => tile.setAttribute('aria-selected', String(at === index)));
     if (spec.onSelect) spec.onSelect(list[index], index);
   };
 
