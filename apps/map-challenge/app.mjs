@@ -36,7 +36,7 @@ export default {
   width: 620,
   height: 440,
   status: true,
-  styles: ['../../src/folder.css', 'app.css'],
+  styles: ['../../src/folder.css'],
 
   mount({ win, desktop }) {
     const days = [...desktop.programs.values()]
