@@ -38,7 +38,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from cdp import Browser, CDPError  # noqa: E402
+from cdp import Browser, CDPError, Session  # noqa: E402
 from serve import ServeError, serve  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -295,10 +295,102 @@ def shoot(page, target: Path) -> int:
 # the listener runs and nothing about whether the listener is reachable.
 # ---------------------------------------------------------------------------
 
-#: Arrow key codes. `cdp.py` is a verbatim copy of another project's client and carries only
-#: the keys that project needed, so the two it lacks are dispatched here rather than by
-#: diverging the copy.
-ARROWS = {"ArrowLeft": 37, "ArrowUp": 38, "ArrowRight": 39, "ArrowDown": 40}
+#: The modifier bits `Input.dispatchKeyEvent` takes.
+#:
+#: Measured rather than remembered: each value was dispatched and the flags read back off the
+#: event — 1 alt, 2 ctrl, 4 meta, 8 shift. A transposed pair reads as a product that ignores
+#: its own accelerator, so the numbers are named here once instead of spelled at each call.
+ALT, CTRL, SHIFT = 1, 2, 8
+META = 4
+
+#: The modifiers that suppress `text`, and so the insertion Blink would perform. Shift is
+#: absent: it selects which character the key inserts, where Alt, Ctrl and Meta mean the
+#: keypress is a command and inserts nothing. Ctrl alone is included although Blink already
+#: drops it — the rule is about what a chord means, not about which of them Blink forgives.
+TEXTLESS_MODIFIERS = ALT | CTRL | META
+
+#: Key name -> (virtual key code, the text the key inserts). Extends `cdp.py`'s own table
+#: rather than restating it.
+#:
+#: `cdp.py` is a verbatim copy of another project's client and carries only the keys that
+#: project needed, so the keys it lacks are added here rather than by diverging the copy.
+#: Derived from `Session.KEYS` and not re-spelled: two tables keyed by the same thing are a
+#: hand-synced copy, and the four entries this file used to redeclare already lived there.
+#:
+#: The text field is load-bearing, which is why the value is a pair. A key that inserts text
+#: has to be dispatched as `keyDown` carrying it; as a text-less `rawKeyDown` Blink never
+#: synthesises the char event, so a `button` never fires its `click` and Enter on a menu row
+#: silently does nothing.
+MENU_KEYS = {
+    **Session.KEYS,
+    "ArrowLeft": (37, ""),
+    "ArrowRight": (39, ""),
+    "Home": (36, ""),
+    "End": (35, ""),
+    "Backspace": (8, ""),
+    "F10": (121, ""),
+    "ContextMenu": (93, ""),
+}
+
+#: The `code` of a single-letter key, which is what carries the letter when Alt is held.
+LETTER_CODE = re.compile(r"Key([A-Z])$")
+
+
+def press_key(page, name: str, *, modifiers: int = 0, code: str | None = None) -> None:
+    """One real keypress: a name from `MENU_KEYS`, or a single character.
+
+    The superset of `page.press`, and it shares that method's key table and its
+    keyDown/rawKeyDown rule — `Session._event_type_for_key`, called rather than spelled again,
+    underscore and all: `cdp.py` is a verbatim copy of another project's client, so promoting
+    the method would diverge the copy for nothing. `page.press` is enough for the six
+    keys `cdp.py` carries with no modifier but Shift; anything else — a letter, a chord, a
+    `code` that differs from the `key` — comes here. A third dispatcher is not needed, and
+    three is what this file had: `menu_key`, `key` and `arrow`, plus an inline Ctrl+S.
+
+    `code` is separable from `name` on purpose, and it is a measured platform fact rather
+    than generality for its own sake. macOS composes with Alt and reports the composed
+    character, so Alt+V arrives as `key: '√'` with `code: 'KeyV'`; a probe that cannot
+    express that cannot tell a mnemonic matcher reading `event.key` from one reading
+    `event.code`, and the two disagree on every Alt chord a Mac reader presses.
+
+    A single character is dispatched as the text it inserts, which is what makes a `button`
+    fire its `click`: Enter sent as a text-less `rawKeyDown` leaves Blink waiting for a char
+    event, so a menu row that works reports as doing nothing.
+
+    `TEXTLESS_MODIFIERS` is the exception, and it is the browser's editing path that requires
+    it rather than anything in the shell. `text` is what Blink inserts, so a chord carrying
+    it types its own letter into whatever has the keyboard. Measured by pressing `q` into a
+    Notepad buffer of known contents with the rule off: Alt+Q and Ctrl+Alt+Q each left a `q`
+    behind, Ctrl+Q alone left nothing — Blink reads Ctrl+Alt as AltGr, which composes. The
+    `Alt+Q` arm of `check_open_across_apps` is that measurement kept as an assertion.
+
+    A key with no recorded code raises. Dispatching nothing and then reporting a working
+    control as unresponsive is the worst outcome available to a harness.
+    """
+    physical = code or (name if name in MENU_KEYS else f"Key{name.upper()}")
+    if name in MENU_KEYS:
+        virtual, text = MENU_KEYS[name]
+    else:
+        letter = LETTER_CODE.match(physical)
+        if not letter:
+            raise HarnessError(f"press_key: no virtual key code for {name!r} / {physical!r}")
+        virtual, text = ord(letter.group(1)), name
+    if modifiers & TEXTLESS_MODIFIERS:
+        text = ""
+    for event_type in (Session._event_type_for_key(text), "keyUp"):
+        params = {
+            "type": event_type,
+            "key": name,
+            "code": physical,
+            "windowsVirtualKeyCode": virtual,
+            "nativeVirtualKeyCode": virtual,
+            "modifiers": modifiers,
+        }
+        if text and event_type == "keyDown":
+            params["text"] = text
+            params["unmodifiedText"] = text
+        page.call("Input.dispatchKeyEvent", **params)
+    time.sleep(0.05)
 
 
 def mouse(page, event_type: str, x: float, y: float, *, buttons: int = 0,
@@ -341,18 +433,57 @@ def drag(page, x0: float, y0: float, dx: float, dy: float, steps: int = 4) -> No
     time.sleep(0.08)
 
 
-def arrow(page, key: str, *, shift: bool = False) -> None:
-    code = ARROWS[key]
-    for event_type in ("rawKeyDown", "keyUp"):
-        page.call(
-            "Input.dispatchKeyEvent",
-            type=event_type,
-            key=key,
-            code=key,
-            windowsVirtualKeyCode=code,
-            nativeVirtualKeyCode=code,
-            modifiers=8 if shift else 0,
-        )
+def hover_at(page, x: float, y: float) -> None:
+    """Put the real pointer there, so `:hover` is the browser's own."""
+    mouse(page, "mouseMoved", x, y)
+    time.sleep(0.08)
+
+
+def click_at(page, x: float, y: float) -> None:
+    """A real left click: move the pointer there, press, release.
+
+    The move is not decoration. A menu switches under the pointer and moves its highlight on
+    `pointerover`, so a press with no move before it lands on a row the menu was never told
+    the pointer was over — a gesture no reader makes.
+
+    One settle for both of this file's callers. The two were written at 0.08 s and 0.2 s;
+    0.2 s is the one measured against the slower subject, a context-menu row whose `onSelect`
+    re-derives the desktop's icons, so the faster value is the one that would go intermittent.
+    """
+    hover_at(page, x, y)
+    mouse(page, "mousePressed", x, y, buttons=1)
+    mouse(page, "mouseReleased", x, y)
+    time.sleep(0.2)
+
+
+def right_click(page, x: float, y: float) -> None:
+    """A real right-button press, which is what makes Chrome synthesise `contextmenu`.
+
+    `mouse` hardcodes the left button. Dispatching a `contextmenu` event from page script
+    instead would prove the listener runs and nothing about whether a right-click reaches it.
+    """
+    mouse(page, "mouseMoved", x, y)
+    for event_type, held in (("mousePressed", 2), ("mouseReleased", 0)):
+        page.call("Input.dispatchMouseEvent", type=event_type, x=float(x), y=float(y),
+                  button="right", buttons=held, clickCount=1)
+    time.sleep(0.15)
+
+
+def centre(page, selector: str, *, index: int = 0) -> tuple[float, float]:
+    """The middle of an element, to aim real input at.
+
+    A zero box is a raise, not a click into nothing: aiming at a hidden element is the
+    harness failing to reach what it was pointed at.
+    """
+    box = page.evaluate(
+        "(() => { const el = document.querySelectorAll(" + repr(selector) + ")["
+        + str(index) + "];"
+        " if (!el) return null; const r = el.getBoundingClientRect();"
+        " return [r.left + r.width / 2, r.top + r.height / 2, r.width, r.height]; })()"
+    )
+    if not box or box[2] < 1 or box[3] < 1:
+        raise HarnessError(f"nothing to aim at for {selector!r}[{index}]: {box!r}")
+    return box[0], box[1]
 
 
 # ---------------------------------------------------------------------------
@@ -3432,9 +3563,9 @@ def check_keyboard(page) -> list[str]:
         return ["keyboard: the title bar did not take focus"]
 
     for _ in range(3):
-        arrow(page, "ArrowRight")
+        press_key(page, "ArrowRight")
     for _ in range(2):
-        arrow(page, "ArrowDown")
+        press_key(page, "ArrowDown")
     after = need(probe(page), "readme")
     # `after["box"]` against `before["placed"]`, for the same reason the drag check reads
     # `placed`: `onBarKey` steps from `placed` — `moveTo(this.placed.x + kx * KEY_STEP, …)`
@@ -3451,7 +3582,7 @@ def check_keyboard(page) -> list[str]:
 
     sized = need(probe(page), "readme")
     for _ in range(3):
-        arrow(page, "ArrowRight", shift=True)
+        press_key(page, "ArrowRight", modifiers=SHIFT)
     grown = need(probe(page), "readme")
     # `sized["placed"]["w"]` for the same reason: `sizeTo(this.placed.w + kx * KEY_STEP, …)`.
     # Masked today, because only the position clamp can separate `box` from `placed` on the
@@ -6354,9 +6485,29 @@ def check_open_across_apps(page) -> list[str]:
     pad = notepad_parts(page)
     if pad is None:
         return bad + ["open: no Notepad window opened"]
+
+    #: The buffer and the file at each step, exactly.
+    #:
+    #: Every assertion below was `in`, and the exact bytes are what a stray keystroke hides
+    #: in: `edited-in-notepad\ns` satisfies `"edited-in-notepad" in`, so a Ctrl+S that typed
+    #: its own `s` into the document reported a clean save of a corrupted one. The lengths
+    #: are derived from these strings rather than spelled in the status line's wording.
+    mounted = "bridge-one\n"
+    edited = mounted + "edited-in-notepad\n"
+    twice_edited = edited + "one-more-edit\n"
+    behind = "written-behind-notepad\n"
+
+    def cat(path: str) -> str:
+        """What `cat` printed, without the prompt and the echoed line `term_run` returns."""
+        printed = term_run(page, f"cat {path}", shell)
+        return printed.split("\n", 1)[1] if "\n" in printed else printed
+
+    def buffer_now() -> str:
+        return notepad_parts(page, pad["id"])["value"]
+
     if pad["title"] != "bridge.txt - Notepad":
         bad.append(f"open: Notepad is titled {pad['title']!r}, want 'bridge.txt - Notepad'")
-    if pad["value"] != "bridge-one\n":
+    if pad["value"] != mounted:
         bad.append(f"open: Notepad holds {pad['value']!r}, want the file the shell wrote")
 
     # Typed into, then saved with Ctrl+S. The caret is moved by script and the text is
@@ -6367,23 +6518,16 @@ def check_open_across_apps(page) -> list[str]:
     time.sleep(0.1)
 
     def ctrl_s() -> None:
-        for event_type in ("rawKeyDown", "keyUp"):
-            page.call(
-                "Input.dispatchKeyEvent",
-                type=event_type,
-                key="s",
-                code="KeyS",
-                windowsVirtualKeyCode=83,
-                nativeVirtualKeyCode=83,
-                # 2 is Ctrl. Notepad's handler asks for `ctrlKey`, and a keypress without it
-                # is the browser's own Save dialog rather than the editor's.
-                modifiers=2,
-            )
+        # Notepad's handler asks for `ctrlKey`, and a keypress without it is the browser's
+        # own Save dialog rather than the editor's.
+        press_key(page, "s", modifiers=CTRL)
         time.sleep(0.3)
 
     ctrl_s()
+    if buffer_now() != edited:
+        bad.append(f"open: Ctrl+S left the buffer {buffer_now()!r}, want {edited!r}")
     saved = notepad_parts(page, pad["id"])["status"]
-    if "saved" not in saved:
+    if saved != f"/tmp/bridge.txt · {len(edited)} characters · saved":
         bad.append(f"open: Notepad's status after Ctrl+S is {saved!r}")
 
     # A write from the other window, behind this buffer's back. The first Ctrl+S after it has
@@ -6393,25 +6537,60 @@ def check_open_across_apps(page) -> list[str]:
     notepad_caret(page, pad["id"])
     page.type_text("one-more-edit\n")
     ctrl_s()
+    if buffer_now() != twice_edited:
+        bad.append(f"open: the refused Ctrl+S left the buffer {buffer_now()!r}")
     conflict = notepad_parts(page, pad["id"])["status"]
-    if "changed on disk" not in conflict:
+    if conflict != (
+        "/tmp/bridge.txt · changed on disk since it was opened — Ctrl+S again to overwrite"
+    ):
         bad.append(f"open: Notepad overwrote an external change silently — status {conflict!r}")
-    held = term_run(page, "cat /tmp/bridge.txt", shell)
-    if "written-behind-notepad" not in held:
-        bad.append(f"open: the refused save wrote anyway — the file reads {held.strip()[:120]!r}")
+    held = cat("/tmp/bridge.txt")
+    if held != behind:
+        bad.append(f"open: the refused save wrote anyway — the file reads {held!r}")
     # And the second one goes through, because replacing it may well be what was meant.
     raise_window(page, pad["id"])
     ctrl_s()
-    forced = term_run(page, "cat /tmp/bridge.txt", shell)
-    if "one-more-edit" not in forced:
-        bad.append(f"open: a second Ctrl+S did not overwrite — the file reads {forced.strip()[:120]!r}")
+    forced = cat("/tmp/bridge.txt")
+    if forced != twice_edited:
+        bad.append(f"open: a second Ctrl+S did not overwrite — the file reads {forced!r}")
 
-    back = term_run(page, "cat /tmp/bridge.txt", shell)
-    if "edited-in-notepad" not in back:
+    # The two apps read the same bytes, each through its own surface. Asserted against the
+    # buffer rather than against the literal again, so this says "one filesystem" and not
+    # "the literal above a second time".
+    back, held_in_pad = cat("/tmp/bridge.txt"), buffer_now()
+    if back != held_in_pad:
         bad.append(
-            f"open: the terminal reads {back.strip()[:120]!r} — Notepad saved into a "
-            "different filesystem from the one the shell is holding"
+            f"open: the terminal reads {back!r} and Notepad holds {held_in_pad!r} — Notepad "
+            "saved into a different filesystem from the one the shell is holding"
         )
+
+    # A chord nothing binds leaves the document alone, asserted on the one window in this
+    # suite whose buffer is known to the byte. `q` because Notepad binds only Ctrl+O and
+    # Ctrl+S (`apps/notepad/app.mjs:286-288`), so no `preventDefault` stands between the
+    # keypress and Blink's editing path.
+    #
+    # This is the assertion that would have caught `press_key` dispatching `text` for every
+    # character, modified or not. Measured with the rule disabled: Alt+Q and Ctrl+Alt+Q each
+    # left a `q` in the buffer — Blink reads Ctrl+Alt as AltGr, which composes — while
+    # Ctrl+Q alone inserted nothing. `q` and not the Ctrl+S above, because Ctrl alone cannot
+    # show the defect at all: it is not a composing modifier, so a plain Ctrl chord carrying
+    # `text` inserts nothing even when nothing calls `preventDefault`. Measured on a bare
+    # textarea with no shell listener over it: Ctrl+S and Ctrl+Q left the buffer untouched at
+    # `defaultPrevented: false`, while Alt+S and Ctrl+Alt+S each typed an `s`. Alt is the
+    # only arm that bites, and the loop below holds it with both of its neighbours.
+    #
+    # Meta is not probed. Cmd+Q is Quit, and dispatching it shut Chrome down mid-check: the
+    # run reported "socket is already closed" from the screenshot and nothing about the key.
+    notepad_caret(page, pad["id"])
+    for chord, bits in (("Alt+Q", ALT), ("Ctrl+Alt+Q", CTRL | ALT), ("Ctrl+Q", CTRL)):
+        press_key(page, "q", modifiers=bits)
+        if buffer_now() != twice_edited:
+            bad.append(
+                f"open: {chord} typed into the document — the buffer reads "
+                f"{buffer_now()!r}, want {twice_edited!r}. A chord is a command, not a "
+                "character."
+            )
+            break
 
     # A directory opens a second terminal, already in it. Two sessions, one filesystem.
     term_run(page, "open /tmp", shell, settle=1.2)
