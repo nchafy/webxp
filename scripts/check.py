@@ -10729,6 +10729,13 @@ FOLDER_PLAIN = "#folder-probe-plain"
 
 FOLDER_LOG = "window.__folderLog"
 
+#: How long the teardown waits for the fixture's window to leave `desktop.windows`.
+#:
+#: `XPWindow.close` is `async`: it awaits a zoom of `--zoom-ms` before `removed` runs. The
+#: wait is what separates "the close is still animating" from "the close did not take", and
+#: neither answer is a pass, so this is short.
+FOLDER_CLOSE_S = 4.0
+
 #: Where the one disabled item sits among the five, and what it refuses with.
 #:
 #: In the middle, so the arrows cross it rather than stopping at it, and so neither end of
@@ -11545,16 +11552,30 @@ def check_folder_handed_back(page) -> list[str]:
         " delete window.__folderWin; delete window.__folderLog;"
         " if (win && !win.closed) win.close(); return true; })()"
     )
-    time.sleep(SETTLE_S + 0.3)
-    state = page.evaluate(
-        "(() => ({ wins: window.webxp.windows.filter((w) => w.programId === 'map-challenge')"
-        "   .length,"
-        "   views: document.querySelectorAll('%s, %s').length,"
-        "   left: ['__folderWin', '__folderLog'].filter((name) => name in window) }))()"
-        % (FOLDER_PROBE, FOLDER_PLAIN)
-    )
+    # Waited for, not slept past. `XPWindow.close` awaits a zoom before `removed` splices the
+    # window out of `desktop.windows`, so the state after it is something to poll: a fixed
+    # sleep of 0.75 s was long enough for the folder group run alone and reported a surviving
+    # window once in a full run, where fifteen other windows were open. A deadline that is
+    # reached is still a failure, and it names what was left.
+    deadline = time.monotonic() + FOLDER_CLOSE_S
+    while True:
+        state = page.evaluate(
+            "(() => ({ wins: window.webxp.windows"
+            "     .filter((w) => w.programId === 'map-challenge')"
+            "     .map((w) => ({ id: w.id, closed: w.closed, hidden: w.el.hidden })),"
+            "   views: document.querySelectorAll('%s, %s').length,"
+            "   left: ['__folderWin', '__folderLog'].filter((name) => name in window) }))()"
+            % (FOLDER_PROBE, FOLDER_PLAIN)
+        )
+        if not state["wins"] or time.monotonic() > deadline:
+            break
+        time.sleep(0.1)
     if state["wins"]:
-        bad.append(f"folder view: {state['wins']} map-challenge windows after the teardown, want 0")
+        bad.append(
+            f"folder view: {state['wins']} are still on the desktop {FOLDER_CLOSE_S}s after "
+            "the teardown closed the fixture's window, want none — the checks after this one "
+            "expect the desktop the fixture found"
+        )
     if state["views"]:
         bad.append(
             f"folder view: {state['views']} probe views still in the document — a stray one "
