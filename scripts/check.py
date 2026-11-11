@@ -2710,6 +2710,134 @@ def check_app_filetypes(page) -> list[str]:
     return bad
 
 
+#: A file in the repository mounted at `/usr/src/webxp` whose extension nothing opens. Real
+#: rather than invented: a reader can reach it from the desktop, and a `.gz` is compressed
+#: bytes, so Notepad showing them would be the wrong answer loudly instead of quietly.
+UNOPENABLE = "/usr/src/webxp/apps/day-02-lines/fixture/activities/202610200000.gpx.gz"
+
+
+def check_file_associations(page, *, invert: bool = False) -> list[str]:
+    """Extension to program: the table, the resolver, and a type with nothing to open it.
+
+    That `.txt` resolves to Notepad is the cheap half. The two halves that cost something:
+    an id in the table the desktop never registered is a double-click that does nothing,
+    because `Desktop.launch` returns `null` for a program it does not have; and an associated
+    program that is a singleton cannot be handed a path at all, which is the trap `webview`
+    sets for `.html`. Both are read off the live registry rather than off the manifest, so an
+    app that failed to load counts as missing.
+
+    `danglingAssociations([])` is asserted non-empty too. Without that line the dangling
+    assertion reads the same when the detector is broken as when the table is right.
+
+    Invertible: one page round trip, no input and no state, so the control costs nothing to
+    re-run on every `--prove-failure`.
+    """
+    result = page.evaluate(
+        "(async () => {"
+        " const api = await import('/src/apps.mjs');"
+        " const ids = [...window.webxp.programs.keys()];"
+        " let frozen = 'mutable';"
+        " try { api.programsFor('/a.txt').push('x'); } catch (error) { frozen = error.name; }"
+        " return {"
+        "   table: api.FILE_PROGRAMS,"
+        "   txt: [...api.programsFor('/home/user/readme.txt')],"
+        "   upper: [...api.programsFor('/home/user/README.TXT')],"
+        "   noext: [...api.programsFor('/usr/src/webxp/LICENSE')],"
+        "   dotfile: api.extensionOf('/home/user/.bashrc'),"
+        "   double: api.extensionOf('/a/b.gpx.gz'),"
+        "   miss: [...api.programsFor(MISS)],"
+        "   why: api.noProgramFor(MISS),"
+        "   dangling: api.danglingAssociations(ids),"
+        "   detector: api.danglingAssociations([]).length,"
+        "   singletons: ids.filter((id) => (window.webxp.programs.get(id) || {}).singleton),"
+        "   frozen,"
+        " }; })()".replace("MISS", json.dumps(UNOPENABLE)),
+        # Without this the IIFE's promise comes back by value as `{}` and every key below
+        # reads missing. It did, first try, and the harness reported a KeyError rather than
+        # a pass.
+        await_promise=True,
+    )
+    bad = []
+    if invert:
+        # --prove-failure. The resolver does answer, so asserting that it does not must
+        # fail. The two readings are the ends of the table's job — a type with a program,
+        # and a type with none.
+        if result["txt"] == ["notepad"] and result["miss"] == []:
+            bad.append(
+                "file associations[--prove-failure]: .txt resolved to "
+                f"{result['txt']} and a .gz to {result['miss']} as they should — the "
+                "inverted assertion failed, so this check can fail"
+            )
+        return bad
+    table = result["table"]
+    if not table:
+        return ["file associations: FILE_PROGRAMS is empty"]
+
+    # The table's own shape. A key without its dot would never match `extensionOf`, and an
+    # empty list is a third way of saying "no program" that no caller tests for.
+    for extension, programs in table.items():
+        if extension and not extension.startswith("."):
+            bad.append(f"file associations: key {extension!r} has no leading dot")
+        if extension != extension.lower():
+            bad.append(f"file associations: key {extension!r} is not lower-case")
+        if not programs:
+            bad.append(f"file associations: {extension!r} maps to an empty list, not an absence")
+
+    # Resolution: the default opener, case-insensitively, and a name with no extension.
+    if result["txt"] != ["notepad"]:
+        bad.append(f"file associations: .txt resolved to {result['txt']}, want ['notepad']")
+    if result["upper"] != result["txt"]:
+        bad.append(
+            f"file associations: README.TXT resolved to {result['upper']} but readme.txt to "
+            f"{result['txt']} — the lookup is case-sensitive"
+        )
+    if result["noext"] != ["notepad"]:
+        bad.append(f"file associations: LICENSE resolved to {result['noext']}, want ['notepad']")
+    if result["dotfile"] != "":
+        bad.append(f"file associations: .bashrc's extension read {result['dotfile']!r}, want ''")
+    if result["double"] != ".gz":
+        bad.append(f"file associations: b.gpx.gz's extension read {result['double']!r}")
+
+    # The miss, and the sentence that has to come with it.
+    if result["miss"] != []:
+        bad.append(f"file associations: a .gz resolved to {result['miss']}, want nothing")
+    why = result["why"]
+    if UNOPENABLE not in why or ".gz" not in why:
+        bad.append(
+            f"file associations: an unopenable file is explained as {why!r} — it must name the "
+            "path and the extension"
+        )
+
+    # No dangling id, and the detector that says so can still say no.
+    if result["dangling"]:
+        bad.append(
+            f"file associations: {result['dangling']} name programs the desktop has not "
+            "registered — launch returns null and a double-click does nothing"
+        )
+    if result["detector"] < 1:
+        bad.append(
+            "file associations: danglingAssociations found nothing against an empty registry, "
+            "so its clean answer above measured nothing"
+        )
+
+    # A singleton cannot be opened on a path: it is mounted once, and `launch` warns and
+    # drops the arguments. `webview` is the live example, and `.html` must not point at it.
+    associated = {program for programs in table.values() for program in programs}
+    singletons = sorted(associated & set(result["singletons"]))
+    if singletons:
+        bad.append(
+            f"file associations: {singletons} are singletons — a second launch discards the "
+            "path, so the file silently does not open"
+        )
+
+    if result["frozen"] != "TypeError":
+        bad.append(
+            f"file associations: pushing into a resolved list was {result['frozen']} — a "
+            "caller can rewrite the association for everyone after it"
+        )
+    return bad
+
+
 def check_autostart(page) -> list[str]:
     """`Desktop.autostart()` opens programs that ask for it, and skips the ones that do not.
 
@@ -6800,6 +6928,10 @@ INVERTIBLE = (
     check_drag,
     check_reentrant_gesture,
     check_terminal,
+    # The three below are picked because inverting them is free: each is one
+    # page read with no input and no state change, so the control re-runs on every
+    # `--prove-failure` rather than being a measurement somebody took once.
+    check_file_associations,
     # `css_ties.check` carries its own inversion: `invert=True` applies its `REVERTS` to the
     # stylesheet text in memory and asserts against the undone tree. Listing it here runs
     # that control on every `--prove-failure` rather than only when somebody runs the file by
@@ -6819,6 +6951,9 @@ CHECKS = (
     ("launch all", check_launch_all),
     ("app loading", check_app_loading),
     ("app filetypes", check_app_filetypes),
+    # Beside `app filetypes`, which is the other half of the same confusion: that one is about
+    # the icon a type draws, this one about the program it opens.
+    ("file associations", check_file_associations),
     ("autostart", check_autostart),
     ("app styles", check_app_styles),
     ("broken app", check_broken_app),

@@ -166,6 +166,80 @@ one's content.
 
 A throwing `ready` is reported exactly like a throwing `mount`.
 
+## File associations — which program opens a `.txt`
+
+`filetype` and the association table answer two different questions, and the names are close
+enough to swap by accident:
+
+| | Question | Lives in | Keyed by |
+| --- | --- | --- | --- |
+| `filetype` | which icon does this *program* draw? | `FILETYPES` in `src/icons.mjs` | a group name — `map`, `notes` |
+| `FILE_PROGRAMS` | which *program* opens this file? | `src/apps.mjs` | an extension — `.txt`, `.gz` |
+
+The table is keyed by extension, lower-cased, leading dot included. Its value is program ids,
+most-preferred first: the first is what a double-click uses, and the whole list is what an
+"Open With" menu offers.
+
+```js
+import { programsFor, noProgramFor } from '../../src/apps.mjs';
+
+const [program] = programsFor(path);
+if (!program) { win.setStatus(noProgramFor(path)); return; }
+await desktop.launch(program, { path });
+```
+
+Three functions, one definition each:
+
+| | |
+| --- | --- |
+| `extensionOf(path)` | `'.txt'`, lower-cased, `''` when there is none. The last extension only, so `a.gpx.gz` is a `.gz`. A leading dot is a name, so `.bashrc` has none. |
+| `programsFor(path)` | the ids, most-preferred first. Frozen — copy before sorting. Empty means nothing is registered. |
+| `noProgramFor(path)` | the line to show when it came back empty. |
+
+`''` is a real key, not a placeholder: the mounted source tree has exactly two names with no
+extension, `LICENSE` and `.gitignore`, and both are text.
+
+### An unregistered type is refused, not guessed
+
+A type with no entry resolves to nothing, and the caller says so. The alternative — fall back
+to Notepad for anything — was rejected: every file in this filesystem is text, so that
+fallback would resolve *everything* and the table would stop being able to answer the picker's
+question. It would also hide what is missing. There is no image viewer, so `.png` has to come
+back empty for the gap to be visible at all.
+
+The cost is real and is one line of data to pay off: `echo hi > ~/notes.yml` and
+double-clicking it is a refusal until `.yml` is added. Add it, rather than widening the lookup.
+
+### Two ways an association dangles
+
+**An id no program registered.** `Desktop.launch` returns `null` for a program it does not
+have, so `.png → ['paint']` with no Paint on the disk is a double-click that does nothing at
+all — not an error, nothing. `loadApps` compares the table against the registry it just filled
+and writes a console line naming every dangling pair, which the suite's end-of-run console
+sweep turns into a failure.
+
+**An id that cannot be handed a path.** This one has no detector that catches every case and
+it looks exactly like a working association. `.html` goes to Notepad rather than to `webview`
+even though `webview` exists, because `webview` is a singleton `frame` app: it hosts its own
+page, and a second launch warns to the console and discards the arguments. **Only name a
+program that reads `args.path` as a file.** Today that is `notepad`; `explorer` and `terminal`
+take a path too, but a directory.
+
+So the table deliberately resolves almost everything to Notepad. That is not the table being
+pointless — it is the table being honest. There is no image viewer, so `.png` resolves to
+nothing and says so, where before it was handed to a text editor.
+
+### Adding one
+
+One line of data:
+
+```js
+'.png': ['image-viewer', 'notepad'],
+```
+
+Nothing else changes. Adding a program that opens an existing type is an edit to the same line,
+and its position in the list is its preference.
+
 ## Styles
 
 Declare them, and scope them:

@@ -7,6 +7,11 @@
  * Nothing here knows what an app does. It knows where an app lives, what shape its spec has
  * to be, and how to report an app that got that wrong — which is the whole job, because the
  * failure this is built to avoid is an app that is silently absent.
+ *
+ * It also carries the one exception to that: `FILE_PROGRAMS`, which says *which* program opens
+ * a given kind of file. It lives here because this is the module that knows every program
+ * there is, so it is the only place an association naming a program that does not exist can be
+ * caught — see `danglingAssociations`.
  */
 
 import { PROGRAM_KEYS } from './desktop.mjs';
@@ -35,6 +40,133 @@ const PASS_THROUGH = [...KNOWN_KEYS].filter((key) => !LOADER_OWNED.has(key));
 //: `ready` is passed through to the desktop but is not required, and an app may have it
 //: without a `mount` only in the `frame` case — which has no use for it, since a hosted
 //: document initialises itself.
+
+/* ------------------------------ file associations ------------------------------ */
+
+/**
+ * Which program opens which kind of file.
+ *
+ * Keyed by extension, lower-cased, leading dot included. The value is program ids,
+ * **most-preferred first**: the first is what a double-click uses, and the whole list is what
+ * an "Open With" menu offers. Every list has one entry today and the shape is still a list,
+ * because the list is the contract — the day an image viewer lands, `.svg` gains a preferred
+ * opener ahead of Notepad by editing data rather than logic.
+ *
+ * `''` is the association for a name with no extension. The mounted source tree has exactly
+ * two — `LICENSE` and `.gitignore` — and both are text, so this is a real key and not a
+ * placeholder; it is also what keeps `noProgramFor` from ever having to describe the empty
+ * extension.
+ *
+ * **Only ids in `apps/manifest.mjs` may appear here, and only apps that read `args.path` as a
+ * file.** Both halves bite. `desktop.launch` returns `null` for a program it does not have, so
+ * a dangling id is a double-click that does nothing at all; and an app that exists but cannot
+ * be handed a path is just as dangling. That is why `.html` goes to Notepad and not to
+ * `webview`: `webview` is a singleton `frame` app, so it hosts its own page and a second launch
+ * discards the arguments it was given.
+ *
+ * The extensions listed are the ones a reader can actually reach — everything in the seeded
+ * filesystem (`shared/fs/seed.mjs`) and in the repository mounted at `/usr/src/webxp`
+ * (`shared/fs/mount.json`) — plus `.js`, which a reader writes by hand. Anything else resolves
+ * to nothing and says so, which is the point: there is no image viewer, so `.png` is a gap the
+ * desktop admits to rather than a file it hands to a text editor.
+ *
+ * Frozen twice over: shallow `freeze` leaves the arrays writable, and an "Open With" that
+ * sorted its candidates in place would reorder the association for every later caller.
+ */
+export const FILE_PROGRAMS = Object.freeze(Object.fromEntries(
+  Object.entries({
+    '': ['notepad'],
+    '.conf': ['notepad'],
+    '.css': ['notepad'],
+    '.csv': ['notepad'],
+    '.html': ['notepad'],
+    '.js': ['notepad'],
+    '.json': ['notepad'],
+    '.log': ['notepad'],
+    '.md': ['notepad'],
+    '.mjs': ['notepad'],
+    '.py': ['notepad'],
+    '.svg': ['notepad'],
+    '.txt': ['notepad'],
+  }).map(([extension, ids]) => [extension, Object.freeze(ids)]),
+));
+
+//: One shared empty result, so `programsFor` does not allocate per miss and cannot hand back
+//: an array a caller could push into.
+const NO_PROGRAMS = Object.freeze([]);
+
+/**
+ * The extension of a path: lower-cased, leading dot included, `''` when there is none.
+ *
+ * The one definition, because a type filter in a file picker has to split a name the same way
+ * the association lookup does or it will offer a file that cannot then be opened.
+ *
+ * Only the last extension counts, so `activities.gpx.gz` is a `.gz` — which is correct here,
+ * since what can read it is a decompressor and not a GPX reader. A leading dot is a name and
+ * not a separator, so `.bashrc` has no extension; that is the POSIX reading, and this
+ * filesystem is a POSIX one down to its mode bits.
+ *
+ * @param {string} path
+ * @returns {string}
+ */
+export function extensionOf(path) {
+  const name = String(path).slice(String(path).lastIndexOf('/') + 1);
+  const dot = name.lastIndexOf('.');
+  return dot > 0 ? name.slice(dot).toLowerCase() : '';
+}
+
+/**
+ * The programs registered to open `path`, most-preferred first.
+ *
+ * Three callers want exactly this list: a double-click takes `[0]`, a picker's type filter
+ * asks whether its program is in it, and "Open With" offers all of it. Empty means nothing is
+ * registered — ask `noProgramFor` for the sentence to show, because a double-click that
+ * silently does nothing is indistinguishable from a desktop that is broken.
+ *
+ * A directory is not a kind of file and the caller settles that before asking: Explorer's
+ * `open` navigates into one, and a path ending in `/` answers here as if it had no extension.
+ *
+ * @param {string} path
+ * @returns {readonly string[]} Frozen. Copy it before sorting.
+ */
+export function programsFor(path) {
+  return FILE_PROGRAMS[extensionOf(path)] || NO_PROGRAMS;
+}
+
+/**
+ * Why `path` cannot be opened — the line a caller shows when `programsFor` came back empty.
+ *
+ * Path first, matching the filesystem's own errors, so a status bar reads the same whichever
+ * way the open failed.
+ *
+ * The extension is non-empty wherever this is reachable: `''` is a key of `FILE_PROGRAMS`, so
+ * an extensionless name never resolves to nothing.
+ *
+ * @param {string} path
+ * @returns {string}
+ */
+export function noProgramFor(path) {
+  return `${path}: no program is registered for ${extensionOf(path)} files`;
+}
+
+/**
+ * Associations that name a program which is not registered.
+ *
+ * @param {Iterable<string>} ids  The registered program ids.
+ * @returns {string[]} One `'.png -> paint'` per dangling pair. Empty means the table is live.
+ */
+export function danglingAssociations(ids) {
+  const registered = new Set(ids);
+  const dangling = [];
+  for (const [extension, programs] of Object.entries(FILE_PROGRAMS)) {
+    for (const id of programs) {
+      if (!registered.has(id)) dangling.push(`${extension || '(no extension)'} -> ${id}`);
+    }
+  }
+  return dangling;
+}
+
+/* ------------------------------ loading ------------------------------ */
 
 /** Stylesheets already in the document, so N windows of one app link its CSS once. */
 const linked = new Map();
@@ -274,5 +406,15 @@ export async function loadApps(desktop, ids, options = {}) {
       loaded.push(result.id);
     }
   }
+
+  // The only moment both halves of an association are known: the table is static, the
+  // registry is not. An id in `FILE_PROGRAMS` that nothing registered is a file whose
+  // double-click reaches `launch`, gets `null`, and does nothing — the silently-absent
+  // program this module exists to make noisy.
+  const dangling = danglingAssociations(desktop.programs.keys());
+  if (dangling.length) {
+    console.error(`webxp: file associations name programs that do not exist: ${dangling.join(', ')}`);
+  }
+
   return { loaded, broken };
 }
