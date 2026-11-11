@@ -1,0 +1,185 @@
+/* The menu bar: the strip under a window's title bar, and the popups it opens.
+ *
+ * Linked by `widgets.menuBar` on first use, not by `index.html`: a menu is a control most
+ * windows never build, and the page that links the window manager's sheets has no menu in it
+ * until a program asks for one.
+ *
+ * Every row is a `button`, so `theme.css` has already given it a bevel, a gradient and a
+ * border. Flattening that back out is most of this file, and the selectors below are written
+ * at the class counts that win the ties it creates. `docs/apps.md` carries the eight this
+ * project has already paid for; count before changing one.
+ */
+
+.menu-bar {
+  display: flex;
+  /* Wraps rather than clipping. A 220px window cannot show File, Edit, View, Favorites,
+     Tools and Help on one line, and a clipped menu is a menu that cannot be reached at all. */
+  flex-wrap: wrap;
+  align-items: stretch;
+  padding: 1px 2px;
+  background: var(--face);
+  border-bottom: 1px solid var(--sunk);
+  /* The bar stays at the top of the client area while the content under it scrolls.
+     `.window-body` is the scroller, and a menu bar that scrolls away is a menu bar a reader
+     has to go looking for. */
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+/* ---------------------------------------------------------------------------
+   The titles, and the rows. One flat look for both: a menu row is not a button to look at,
+   only to a screen reader and to the keyboard.
+   --------------------------------------------------------------------------- */
+
+.menu-title,
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  /* Shorter than `--control-h`: this is a menu row, not a control, and XP's were 18–20px.
+     The height comes from the padding so a wrapped label still fits. */
+  min-height: 0;
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  color: var(--ink);
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  cursor: default;
+}
+
+.menu-title { padding: .2rem .45rem; }
+
+.menu-item {
+  width: 100%;
+  padding: .22rem .55rem .22rem 0;
+  white-space: nowrap;
+}
+
+/* Longhands, and the pair below sets neither of them: `theme.css`'s `button:active` is
+   (0,1,1) and these are (0,2,0), so these win — but a `background` shorthand here would also
+   tie `:hover`, which is (0,2,0) too. The two states share no property, so their order in
+   this file decides nothing. `.start-item` is the same arrangement for the same reason.
+
+   `box-shadow: none` also suppresses the focus halo `theme.css` paints, for as long as a key
+   or a pointer is held down on a focused row. The `outline` half of that indicator is a
+   separate property and survives, which is what keeps the row visibly focused. */
+.menu-title:active,
+.menu-item:active { background-image: none; box-shadow: none; }
+
+/* The highlight is the focus. A menu moves focus with the pointer as well as with the arrow
+   keys, so `:focus` and not `:focus-visible`: the row under the pointer and the row the
+   arrows reached are the same row, and they have to look the same.
+
+   An open menu's title is in the same list rather than in a rule of its own: a second
+   (0,2,0) block setting the same two properties would tie this one, and a tie whose two
+   sides happen to agree is still a tie. */
+.menu-title:hover,
+.menu-title:focus,
+.menu-title[aria-expanded="true"],
+.menu-item:hover,
+.menu-item:focus {
+  background-color: var(--title-b);
+  color: #fff;
+}
+
+/* Three classes, deliberately. `.menu-item:hover` is (0,2,0) and sets `color` and
+   `background-color`; a two-class disabled rule would tie it, and the result would then be
+   whichever of these two blocks comes last in this file. A disabled row must not light up
+   under the pointer, so it is stated at (0,3,0) and the order here decides nothing.
+
+   `--sunk` on white measures 2.08:1, which is Luna's own dead label and what
+   `theme.css` gives every other disabled control. An inactive component is outside
+   SC 1.4.3, and one disabled look for the whole desktop is worth more here than a value
+   this control alone would correct. */
+.menu-popup .menu-item[aria-disabled="true"] {
+  color: var(--sunk);
+  background-color: transparent;
+  /* Luna embossed a dead label rather than fading it, as `button:disabled` does. */
+  text-shadow: 1px 1px 0 var(--raised);
+}
+
+.menu-label { flex: 0 1 auto; min-width: 0; }
+/* The mnemonic's underline is always on. XP showed it only after Alt was pressed, which
+   means the one hint about the Alt key is invisible until you already know about it. */
+.menu-label u { text-decoration-thickness: 1px; }
+
+/* The accelerator column: right-aligned, and the same colour as the label, as XP's was. A
+   dimmed accelerator is a later convention, and dimming it is also what puts a second
+   foreground colour on the highlight — one that has to clear AA against it. */
+.menu-accel { margin-left: auto; padding-left: 1.75rem; }
+
+/* ---------------------------------------------------------------------------
+   The popups.
+   --------------------------------------------------------------------------- */
+
+.menu-popup {
+  /* Fixed, not absolute. `.window-body` is `overflow: auto`, so an absolutely positioned
+     popup is clipped by the client area and extends its scroll height instead — measured at
+     900px of scroll for a 900px popup. A fixed popup resolves against the viewport despite
+     the body's `container-type: inline-size`, so it is neither clipped nor scrolled.
+     `widgets.mjs` writes `left` and `top` through the CSSOM. */
+  position: fixed;
+  left: 0;
+  top: 0;
+  /* Above `.window-grip`, which is 3. A popup can reach past the window's own foot, and the
+     south grip sits there; below it, the bottom rows of a long menu would answer a click
+     with a resize. Still inside the window's stacking context, so a background window's
+     menu cannot cover the window in front of it. */
+  z-index: 4;
+  min-width: 10rem;
+  width: max-content;
+  max-width: 22rem;
+  /* Never taller than the desktop. The bound is the taskbar's edge, not the viewport's,
+     because the taskbar paints above every window. */
+  max-height: calc(100vh - var(--taskbar-h) - 1rem);
+  overflow-y: auto;
+  /* A wheel over a popup that does not scroll must not scroll the client area underneath:
+     that moves the title the popup was placed against and leaves the popup behind. */
+  overscroll-behavior: contain;
+  padding: 2px;
+  /* The gutter stripe down the left, where the check marks sit. Declared as a length because
+     the stripe and the gutter column have to be the same number, and `--menu-gutter` is the
+     one place that number exists. */
+  --menu-gutter: 20px;
+  background:
+    linear-gradient(to right, var(--face) 0, var(--face) var(--menu-gutter),
+                    var(--bg) var(--menu-gutter));
+  border: 1px solid var(--rule);
+  border-top-color: var(--raised);
+  border-left-color: var(--raised);
+  box-shadow: inset -1px -1px 0 var(--raised), 2px 2px 5px rgb(0 0 0 / 28%);
+}
+
+/* Spelled out for the reason `window.css` spells out `.window[hidden]`: a `display` declared
+   above would outrank the UA sheet's `[hidden] { display: none }` and a closed menu would
+   stay on screen. There is no `display` here today, and this is what keeps that true. */
+.menu-popup[hidden] { display: none; }
+
+/* The grouping is the separator: a rule between groups, and never above the first or below
+   the last, which is what a hand-placed separator cannot promise. */
+.menu-group + .menu-group {
+  margin-top: 2px;
+  padding-top: 2px;
+  border-top: 1px solid var(--sunk);
+}
+
+.menu-check {
+  flex: 0 0 auto;
+  width: var(--menu-gutter);
+  text-align: center;
+  font-size: 11px;
+}
+.menu-item[aria-checked="true"] .menu-check::before { content: "✓"; }
+
+/* The submenu arrow: drawn with borders, so it needs no glyph and no icon. */
+.menu-arrow {
+  flex: 0 0 auto;
+  margin-left: .5rem;
+  border: 4px solid transparent;
+  border-right-width: 0;
+  border-left: 5px solid currentcolor;
+}

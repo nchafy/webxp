@@ -3132,6 +3132,1164 @@ def check_link_schemes(page) -> list[str]:
     return bad + drain_expecting(page, "refused a cell link", "link schemes")
 
 
+# ---------------------------------------------------------------------------
+# The menu bar. `src/widgets.mjs` holds `menuBar`; `src/menu.css` is its skin, shared with
+# the context menus.
+# ---------------------------------------------------------------------------
+
+#: How long the bar is given to settle after a build or an open.
+SETTLE_MENU_S = 0.35
+
+#: The id the fixture puts on its own bar, so every read below addresses that bar and not
+#: whichever one is first in the document.
+#:
+#: Not cosmetic. `apps/notepad/app.mjs` builds a menu bar of its own and `src/contextmenu.mjs`
+#: renders the same `.menu-popup` / `.menu-item` classes, so a bare `.menu-bar` or
+#: `.menu-item[aria-disabled="true"]` resolves to whatever the suite has left open — and a
+#: check that measures a different widget from the one it names reports the wrong verdict
+#: about the wrong thing.
+MENU_BAR = "#menu-probe-bar"
+
+# --- the fixture -----------------------------------------------------------------------
+# A window with a menu bar covering every feature: groups, an accelerator, a check item, a
+# disabled row, and one submenu.
+
+MENU_BUILD = """
+(async () => {
+  const { menuBar } = await import('/src/widgets.mjs');
+  window.__menuLog = [];
+  const say = (what) => window.__menuLog.push(what);
+  // On `document`, in the bubble phase, so it runs after the bar's own handler on the window
+  // body and therefore sees whether that handler took the chord off the browser.
+  //
+  // The listener is kept on `window` by name so the teardown can remove it. An anonymous
+  // arrow function cannot be detached, and `check_menu_handed_back` holds what that cost.
+  window.__menuKeys = [];
+  if (!window.__menuKeyWatch) {
+    window.__menuKeyWatch = (event) => window.__menuKeys.push({
+      key: event.key, ctrl: event.ctrlKey, shift: event.shiftKey, alt: event.altKey,
+      taken: event.defaultPrevented,
+    });
+    document.addEventListener('keydown', window.__menuKeyWatch);
+  }
+  const win = await window.webxp.launch('readme');
+  // Both numbers fixed, and the width is not decoration. 120px is short on purpose: `menu
+  // geometry` has to measure a popup taller than what is left of the client area under the
+  // bar, which is the case the fixed positioning exists for. The width was `win.box.w`, i.e.
+  // whatever the resize and maximise checks had left this window at — which made `menu
+  // edges` order-dependent and cost a run: parked at the same inset the popup overflowed the
+  // viewport in isolation and fitted inside it in a full run, and the check's guard reported
+  // "no flip is being asked for" rather than passing on nothing. 560 is readme's own
+  // declared width.
+  win.sizeTo(560, 120);
+  const bar = menuBar({
+    scope: win.bodyEl,
+    label: 'Probe menu bar',
+    menus: [
+      { label: '&File', groups: [
+        [{ label: '&Open\\u2026', accel: 'Ctrl+O', onSelect: () => say('open') },
+         { label: 'Save &As\\u2026', accel: 'Ctrl+Shift+S', onSelect: () => say('saveas') }],
+        [{ label: 'Recen&t', groups: [[{ label: 'readme.txt', onSelect: () => say('recent') }]] }],
+        [{ label: 'E&xit', onSelect: () => say('exit') }],
+      ] },
+      { label: '&Edit', groups: [
+        [{ label: '&Undo', accel: 'Ctrl+Z', disabled: true, onSelect: () => say('undo') },
+         { label: '&Word wrap', checked: false, onSelect: (on) => say(`wrap:${on}`) }],
+      ] },
+      { label: '&View', groups: [[{ label: '&Status bar', onSelect: () => say('status') }]] },
+    ],
+  });
+  bar.id = 'menu-probe-bar';
+  // A second bar, built and dropped. `menu style` asserts one link per document, which only
+  // measures anything if `menuBar` has been called more than once.
+  menuBar({ menus: [{ label: '&Help', groups: [[{ label: '&About', onSelect: () => say('about') }]] }] });
+  win.setContent([bar, document.createElement('textarea')]);
+  window.__menuWin = win;
+  return { ok: true };
+})()
+"""
+
+#: Whether the fixture is still standing, asked of the document rather than of a flag.
+#:
+#: A module-level `built` boolean was the first shape of this, and it is the shape
+#: `verification.md` forbids: the flag survives a page reload and the DOM it describes does
+#: not, so the fixture would be reported present while every read below addressed nothing.
+MENU_STANDING = """
+(() => {
+  const win = window.__menuWin;
+  const bar = document.querySelector('%s');
+  if (!win || win.closed || !bar || !win.el.contains(bar)) return null;
+  return { id: win.id, titles: bar.querySelectorAll('.menu-title').length };
+})()
+""" % MENU_BAR
+
+
+def menu_fixture(page) -> None:
+    """Build the fixture window if it is not already standing.
+
+    Raises rather than returning a problem list: a check that could not build what it is
+    pointed at has measured nothing, and `HarnessError` is this suite's word for that.
+    """
+    standing = page.evaluate(MENU_STANDING)
+    if standing and standing["titles"] == 3:
+        return
+    built = page.evaluate(MENU_BUILD, await_promise=True)
+    if not built or not built.get("ok"):
+        raise HarnessError(f"the menu fixture did not build: {built!r}")
+    time.sleep(SETTLE_MENU_S)
+    standing = page.evaluate(MENU_STANDING)
+    if not standing or standing["titles"] != 3:
+        raise HarnessError(f"the menu fixture built but is not in the document: {standing!r}")
+
+
+#: Closed through the route a reader uses — a pointer down outside the bar — not by hiding
+#: the popups. Reaching into the DOM leaves the bar's own state saying a menu is open, and the
+#: next click on a title then reads as a click on the open one and closes it.
+#:
+#: What this deliberately does *not* do is put the roving tab stop back. The stop is per-bar
+#: state that `rove` (`src/widgets.mjs:753`) leaves wherever the last menu was opened, and
+#: three checks here move it — so an assertion that names one title passes or fails on which
+#: check ran before it. The fix is in the assertion and not in the reset: `MENU_HANDOFF` and
+#: `MENU_ROVING` compare the focused title against whichever title carries tabIndex 0, which
+#: is the invariant. Forcing the stop here instead would make `menu roles`' "want one 0" read
+#: this line rather than `src/widgets.mjs:667`.
+MENU_RESET = """
+(() => {
+  document.querySelector('.desktop').dispatchEvent(
+    new PointerEvent('pointerdown', { bubbles: true }));
+  const bar = document.querySelector('%s');
+  if (!bar) return { missing: 'no fixture bar in the document' };
+  const titles = [...bar.querySelectorAll('.menu-title')];
+  return {
+    expanded: titles.map((t) => t.getAttribute('aria-expanded')),
+    hidden: [...bar.querySelectorAll('.menu-popup')].every((p) => p.hidden),
+  };
+})()
+""" % MENU_BAR
+
+
+def menu_reset(page) -> None:
+    """Dismiss every menu, and fail if that did not take."""
+    state = page.evaluate(MENU_RESET)
+    # The harness has to fail when its own setup did not take, or every check after this one
+    # measures a bar in a state nobody asked for.
+    if state.get("missing"):
+        raise HarnessError(f"menu reset: {state['missing']}")
+    if state["expanded"] != ["false", "false", "false"] or not state["hidden"]:
+        raise HarnessError(f"the reset left the bar at {state}")
+    time.sleep(0.05)
+
+
+FOCUSED = """
+(() => {
+  const el = document.activeElement;
+  if (!el) return null;
+  const label = el.querySelector && el.querySelector('.menu-label');
+  return label ? label.textContent : (el.className || el.tagName);
+})()
+"""
+
+EXPANDED = """
+[...document.querySelectorAll('%s .menu-title')].map((t) => t.getAttribute('aria-expanded'))
+""" % MENU_BAR
+
+
+def focused(page):
+    return page.evaluate(FOCUSED)
+
+
+def expanded(page):
+    return page.evaluate(EXPANDED)
+
+
+ROLES = """
+(() => {
+  const bar = document.querySelector('%s');
+  if (!bar) return { missing: 'no fixture menu bar in the document' };
+  const titles = [...bar.querySelectorAll('.menu-title')];
+  const rows = [...bar.querySelectorAll('.menu-item')];
+  return {
+    barRole: bar.getAttribute('role'),
+    barLabel: bar.getAttribute('aria-label'),
+    titleRoles: titles.map((t) => t.getAttribute('role')),
+    haspopup: titles.map((t) => t.getAttribute('aria-haspopup')),
+    expanded: titles.map((t) => t.getAttribute('aria-expanded')),
+    tabindexes: titles.map((t) => t.tabIndex),
+    popupRoles: [...bar.querySelectorAll('.menu-popup')].map((p) => p.getAttribute('role')),
+    popupNamed: [...bar.querySelectorAll('.menu-popup')].every(
+      (p) => p.hasAttribute('aria-labelledby') || p.hasAttribute('aria-label')),
+    groupRoles: [...bar.querySelectorAll('.menu-group')].map((g) => g.getAttribute('role')),
+    rowRoles: rows.map((r) => r.getAttribute('role')),
+    rowTabindexes: [...new Set(rows.map((r) => r.tabIndex))],
+    rowTags: [...new Set(rows.map((r) => r.tagName))],
+    underlined: titles.map((t) => (t.querySelector('u') || {}).textContent || null),
+    accels: rows.filter((r) => r.querySelector('.menu-accel'))
+      .map((r) => r.querySelector('.menu-accel').textContent),
+    checkable: rows.filter((r) => r.getAttribute('role') === 'menuitemcheckbox')
+      .map((r) => r.getAttribute('aria-checked')),
+    disabled: rows.filter((r) => r.getAttribute('aria-disabled') === 'true')
+      .map((r) => r.querySelector('.menu-label').textContent),
+  };
+})()
+""" % MENU_BAR
+
+#: Where the frame hands focus, and whether that is the bar's own tab stop.
+#:
+#: `isRoving` and not a hardcoded 'File'. The roving stop is per-bar state that `rove` leaves
+#: wherever the last menu was opened, so naming one title asserts the order the checks happen
+#: to run in; the invariant is that the title holding focus is the title holding tabIndex 0.
+MENU_HANDOFF = """
+(() => {
+  const win = window.__menuWin;
+  const titles = [...document.querySelectorAll('%s .menu-title')];
+  document.querySelector('.start').focus();
+  win.takeFocus();
+  const el = document.activeElement;
+  const label = el.querySelector && el.querySelector('.menu-label');
+  return {
+    on: el.className, text: label ? label.textContent : null, tabIndex: el.tabIndex,
+    roving: titles.findIndex((t) => t.tabIndex === 0),
+    at: titles.indexOf(el),
+  };
+})()
+""" % MENU_BAR
+
+
+def check_menu_roles(page) -> list[str]:
+    """The bar is a menubar a screen reader and a keyboard can both work."""
+    menu_fixture(page)
+    menu_reset(page)
+    state = page.evaluate(ROLES)
+    if state.get("missing"):
+        return [f"menu bar: {state['missing']}"]
+    bad = []
+    if state["barRole"] != "menubar":
+        bad.append(f"menu bar: role is {state['barRole']!r}, want 'menubar'")
+    if not state["barLabel"]:
+        bad.append("menu bar: the bar has no aria-label")
+    if state["titleRoles"] != ["menuitem"] * 3:
+        bad.append(f"menu bar: title roles are {state['titleRoles']}")
+    if state["haspopup"] != ["true"] * 3:
+        bad.append(f"menu bar: titles report aria-haspopup {state['haspopup']}")
+    if state["expanded"] != ["false"] * 3:
+        bad.append(f"menu bar: a closed bar reports aria-expanded {state['expanded']}")
+    # One tab stop for the whole bar: a menubar is reached with Tab and walked with arrows.
+    # Three tab stops is the defect this asserts against, not a style preference.
+    if sorted(state["tabindexes"]) != [-1, -1, 0]:
+        bad.append(f"menu bar: title tabindexes are {state['tabindexes']}, want one 0")
+    if state["popupRoles"] != ["menu"] * 4:
+        bad.append(f"menu bar: popup roles are {state['popupRoles']}, want four 'menu'")
+    if not state["popupNamed"]:
+        bad.append("menu bar: a popup has no accessible name")
+    if set(state["groupRoles"]) != {"group"}:
+        bad.append(f"menu bar: group roles are {state['groupRoles']}")
+    if set(state["rowRoles"]) != {"menuitem", "menuitemcheckbox"}:
+        bad.append(f"menu bar: row roles are {set(state['rowRoles'])}")
+    if state["rowTabindexes"] != [-1]:
+        bad.append(f"menu bar: row tabindexes are {state['rowTabindexes']}, want only -1")
+    # win32.run's rows are `div on:click`. A row has to be something Enter activates on its
+    # own, which is the half of the fix that is not an ARIA attribute.
+    if state["rowTags"] != ["BUTTON"]:
+        bad.append(f"menu bar: rows are {state['rowTags']}, want BUTTON")
+    # Every row is a `button` with `tabindex="-1"`, and `window.mjs`'s `FOCUSABLE` picks the
+    # first match in the client area when the frame hands focus inwards. The titles come
+    # before the rows in the tree, so the bar's own tab stop is what that lands on — asserted,
+    # because the alternative is focus going to a row inside a popup that is `hidden`.
+    landed = page.evaluate(MENU_HANDOFF)
+    if landed["on"] != "menu-title" or landed["tabIndex"] != 0 or landed["at"] != landed["roving"]:
+        bad.append(
+            f"menu bar: the frame handed focus to {landed}, not the bar's own tab stop — the "
+            "title holding focus has to be the title holding tabIndex 0"
+        )
+    if state["underlined"] != ["F", "E", "V"]:
+        bad.append(f"menu bar: the mnemonics underlined are {state['underlined']}")
+    if state["accels"] != ["Ctrl+O", "Ctrl+Shift+S", "Ctrl+Z"]:
+        bad.append(f"menu bar: the accelerator column reads {state['accels']}")
+    if state["checkable"] != ["false"]:
+        bad.append(f"menu bar: check items report aria-checked {state['checkable']}")
+    if state["disabled"] != ["Undo"]:
+        bad.append(f"menu bar: the disabled rows are {state['disabled']}")
+    return bad
+
+
+#: The bar's open state and its roving stop, read together.
+MENU_ROVING = """
+(() => {
+  const titles = [...document.querySelectorAll('%s .menu-title')];
+  const el = document.activeElement;
+  return {
+    expanded: titles.map((t) => t.getAttribute('aria-expanded')),
+    roving: titles.findIndex((t) => t.tabIndex === 0),
+    at: titles.indexOf(el),
+    tabindexes: titles.map((t) => t.tabIndex),
+  };
+})()
+""" % MENU_BAR
+
+
+def check_menu_keyboard(page) -> list[str]:
+    """Arrow keys walk the bar, the popups and one submenu; Escape comes back out.
+
+    Driven with real keypresses. A synthesised `KeyboardEvent` proves the handler runs and
+    says nothing about whether the keystroke reaches it.
+    """
+    menu_fixture(page)
+    menu_reset(page)
+    bad = []
+    # Entered the way a reader does, and the assertion that the bar is one tab stop rather
+    # than three. From the last title box, because that is the element immediately before the
+    # client area: the window's title bar is followed by its own three buttons.
+    page.evaluate(
+        "(() => { const boxes = window.__menuWin.el.querySelectorAll('.title-box');"
+        " boxes[boxes.length - 1].focus(); return 1; })()"
+    )
+    press_key(page, "Tab")
+    entered = page.evaluate(MENU_ROVING)
+    if entered["at"] < 0 or entered["at"] != entered["roving"]:
+        return [f"menu keyboard: Tab from the title bar landed on {focused(page)!r} "
+                f"({entered}), not the bar's one tab stop"]
+    # Home on the closed bar, so the walk below starts from a title this check names rather
+    # than from wherever `rove` was left by whichever menu was opened last. `move(0)` roves
+    # and focuses in one step, which is also the assertion that Home works before any menu
+    # is down — the later "home on the bar" step asserts it again after a walk.
+    press_key(page, "Home")
+    if focused(page) != "File":
+        return [f"menu keyboard: Home on the closed bar reached {focused(page)!r}, not the "
+                "first title, so the walk below has no known starting point"]
+
+    steps = []
+
+    def step(name):
+        steps.append((name, focused(page), expanded(page)))
+
+    press_key(page, "ArrowDown");  step("down opens")
+    press_key(page, "ArrowDown");  step("next row")
+    press_key(page, "ArrowUp"); press_key(page, "ArrowUp"); step("wrap up")
+    press_key(page, "End");        step("end")
+    press_key(page, "Home");       step("home")
+    press_key(page, "Escape");     step("escape")
+    press_key(page, "ArrowRight"); step("right along bar")
+    press_key(page, "ArrowDown");  step("second menu")
+    # Home and End on the bar itself, which move the roving tab stop rather than opening.
+    press_key(page, "Escape")
+    press_key(page, "End");        step("end of the bar")
+    # Read before Home takes it back: the roving stop has to travel with the focus, and a
+    # census taken before anything moved cannot tell a stop that follows from one that does
+    # not. `menu roles` asserts the count; this asserts that the count is on the right title.
+    roved = page.evaluate(MENU_ROVING)
+    press_key(page, "Home");       step("home on the bar")
+
+    want = {
+        "down opens": ("Open…", ["true", "false", "false"]),
+        "next row": ("Save As…", ["true", "false", "false"]),
+        "wrap up": ("Exit", ["true", "false", "false"]),
+        "end": ("Exit", ["true", "false", "false"]),
+        "home": ("Open…", ["true", "false", "false"]),
+        "escape": ("File", ["false", "false", "false"]),
+        "right along bar": ("Edit", ["false", "false", "false"]),
+        "second menu": ("Undo", ["false", "true", "false"]),
+        "end of the bar": ("View", ["false", "false", "false"]),
+        "home on the bar": ("File", ["false", "false", "false"]),
+    }
+    seen = dict((name, (where, state)) for name, where, state in steps)
+    for name, expect in want.items():
+        if seen[name] != expect:
+            bad.append(f"menu keyboard: after {name!r} saw {seen[name]}, want {expect}")
+    if roved["at"] != roved["roving"] or sorted(roved["tabindexes"]) != [-1, -1, 0]:
+        bad.append(
+            f"menu keyboard: End along the bar left focus on title {roved['at']} with the "
+            f"tab stop on title {roved['roving']} ({roved['tabindexes']}) — a stop that does "
+            "not travel with the walk puts the next Tab back where the reader started"
+        )
+
+    # One level of submenu, in and out by three different keys.
+    press_key(page, "ArrowDown")
+    press_key(page, "ArrowDown"); press_key(page, "ArrowDown")
+    if focused(page) != "Recent":
+        return bad + [f"menu keyboard: three ArrowDowns reached {focused(page)!r}, not the "
+                      "submenu row, so nothing below is measuring a submenu"]
+    press_key(page, "ArrowRight")
+    if focused(page) != "readme.txt":
+        bad.append(f"menu keyboard: ArrowRight on a submenu row reached {focused(page)!r}")
+    # Escape one level in closes the submenu and leaves the menu down. Separately from the
+    # next step, because closing the whole bar here looks like a working Escape until you are
+    # one level in.
+    press_key(page, "Escape")
+    if (focused(page), expanded(page)) != ("Recent", ["true", "false", "false"]):
+        bad.append(
+            f"menu keyboard: Escape inside a submenu left focus on {focused(page)!r} and the "
+            f"bar at {expanded(page)}"
+        )
+    press_key(page, "ArrowRight")
+    press_key(page, "ArrowLeft")
+    if (focused(page), expanded(page)) != ("Recent", ["true", "false", "false"]):
+        bad.append(
+            f"menu keyboard: ArrowLeft inside a submenu left focus on {focused(page)!r} and "
+            f"the bar at {expanded(page)}"
+        )
+    # Tab out closes the bar and does not trap focus in it.
+    press_key(page, "Tab")
+    if expanded(page) != ["false", "false", "false"]:
+        bad.append(f"menu keyboard: Tab left the bar open at {expanded(page)}")
+    if focused(page) == "Recent":
+        bad.append("menu keyboard: Tab left focus inside the popup it closed")
+
+    # Focus leaving the bar by a route that is not Tab — a script, or the shell raising
+    # another window — closes the menu too, and focus moving *within* the bar does not.
+    #
+    # Both edges, because the handler is one `if`: `focusout` closes unless
+    # `bar.contains(event.relatedTarget)`. Asserting only the close would pass on a handler
+    # that closes on every focus move, which would take the menu down as the arrows walk it.
+    #
+    # Drivable only because the document has focus: `focusout` does not fire otherwise, and
+    # `main` holds `Emulation.setFocusEmulationEnabled` on for the whole run. So
+    # `document.hasFocus()` is true here and a scripted `.start.focus()` over an open menu
+    # closes the bar.
+    menu_reset(page)
+    click_at(page, *centre(page, f"{MENU_BAR} .menu-title"))
+    press_key(page, "ArrowDown")
+    inside_before = expanded(page)
+    page.evaluate(
+        "(() => { document.querySelector('%s .menu-title').focus(); })()" % MENU_BAR
+    )
+    time.sleep(0.1)
+    if inside_before != ["true", "false", "false"]:
+        bad.append(
+            f"menu keyboard: the bar was at {inside_before} before the focus moves, so "
+            "neither focusout assertion measured a menu coming down"
+        )
+    elif expanded(page) != ["true", "false", "false"]:
+        bad.append(
+            f"menu keyboard: focus moving from a row to its own title closed the bar "
+            f"({expanded(page)}) — focusout has to ignore a move inside the bar, or the "
+            "arrows take the menu down as they walk it"
+        )
+    page.evaluate("(() => { document.querySelector('.start').focus(); })()")
+    time.sleep(0.1)
+    if expanded(page) != ["false", "false", "false"]:
+        bad.append(
+            f"menu keyboard: a script moving focus out of the bar left it at {expanded(page)} "
+            "— a menu left open over the window that took the focus is painted over it and "
+            "answers the pointer"
+        )
+    return bad
+
+
+LOG = "window.__menuLog"
+KEYLOG = "window.__menuKeys"
+
+
+def take_log(page, what=LOG):
+    """Read a log and clear it, so each step reads only its own."""
+    return page.evaluate(f"(() => {{ const seen = {what}; {what} = []; return seen; }})()")
+
+
+def open_menu(page, index):
+    """Dismiss whatever is open, then click a title open, and say so if it did not open.
+
+    Unconditional on purpose. A click on the title of a menu that is already down closes it,
+    so a probe that opens one menu and later asks for another is reading a hidden element —
+    which `centre` reports as a zero box several steps away from the cause.
+    """
+    menu_reset(page)
+    x, y = centre(page, f"{MENU_BAR} .menu-title", index=index)
+    click_at(page, x, y)
+    state = expanded(page)
+    if state[index] != "true":
+        hit = page.evaluate(
+            f"(() => {{ const el = document.elementFromPoint({round(x)}, {round(y)});"
+            " return el ? (el.className || el.tagName) : null; })()"
+        )
+        raise HarnessError(
+            f"a click on title {index} at ({round(x)}, {round(y)}) left the bar at {state}; "
+            f"what is at that point is {hit!r}"
+        )
+
+
+def focus_textarea(page):
+    page.evaluate(
+        "(() => { window.__menuWin.bodyEl.querySelector('textarea').focus();"
+        " return document.activeElement.tagName; })()"
+    )
+
+
+def check_menu_pointer(page) -> list[str]:
+    """What the pointer does to the bar: open, switch, toggle shut, and open again.
+
+    The sequence is the ordinary one and it is the one that broke: the pointer crossing the
+    second title opens that menu on the way, so a click-toggle keyed only on "is it open"
+    shuts the bar on click File, click Edit.
+    """
+    menu_fixture(page)
+    menu_reset(page)
+    bad = []
+    steps = []
+    for index in (1, 1, 0, 1, 1):
+        click_at(page, *centre(page, f"{MENU_BAR} .menu-title", index=index))
+        steps.append((index, expanded(page)))
+    want = [
+        (1, ["false", "true", "false"]),     # a click on a closed bar opens that menu
+        (1, ["false", "false", "false"]),    # a second click on the same title closes it
+        (0, ["true", "false", "false"]),     # and another title opens its own
+        (1, ["false", "true", "false"]),     # click File then click Edit: Edit, not nothing
+        (1, ["false", "false", "false"]),    # still a toggle once the click is what opened it
+    ]
+    if steps != want:
+        bad.append(f"menu pointer: the click sequence went {steps}, want {want}")
+    return bad
+
+
+def check_menu_activation(page) -> list[str]:
+    """What a row does when it is activated, and what a disabled one does not do.
+
+    Every chord here is a real keypress into the window, not a synthesised event, because the
+    property under test is that it reaches the bar from wherever focus happens to be.
+    """
+    menu_fixture(page)
+    menu_reset(page)
+    bad = []
+    rows = f"{MENU_BAR} .menu-item"
+    # The log is not cleared by the reset: `open_menu` resets mid-check, and a flip recorded
+    # before it has to survive. Cleared once here instead.
+    take_log(page)
+
+    # A disabled row: Enter on it does nothing, and its chord is left to the browser rather
+    # than swallowed by a row that does nothing.
+    open_menu(page, 1)
+    hover_at(page, *centre(page, f'{rows}[aria-disabled="true"]'))
+    press_key(page, "Enter")
+    fired = take_log(page)
+    if fired:
+        bad.append(f"menu activation: Enter on a disabled row fired {fired}")
+    menu_reset(page)
+    focus_textarea(page)
+    take_log(page, KEYLOG)
+    press_key(page, "z", modifiers=CTRL)
+    if take_log(page):
+        bad.append("menu activation: Ctrl+Z under a disabled Undo ran its action")
+    chords = take_log(page, KEYLOG)
+    if not chords:
+        return bad + ["menu activation: the keydown recorder saw no Ctrl+Z, so nothing here "
+                      "is measuring a real keypress"]
+    if chords[-1]["taken"]:
+        bad.append(
+            "menu activation: Ctrl+Z under a disabled Undo was taken off the browser — a row "
+            "that does nothing must not swallow its own chord"
+        )
+
+    # A live accelerator fires, and is taken off the browser.
+    press_key(page, "o", modifiers=CTRL)
+    press_key(page, "s", modifiers=CTRL | SHIFT)
+    if take_log(page) != ["open", "saveas"]:
+        bad.append("menu activation: Ctrl+O and Ctrl+Shift+S did not both reach their rows")
+    chords = take_log(page, KEYLOG)
+    # The recorder saw both, guarded exactly as the Ctrl+Z arm above is: `all()` is true of an
+    # empty log, so a `__menuKeyWatch` that skipped `addEventListener` on a stale global left
+    # this assertion passing on no keypresses at all.
+    if len(chords) != 2:
+        return bad + [f"menu activation: the keydown recorder saw {chords}, want the two "
+                      "chords just pressed, so nothing here is measuring a real keypress"]
+    if not all(chord["taken"] for chord in chords):
+        bad.append(f"menu activation: a live accelerator was left to the browser — {chords}")
+
+    # The near misses. A bare letter and an extra modifier are different chords.
+    press_key(page, "o")
+    press_key(page, "o", modifiers=CTRL | ALT)
+    near_miss = take_log(page)
+    if near_miss:
+        bad.append(f"menu activation: a bare 'o' or Ctrl+Alt+O fired {near_miss}, want neither")
+    take_log(page, KEYLOG)
+
+    # Bound in its own scope. The Start button is outside the window, so this chord has to
+    # reach nothing: a document-level binding would make every window answer every other
+    # window's accelerators.
+    page.evaluate("(() => { document.querySelector('.start').focus(); return 1; })()")
+    press_key(page, "o", modifiers=CTRL)
+    outside = take_log(page)
+    if outside:
+        bad.append(
+            f"menu activation: Ctrl+O fired {outside} with focus on the Start button — an "
+            "accelerator is bound in its own scope, not on the document"
+        )
+    if not take_log(page, KEYLOG):
+        bad.append("menu activation: the out-of-scope chord was never dispatched")
+
+    # Alt and the mnemonic, spelled the way macOS spells it.
+    focus_textarea(page)
+    press_key(page, "√", code="KeyV", modifiers=ALT)
+    if expanded(page) != ["false", "false", "true"]:
+        bad.append(f"menu activation: Alt+V left the bar at {expanded(page)}")
+    if focused(page) != "Status bar":
+        bad.append(f"menu activation: Alt+V focused {focused(page)!r}")
+
+    # A check item is the bar's own state: Enter flips it and reports what it flipped to.
+    menu_reset(page)
+    open_menu(page, 1)
+    hover_at(page, *centre(page, f"{rows}[role='menuitemcheckbox']"))
+    press_key(page, "Enter")
+    first = page.evaluate(
+        "document.querySelector('%s .menu-item[role=\"menuitemcheckbox\"]')"
+        ".getAttribute('aria-checked')" % MENU_BAR
+    )
+    if first != "true":
+        bad.append(f"menu activation: a check item read aria-checked={first!r} after one Enter")
+    open_menu(page, 1)
+    hover_at(page, *centre(page, f"{rows}[role='menuitemcheckbox']"))
+    press_key(page, "Enter")
+    flips = take_log(page)
+    if flips != ["wrap:true", "wrap:false"]:
+        bad.append(f"menu activation: the check item reported {flips}, want both flips")
+    return bad
+
+
+BEFORE_OPEN = """
+(() => {
+  const body = window.__menuWin.bodyEl;
+  return { scrollHeight: body.scrollHeight, clientHeight: body.clientHeight };
+})()
+"""
+
+GEOMETRY = """
+(() => {
+  const bar = document.querySelector('%s');
+  const body = window.__menuWin.bodyEl;
+  const title = bar.querySelector('.menu-title');
+  const popup = bar.querySelector('.menu-popup');
+  const pop = popup.getBoundingClientRect();
+  const box = body.getBoundingClientRect();
+  const titleBox = title.getBoundingClientRect();
+  // Hit-tested, not inferred from the rect: a clipped popup still reports its full box.
+  const row = [...popup.querySelectorAll('.menu-item')].pop();
+  const rowBox = row.getBoundingClientRect();
+  const hit = document.elementFromPoint(
+    Math.round(rowBox.left + rowBox.width / 2), Math.round(rowBox.top + rowBox.height / 2));
+  return {
+    open: title.getAttribute('aria-expanded'),
+    below: Math.round(pop.top - titleBox.bottom),
+    aligned: Math.round(pop.left - titleBox.left),
+    overflowsBody: pop.bottom > box.bottom + 1,
+    scrollHeight: body.scrollHeight,
+    lastRowReachable: row.contains(hit) || hit === row,
+    hitClass: hit ? hit.className : null,
+    insideViewport: pop.right <= document.documentElement.clientWidth + 1
+      && pop.bottom <= document.documentElement.clientHeight + 1,
+    sticky: getComputedStyle(bar).position,
+  };
+})()
+""" % MENU_BAR
+
+
+def check_menu_geometry(page) -> list[str]:
+    """A popup leaves the client area instead of being clipped by it."""
+    menu_fixture(page)
+    menu_reset(page)
+    before = page.evaluate(BEFORE_OPEN)
+    click_at(page, *centre(page, f"{MENU_BAR} .menu-title"))
+    state = page.evaluate(GEOMETRY)
+    bad = []
+    if state["open"] != "true":
+        return ["menu geometry: a click on the first title did not open its menu"]
+    # The popup must add nothing to what the client area can scroll. Measured as a delta,
+    # because the fixture window is deliberately too short for its own content and so has
+    # something to scroll either way.
+    if state["scrollHeight"] != before["scrollHeight"]:
+        bad.append(
+            f"menu geometry: opening the popup took the client area's scroll height from "
+            f"{before['scrollHeight']} to {state['scrollHeight']}, so the popup is in the "
+            "body's flow rather than over it"
+        )
+    if state["below"] != 0:
+        bad.append(f"menu geometry: the popup opens {state['below']}px below its title's foot")
+    if state["aligned"] != 0:
+        bad.append(f"menu geometry: the popup's left edge is {state['aligned']}px off its title")
+    # The point of the whole arrangement: the fixture window is 120px tall and the File menu
+    # is taller than what is left of it under the bar.
+    if not state["overflowsBody"]:
+        bad.append(
+            "menu geometry: the popup fits inside the client area, so this measures nothing — "
+            "the fixture window has to be shorter than its own File menu"
+        )
+    if not state["lastRowReachable"]:
+        bad.append(
+            f"menu geometry: the last row is not hit-testable — {state['hitClass']!r} is on top "
+            "of it, so the popup is being clipped by the client area"
+        )
+    if not state["insideViewport"]:
+        bad.append("menu geometry: the popup is placed outside the viewport")
+    if state["sticky"] != "sticky":
+        bad.append(f"menu geometry: the bar's position is {state['sticky']!r}, want sticky")
+    return bad
+
+
+#: Read with the pointer on a row and the keyboard on its neighbour, so `:hover` is the one
+#: thing the highlight can be coming from.
+#:
+#: Both states are read back and asserted, because they coincide by default and that is what
+#: made the first version of this vacuous: `src/widgets.mjs:932-933` — the row's own
+#: `pointerenter` listener — focuses the row under the pointer, and `src/menu.css:80-87` puts
+#: `.menu-item:hover` and `.menu-item:focus` in one rule. Measured: with the pointer parked
+#: and the focus left on the row, deleting `.menu-item:hover` from the cascade changed nothing
+#: the check could see. With focus moved off by one ArrowDown the same deletion reads
+#: `rgba(0, 0, 0, 0)`.
+STYLE = """
+((hovered) => {
+  const bar = document.querySelector('%s');
+  const sheets = [...document.querySelectorAll('link[rel="stylesheet"]')]
+    .filter((link) => link.href.endsWith('/src/menu.css'));
+  const title = bar.querySelector('.menu-title');
+  const popup = bar.querySelector('.menu-popup');
+  const rows = [...popup.querySelectorAll('.menu-item')];
+  const flat = getComputedStyle(rows[0]);
+  const row = bar.querySelector(hovered);
+  const lit = getComputedStyle(row);
+  return {
+    sheetCount: sheets.length,
+    titleLit: getComputedStyle(title).backgroundColor,
+    titleMatchesHover: title.matches(':hover'),
+    titleMatchesFocus: title.matches(':focus'),
+    borderWidth: flat.borderTopWidth,
+    backgroundImage: flat.backgroundImage,
+    rowHeight: Math.round(rows[0].getBoundingClientRect().height),
+    rowMatchesHover: row.matches(':hover'),
+    rowMatchesFocus: row.matches(':focus'),
+    hovered: lit.backgroundColor,
+    hoveredInk: lit.color,
+    separators: [...popup.querySelectorAll(':scope > .menu-group')]
+      .map((g) => getComputedStyle(g).borderTopWidth),
+    gutter: getComputedStyle(rows[0].querySelector('.menu-check')).width,
+  };
+})('.menu-popup .menu-item')
+""" % MENU_BAR
+
+DISABLED = """
+(() => {
+  const row = document.querySelector('%s .menu-item[aria-disabled="true"]');
+  const style = getComputedStyle(row);
+  return { colour: style.color, background: style.backgroundColor,
+           matchesHover: row.matches(':hover') };
+})()
+""" % MENU_BAR
+
+
+def check_menu_style(page) -> list[str]:
+    """One stylesheet, a flat row, and the ties `theme.css`'s `button` rules create."""
+    menu_fixture(page)
+    menu_reset(page)
+    click_at(page, *centre(page, f"{MENU_BAR} .menu-title"))
+    hover_at(page, *centre(page, f"{MENU_BAR} .menu-popup .menu-item"))
+    # One step of the keyboard, to take focus off the row the pointer is on. Without it the
+    # two states coincide and the highlight read below is a reading of `:focus`.
+    press_key(page, "ArrowDown")
+    state = page.evaluate(STYLE)
+    bad = []
+    if not state["rowMatchesHover"] or state["rowMatchesFocus"]:
+        return bad + [
+            f"menu style: the row being read is hover={state['rowMatchesHover']} "
+            f"focus={state['rowMatchesFocus']} — it has to be hovered and not focused, or the "
+            "highlight assertions below are reading the focus rule and `.menu-item:hover` "
+            "could be deleted without this check noticing"
+        ]
+    if state["hovered"] != "rgb(58, 110, 165)":
+        bad.append(f"menu style: the row under the pointer is {state['hovered']}, want --title-b")
+    if state["hoveredInk"] != "rgb(255, 255, 255)":
+        bad.append(f"menu style: its label is {state['hoveredInk']}, want white")
+    # The gutter stripe and the check column are one number, `--menu-gutter`.
+    if state["gutter"] != "20px":
+        bad.append(f"menu style: the check gutter is {state['gutter']}, want --menu-gutter")
+    if state["sheetCount"] != 1:
+        bad.append(f"menu style: menu.css is linked {state['sheetCount']} times, want once")
+    # `theme.css` gives every button a bevel and a gradient. A menu row that kept them reads
+    # as a column of buttons, and the rules that flatten it are one class against a type.
+    if state["borderWidth"] != "0px":
+        bad.append(f"menu style: a row kept its button border ({state['borderWidth']})")
+    if state["backgroundImage"] != "none":
+        bad.append(f"menu style: a row kept a background image ({state['backgroundImage']})")
+    # The open menu's title stays lit while the pointer is in its popup. The two other
+    # selectors in that rule are read back as not matching, which is what makes this the
+    # `[aria-expanded="true"]` arm rather than a second reading of hover or focus.
+    if state["titleMatchesHover"] or state["titleMatchesFocus"]:
+        bad.append(
+            f"menu style: the title is hover={state['titleMatchesHover']} "
+            f"focus={state['titleMatchesFocus']}, so its colour below is not the "
+            "[aria-expanded] rule's"
+        )
+    elif state["titleLit"] != "rgb(58, 110, 165)":
+        bad.append(f"menu style: an open menu's title is {state['titleLit']}, want --title-b")
+    # The first group carries no rule; every later one does. That is what makes the grouping
+    # the separator rather than an item a caller has to place.
+    if state["separators"][:1] != ["0px"] or set(state["separators"][1:]) != {"1px"}:
+        bad.append(f"menu style: the group rules are {state['separators']}")
+
+    # A dead row does not light up under the pointer.
+    #
+    # What this does *not* do is decide the specificity tie it looks like it decides.
+    # `src/menu.css:98`'s disabled rule is (0,3,0) against `.menu-item:hover`'s (0,2,0), but
+    # it also sits after the highlight rule in the file, so source order already settles it:
+    # measured, this read still reports ok with the selector dropped to two classes. The pin
+    # that would catch that belongs in `scripts/css_ties.py`, which compares specificity and
+    # nothing else. This is the behavioural half — the row is transparent with a real pointer
+    # on it — and the pointer being there is asserted rather than assumed.
+    #
+    # Reached by hovering Edit's title, not clicking it. With File already down, the pointer
+    # crossing Edit opens Edit (XP's behaviour) and a click would then read as a click on the
+    # open menu and close it. Asserted, because the aim below depends on it.
+    hover_at(page, *centre(page, f"{MENU_BAR} .menu-title", index=1))
+    switched = expanded(page)
+    if switched != ["false", "true", "false"]:
+        return bad + [
+            f"menu style: the pointer crossing the second title left the bar at {switched}, so "
+            "sliding along an open bar does not switch menus"
+        ]
+    hover_at(page, *centre(page, f'{MENU_BAR} .menu-item[aria-disabled="true"]'))
+    dead = page.evaluate(DISABLED)
+    if not dead["matchesHover"]:
+        return bad + [
+            "menu style: the disabled row is not under the pointer, so the two readings below "
+            "say nothing about what a reader sees when they cross it"
+        ]
+    if dead["colour"] != "rgb(184, 180, 162)":
+        bad.append(f"menu style: a disabled row is {dead['colour']}, want --sunk")
+    if dead["background"] != "rgba(0, 0, 0, 0)":
+        bad.append(f"menu style: a disabled row lights up under the pointer ({dead['background']})")
+    return bad
+
+
+REFUSALS = (
+    ("no onSelect", "{ menus: [{ label: 'F', groups: [[{ label: 'Dead' }]] }] }",
+     "would do nothing"),
+    ("two levels deep",
+     "{ menus: [{ label: 'F', groups: [[{ label: 'A', groups: [[{ label: 'B',"
+     " groups: [[{ label: 'C', onSelect(){} }]] }]] }]] }] }",
+     "one level is the most"),
+    ("an accel with no scope",
+     "{ menus: [{ label: 'F', groups: [[{ label: 'A', accel: 'Ctrl+O', onSelect(){} }]] }] }",
+     "no scope to bind it in"),
+    ("an empty group", "{ menus: [{ label: 'F', groups: [[]] }] }", "empty group"),
+    ("no groups", "{ menus: [{ label: 'F' }] }", "has no groups"),
+    ("no label", "{ menus: [{ label: 'F', groups: [[{ onSelect(){} }]] }] }", "has no label"),
+    ("no menus", "{ menus: [] }", "at least one menu"),
+    ("an accel on a submenu",
+     "{ scope: document.body, menus: [{ label: 'F', groups: [[{ label: 'A', accel: 'Ctrl+O',"
+     " groups: [[{ label: 'B', onSelect(){} }]] }]] }] }",
+     "cannot have an accelerator"),
+    ("an unbindable accel",
+     "{ scope: document.body, menus: [{ label: 'F', groups: [[{ label: 'A',"
+     " accel: 'Ctrl+Squiggle', onSelect(){} }]] }] }",
+     "cannot bind"),
+)
+
+
+def check_menu_refusals(page) -> list[str]:
+    """Every shape that would ship a row doing nothing is a throw naming the row."""
+    menu_fixture(page)
+    menu_reset(page)
+    bad = []
+    for name, spec, needle in REFUSALS:
+        message = page.evaluate(
+            "(async () => {"
+            " const { menuBar } = await import('/src/widgets.mjs');"
+            f" try {{ menuBar({spec}); return null; }}"
+            " catch (error) { return error.message; } })()",
+            await_promise=True,
+        )
+        if message is None:
+            bad.append(f"menu refusals: {name} was accepted")
+        elif needle not in message:
+            bad.append(f"menu refusals: {name} said {message!r}, wanted {needle!r}")
+    # The negative control: a spec with all of those shapes avoided has to be accepted, or
+    # this check would pass on a `menuBar` that refuses everything.
+    ok = page.evaluate(
+        "(async () => {"
+        " const { menuBar } = await import('/src/widgets.mjs');"
+        " try { const bar = menuBar({ scope: document.body, menus: [{ label: '&File',"
+        "   groups: [[{ label: '&Open', accel: 'Ctrl+O', onSelect() {} },"
+        "             { label: 'Dim', disabled: true }],"
+        "            [{ label: 'More', groups: [[{ label: 'In', onSelect() {} }]] }]] }] });"
+        "   return bar.querySelectorAll('.menu-item').length; }"
+        " catch (error) { return error.message; } })()",
+        await_promise=True,
+    )
+    if ok != 4:
+        bad.append(f"menu refusals: a usable spec was refused or mis-built — {ok!r}")
+    return bad
+
+
+#: How far past the edge the fixture is parked, in pixels.
+#:
+#: Small, and both guards in `check_menu_edges` depend on it being small: the popup has to
+#: overflow the taskbar's top while still fitting under the *viewport* bottom, or a bound
+#: taken from the viewport flips it anyway and the taskbar half of the rule is asserted by
+#: nothing. The gap between the two is the taskbar's own height, 30px.
+MENU_OVERHANG = 12
+
+#: What a popup measures, and where the title sits inside its window.
+#:
+#: Read so that `check_menu_edges` can compute where to park rather than carry a constant.
+#: It used to park at a fixed inset from the desktop's right edge, and that number silently
+#: depended on how wide the resize checks had left the fixture window: the same inset
+#: overflowed the viewport when the group was run alone and fitted inside it in a full run.
+#: A fixture positioned by arithmetic over its own measurements cannot drift that way.
+MENU_METRICS = """
+(() => {
+  const bar = document.querySelector('BARID');
+  const win = window.__menuWin;
+  const dismiss = () => document.querySelector('.desktop').dispatchEvent(
+    new PointerEvent('pointerdown', { bubbles: true }));
+  dismiss();
+  const title = bar.querySelector('.menu-title');
+  title.click();
+  const popup = document.getElementById(title.getAttribute('aria-controls'));
+  if (popup.hidden) return { unopened: title.getAttribute('aria-expanded') };
+  const pop = popup.getBoundingClientRect();
+  const titleBox = title.getBoundingClientRect();
+  const winBox = win.el.getBoundingClientRect();
+  const html = document.documentElement;
+  const taskbar = parseFloat(getComputedStyle(html).getPropertyValue('--taskbar-h'));
+  dismiss();
+  return {
+    popW: Math.round(pop.width), popH: Math.round(pop.height),
+    titleW: Math.round(titleBox.width), titleH: Math.round(titleBox.height),
+    offLeft: Math.round(titleBox.left - winBox.left),
+    offBottom: Math.round(titleBox.bottom - winBox.top),
+    clientW: html.clientWidth, clientH: html.clientHeight,
+    floor: Math.round(html.clientHeight - taskbar),
+  };
+})()
+""".replace("BARID", MENU_BAR)
+
+#: Park the fixture window at a computed point, open its first menu, and read the flip.
+MENU_PARK = """
+((x, y, wantSub) => {
+  const win = window.__menuWin;
+  const bar = document.querySelector('BARID');
+  const html = document.documentElement;
+  const taskbar = parseFloat(getComputedStyle(html).getPropertyValue('--taskbar-h'));
+  win.moveTo(x, y);
+  // Closed first. A click on the title of a menu that is already down closes it, and the
+  // previous call to this script leaves one open.
+  document.querySelector('.desktop').dispatchEvent(
+    new PointerEvent('pointerdown', { bubbles: true }));
+  const title = bar.querySelector('.menu-title');
+  title.click();
+  const popup = document.getElementById(title.getAttribute('aria-controls'));
+  if (popup.hidden) return { unopened: title.getAttribute('aria-expanded') };
+  const pop = popup.getBoundingClientRect();
+  const titleBox = title.getBoundingClientRect();
+  const out = {
+    popRight: Math.round(pop.right), popLeft: Math.round(pop.left),
+    popTop: Math.round(pop.top), popBottom: Math.round(pop.bottom),
+    titleRight: Math.round(titleBox.right), titleLeft: Math.round(titleBox.left),
+    titleTop: Math.round(titleBox.top), titleBottom: Math.round(titleBox.bottom),
+    viewportRight: html.clientWidth, floor: Math.round(html.clientHeight - taskbar),
+    titleOnScreen: titleBox.right <= html.clientWidth && titleBox.bottom <= html.clientHeight,
+    overflowsRight: Math.round(titleBox.left + pop.width) > html.clientWidth,
+    overflowsTaskbar: Math.round(titleBox.bottom + pop.height)
+      > Math.round(html.clientHeight - taskbar),
+    insideViewportBottom: Math.round(titleBox.bottom + pop.height) <= html.clientHeight,
+  };
+  if (wantSub) {
+    const parent = [...popup.querySelectorAll('.menu-item')]
+      .find((row) => row.getAttribute('aria-haspopup') === 'true');
+    if (parent) {
+      parent.click();
+      const sub = document.getElementById(parent.getAttribute('aria-controls'))
+        .getBoundingClientRect();
+      out.subLeft = Math.round(sub.left);
+      out.subRight = Math.round(sub.right);
+    }
+  }
+  return out;
+})(%d, %d, %s)
+""".replace("BARID", MENU_BAR)
+
+
+def check_menu_edges(page) -> list[str]:
+    """A popup against the right edge or the taskbar flips rather than going off."""
+    menu_fixture(page)
+    menu_reset(page)
+    bad = []
+    metrics = page.evaluate(MENU_METRICS)
+    if metrics.get("unopened") is not None:
+        return [f"menu edges: the first title did not open, so nothing could be measured to "
+                f"park against (aria-expanded={metrics['unopened']!r})"]
+    # The taskbar's strip is what the low case has to land in: overflowing its top while
+    # staying under the viewport's bottom. If the popup is taller than the strip there is no
+    # such position, and this check cannot ask for the flip it is about.
+    strip = metrics["clientH"] - metrics["floor"]
+    if MENU_OVERHANG >= strip:
+        return bad + [
+            f"menu edges: a {MENU_OVERHANG}px overhang cannot sit inside a {strip}px taskbar "
+            "strip, so the low fixture would overflow the viewport too and the taskbar half "
+            "of the rule would go unasserted"
+        ]
+
+    # Right edge: put the title far enough right that the popup opening leftwards from it
+    # would leave the viewport, while the title itself stays on screen.
+    x = metrics["clientW"] - metrics["popW"] + MENU_OVERHANG - metrics["offLeft"]
+    right = page.evaluate(MENU_PARK % (x, 40, "true"))
+    if right.get("unopened") is not None:
+        return bad + [f"menu edges: the right fixture's menu did not open "
+                      f"(aria-expanded={right['unopened']!r})"]
+    if not right["titleOnScreen"]:
+        return bad + [f"menu edges: the right fixture put the menu bar off the desktop, so "
+                      f"nothing below measures a flip — {right}"]
+    if not right["overflowsRight"]:
+        return bad + [f"menu edges: the right fixture leaves room for the popup where it "
+                      f"normally goes, so no flip is being asked for — {right}"]
+    if right["popRight"] > right["viewportRight"]:
+        bad.append(
+            f"menu edges: against the right edge the popup ends at {right['popRight']} on a "
+            f"{right['viewportRight']}px viewport"
+        )
+    # Flipped, not merely clamped: its right edge lands on its title's, which is what keeps a
+    # menu under the thing it belongs to.
+    if right["popRight"] != right["titleRight"]:
+        bad.append(
+            f"menu edges: the flipped popup's right edge is {right['popRight']}, its title's is "
+            f"{right['titleRight']}"
+        )
+    if "subLeft" not in right:
+        bad.append("menu edges: the fixture's File menu has no submenu to flip")
+    elif right["subRight"] > right["viewportRight"]:
+        bad.append(
+            f"menu edges: the submenu ends at {right['subRight']} on a "
+            f"{right['viewportRight']}px viewport, so it did not flip to the other side"
+        )
+    elif right["subLeft"] >= right["popLeft"]:
+        bad.append(
+            f"menu edges: the submenu's left edge is {right['subLeft']} against its popup's "
+            f"{right['popLeft']}, so it is still opening rightwards"
+        )
+
+    # The foot of the desktop. The title's bottom is placed so the popup under it would cross
+    # the taskbar's top by `MENU_OVERHANG` and no more, which keeps it inside the viewport —
+    # otherwise a bound taken from the viewport flips it anyway and the taskbar half of the
+    # rule is asserted by nothing. Both are read back below.
+    y = metrics["floor"] - metrics["popH"] + MENU_OVERHANG - metrics["offBottom"]
+    low = page.evaluate(MENU_PARK % (40, y, "false"))
+    if low.get("unopened") is not None:
+        return bad + [f"menu edges: the low fixture's menu did not open "
+                      f"(aria-expanded={low['unopened']!r})"]
+    if not low["titleOnScreen"]:
+        return bad + [f"menu edges: the low fixture put the menu bar off the desktop — {low}"]
+    if not low["overflowsTaskbar"]:
+        return bad + [f"menu edges: the low fixture leaves room below the bar — {low}"]
+    if not low["insideViewportBottom"]:
+        return bad + [
+            f"menu edges: unflipped, the low fixture's popup would leave the viewport as well "
+            f"as the taskbar — {low}. A viewport bound alone would then flip it, and the "
+            "taskbar is what this case is about"
+        ]
+    if low["popBottom"] > low["floor"]:
+        bad.append(
+            f"menu edges: at the foot of the desktop the popup ends at {low['popBottom']}, "
+            f"under the taskbar, whose top is {low['floor']}"
+        )
+    # Flipped up: its foot lands on its title's head.
+    if low["popBottom"] != low["titleTop"]:
+        bad.append(
+            f"menu edges: the popup flipped up to {low['popBottom']} rather than onto its "
+            f"title's head at {low['titleTop']}"
+        )
+    # Put back, or every check after this one measures a window in a corner.
+    page.evaluate("(() => { window.__menuWin.moveTo(200, 40); return 1; })()")
+    return bad
+
+
+def check_menu_handed_back(page) -> list[str]:
+    """The Read me window the menu fixture took over is handed back as it was found.
+
+    A check of its own rather than a `finally` in the last menu check, because the loop in
+    `main` catches a raise per check and carries on: a teardown that hangs off one check is
+    skipped by exactly the failure that makes it necessary.
+
+    What there is to put back: `readme` is `singleton: true`, so the fixture's
+    `launch('readme')` does not open a window of its own — it takes over the shared Read me,
+    sizes it to 120px and replaces its content with a menu bar and an empty textarea. Four
+    later checks drive that window, and `check_cascade_across_close` reads its geometry.
+
+    Builds the fixture first, which looks redundant after eight checks that already have and
+    is not. Run alone — `--only "menu bar handed back"`, which is how a new check is shown to
+    fail here — there is no fixture, so every assertion below passes on an absence: nothing
+    to close, no globals to find, no bar in the document. Measured: the control for the
+    orphaned-listener defect reported `[  ok]` with the defect restored, because the listener
+    was never installed.
+    """
+    bad = []
+    menu_fixture(page)
+    page.evaluate(
+        "(() => { const win = window.__menuWin;"
+        " if (window.__menuKeyWatch) {"
+        "   document.removeEventListener('keydown', window.__menuKeyWatch);"
+        "   delete window.__menuKeyWatch; }"
+        " delete window.__menuWin; delete window.__menuLog; delete window.__menuKeys;"
+        " if (win && !win.closed) win.close(); return true; })()"
+    )
+    time.sleep(SETTLE_S + 0.3)
+    launch(page, "readme")
+    time.sleep(0.3)
+    state = page.evaluate(
+        "(() => { const wins = window.webxp.windows.filter((w) => w.programId === 'readme');"
+        " return { count: wins.length, bars: document.querySelectorAll('%s').length,"
+        "   content: wins.length === 1"
+        "     ? [...wins[0].bodyEl.children].map((n) => n.className || n.tagName) : null };"
+        " })()" % MENU_BAR
+    )
+    if state["count"] != 1:
+        bad.append(
+            f"menu bar: {state['count']} Read me windows after the fixture was torn down, want "
+            "1 — the checks after this one expect to find the window they found before it"
+        )
+    if state["bars"]:
+        bad.append(
+            f"menu bar: {state['bars']} fixture bars still in the document after teardown"
+        )
+    if state["content"] and any("menu-bar" in str(name) for name in state["content"]):
+        bad.append(
+            f"menu bar: the Read me window still holds {state['content']} — the fixture's "
+            "content was not replaced by the app's own"
+        )
+
+    # The fixture's keydown recorder is detached, not merely orphaned, and a keypress after
+    # the teardown says nothing to the console.
+    #
+    # This is the check for a defect this teardown shipped: the recorder was an anonymous
+    # arrow function on `document`, so `removeEventListener` had nothing to pass, and the
+    # teardown deleted the array it pushed into. Every keypress in the checks after the menu
+    # group then threw `Cannot read properties of undefined (reading 'push')`, and the only
+    # thing that noticed was the end-of-run console sweep — failures attributed to no check
+    # at all. The assertion is the keypress, not the absence of a global, because a
+    # listener that writes somewhere harmless is still a listener nothing can remove.
+    leftovers = page.evaluate(
+        "['__menuKeyWatch', '__menuWin', '__menuLog', '__menuKeys']"
+        ".filter((name) => name in window)"
+    )
+    if leftovers:
+        bad.append(
+            f"menu bar: {leftovers} are still on `window` after the teardown — a recorder "
+            "that cannot be detached outlives the fixture it was built for"
+        )
+    # `drain` and not a bare read: `consume_events` is destructive, so reading the buffer
+    # here without keeping it would discard whatever the checks before this one raised.
+    #
+    # Tab, and the choice is no longer load-bearing: any key reaches a listener on
+    # `document`. It is Tab because the alternative once wedged every check after this
+    # one, and the cause was not the shell — it is headless Chrome hiding the page on a key
+    # the renderer reports unhandled, which stops the frame clock. `main` suppresses that for
+    # the whole run with `Emulation.setFocusEmulationEnabled` and `check_stray_keypress`
+    # asserts it there; nothing about it is a property of `src/desktop.mjs`.
+    drain(page)
+    press_key(page, "Tab")
+    noise = console_errors(page)
+    if noise:
+        bad.append(
+            f"menu bar: a keypress after the fixture was torn down said {noise} to the "
+            "console — something the fixture attached is still running against state it no "
+            "longer has"
+        )
+    return bad
+
+
 def check_app_loading(page) -> list[str]:
     """Every folder in the manifest became a registered program, in manifest order."""
     bad = []
@@ -7759,6 +8917,20 @@ CHECKS = (
     ("close", check_close),
     ("singleton", check_singleton),
     ("link schemes", check_link_schemes),
+    # The menu bar. Every one of these builds the fixture and resets the bar first, so the
+    # order within the group is free except for two pairs:
+    #  - `menu geometry` before `menu edges`, because `edges` parks the fixture window in a
+    #    corner and `geometry` needs it where it opened;
+    #  - `menu bar handed back` last, because it takes the fixture down.
+    ("menu roles", check_menu_roles),
+    ("menu keyboard", check_menu_keyboard),
+    ("menu pointer", check_menu_pointer),
+    ("menu activation", check_menu_activation),
+    ("menu geometry", check_menu_geometry),
+    ("menu edges", check_menu_edges),
+    ("menu style", check_menu_style),
+    ("menu refusals", check_menu_refusals),
+    ("menu bar handed back", check_menu_handed_back),
     # Last, because it registers a program and provokes a console error. Its cleanup puts
     # the desktop back, but a check that deliberately breaks something belongs at the end.
     ("mount failure", check_mount_failure),
