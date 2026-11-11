@@ -23,9 +23,12 @@ The distinction matters, because the two halves of the list are pinned different
 
 The missing piece for the general case is ancestor reachability: deciding whether one
 element can match two selectors requires knowing which class sets co-occur *and* which
-ancestor chains are possible. Without it a generic sweep over these eleven stylesheets
-reports a few hundred candidate ties, nearly all of them pairs of rules that can never meet
-on one element. That is not a gate, and nothing here pretends to be one.
+ancestor chains are possible. Without it a generic sweep over every stylesheet here reports
+a few hundred candidate ties, nearly all of them pairs of rules that can never meet on one
+element. That is not a gate, and nothing here pretends to be one.
+
+What it does read is every stylesheet in the tree: `sheets()` discovers them, so a sheet
+cannot be present on disk and absent from this gate.
 
 AN ABSENT SELECTOR IS A FAILURE, NEVER A SKIP
 ---------------------------------------------
@@ -61,25 +64,40 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-#: Every stylesheet in the project, in no particular order — the assertions name their own
-#: selectors and do not depend on cascade position.
-SHEETS = (
-    "src/theme.css",
-    "src/shell.css",
-    "src/window.css",
-    "demo/demo.css",
-    "shared/map/map.css",
-    "apps/basemap/app.css",
-    "apps/day-02-lines/app.css",
-    "apps/map-challenge/app.css",
-    "apps/notepad/app.css",
-    "apps/terminal/app.css",
-    "apps/windows/app.css",
-)
+
+class Unreadable(RuntimeError):
+    """Nothing was there to assert about. Never a skip; see the module docstring."""
+
+
+def sheets(root: Path) -> tuple[str, ...]:
+    """Every stylesheet in the tree, discovered. Sorted, so a run is reproducible.
+
+    Discovered and not listed, because a list is a second place a sheet has to be written
+    down: the sheet lands, the list does not grow, and this gate reports ok about a file it
+    has never opened. The assertions below name their own selectors and do not care which
+    file holds one, so there is nothing a list could add here.
+
+    Dot-directories are skipped and that exclusion is load-bearing: `.claude/worktrees/`
+    holds whole copies of this tree on other branches, so a `GONE` selector still live in one
+    of them would fail this gate about a file nothing links. `.venv/` holds installed
+    packages nobody here wrote.
+
+    An empty result is a broken sweep, not a tree without stylesheets, and raises.
+    """
+    found = tuple(
+        sorted(
+            rel.as_posix()
+            for rel in (path.relative_to(root) for path in root.rglob("*.css"))
+            if not any(part.startswith(".") for part in rel.parts)
+        )
+    )
+    if not found:
+        raise Unreadable(f"no stylesheet found under {root} — the sweep is reading nothing")
+    return found
 
 
 # ---------------------------------------------------------------------------
-# A CSS parser and a specificity calculator, enough for these eleven files.
+# A CSS parser and a specificity calculator, enough for the sheets in this tree.
 # ---------------------------------------------------------------------------
 
 CLS = re.compile(r"\.[-\w]+")
@@ -100,9 +118,9 @@ def parse(text: str) -> list[tuple[str, dict[str, str]]]:
     every selector this file names sits either at the top level or inside a `@container` /
     `@media` block, and no assertion below compares across that boundary.
 
-    Declarations are split on `;`, which a semicolon inside a `url()` would break. None of
-    the eleven stylesheets contains one; `check()` asserts the parse is not empty, which is
-    what would catch a file this parser could not read.
+    Declarations are split on `;`, which a semicolon inside a `url()` would break. No sheet
+    in this tree contains one; `check()` asserts the parse is not empty, which is what would
+    catch a file this parser could not read.
     """
     src = strip_comments(text)
     out: list[tuple[str, dict[str, str]]] = []
@@ -499,13 +517,16 @@ REVERTS = (
 
 
 def _load(root: Path) -> dict[str, str]:
-    return {sheet: (root / sheet).read_text(encoding="utf-8") for sheet in SHEETS}
+    return {sheet: (root / sheet).read_text(encoding="utf-8") for sheet in sheets(root)}
 
 
 def _apply_reverts(sources: dict[str, str]) -> tuple[dict[str, str], list[str]]:
     out = dict(sources)
     stale = []
     for sheet, find, replace, label in REVERTS:
+        if sheet not in out:
+            stale.append(f"{sheet}: the sweep never read the sheet this revert names")
+            continue
         if find not in out[sheet]:
             stale.append(f"{sheet}: revert for {label!r} no longer matches the file")
             continue
@@ -617,8 +638,14 @@ def check(page=None, invert: bool = False) -> list[str]:
 
 def main(argv: list[str]) -> int:
     invert = "--prove-failure" in argv
-    found = check(invert=invert)
     label = "css ties[--prove-failure]" if invert else "css ties"
+    try:
+        found = check(invert=invert)
+    except Unreadable as error:
+        # Fails closed in both modes. An inverted run is supposed to report failures, so a
+        # sweep that read nothing would otherwise look exactly like a control doing its job.
+        print(f"  {label}: {error}")
+        return 1
     for message in found:
         print(f"  {label}: {message}")
     if invert:
@@ -629,7 +656,14 @@ def main(argv: list[str]) -> int:
             )
             return 1
         survived = [m for m in found if "still passed with its fix reverted" in m]
-        stale = [m for m in found if "no longer matches the file" in m]
+        # Every other `control:` line comes from `_apply_reverts`: a revert that no longer
+        # matches, or one naming a sheet the sweep never read. Keyed on the prefix rather than
+        # on either wording, so a new way for a revert to go stale cannot land unreported.
+        stale = [
+            m
+            for m in found
+            if m.startswith("control: ") and "still passed with its fix reverted" not in m
+        ]
         print(f"\n--prove-failure: {len(found)} failure(s) as required")
         if stale:
             print(f"--prove-failure: {len(stale)} revert(s) are stale — see above")

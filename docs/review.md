@@ -463,6 +463,12 @@ either.
   ancestor reachability — which class sets co-occur, and which ancestor chains are possible —
   and without it a sweep over the stylesheets reports a few hundred candidate ties that can
   never meet on one element.
+
+  Its subject is discovered rather than listed: `sheets()` walks the tree for `*.css` and
+  raises on an empty result, so a sheet cannot land outside the sweep and leave `css ties: ok`
+  quoted for a file the instrument never opened. What stays hand-written is the pins, so the
+  gap is one of attention and not of reach — a new sheet is read, and nothing in it is
+  asserted until somebody writes a pin naming one of its selectors.
 - **App CSS scoping is a convention, not an enforcement.** `docs/apps.md` requires every rule
   to sit under `.app-<id>` and `app styles` checks that one app's class does not land on
   another's window, but nothing stops an app shipping a bare `p { ... }`. `@scope` or a build
