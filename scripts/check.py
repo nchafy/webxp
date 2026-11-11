@@ -4290,6 +4290,1007 @@ def check_menu_handed_back(page) -> list[str]:
     return bad
 
 
+# ---------------------------------------------------------------------------
+# Context menus. `src/contextmenu.mjs` is the host; `src/desktop.mjs` holds the two
+# definitions. Right-click used to reach Chrome's own menu everywhere in the shell.
+#
+# The keys, the right-click and the settled left click all come from the shared input
+# helpers above. This block declared a `MENU_KEYS` of its own, and so did the menu bar's —
+# same name, one holding `(code, text)` pairs and one holding bare ints, so whichever was
+# defined second broke the other's caller. One table now, in the pair shape.
+# ---------------------------------------------------------------------------
+
+#: Every row the desktop's menu offers, in the order it draws them, submenu included.
+#: Spelled out rather than read off the page: a check that asks the menu what it contains
+#: cannot catch the menu losing a row.
+CONTEXT_DESKTOP_ROWS = ("Arrange Icons By", "Name", "Program order", "Refresh", "Properties")
+
+#: Every row the window menu offers, on both surfaces XP gave it to.
+CONTEXT_WINDOW_ROWS = ("Restore", "Minimize", "Maximize", "Close")
+
+#: Which rows are refused in each window state, from `Desktop.windowMenu`. Written out and
+#: not derived: a table computed from the code under test asserts nothing about it.
+CONTEXT_WINDOW_DISABLED = {
+    "normal": {"Restore"},
+    "max": {"Maximize"},
+    "min": {"Minimize", "Maximize"},
+}
+
+#: Every malformed menu `contextmenu.mjs` refuses, and the words its message has to carry.
+#:
+#: Each line is a program that would otherwise ship a row doing nothing, a one-of-N group with
+#: two bullets or none, a submenu nested past what a 220px window can show, or an accelerator
+#: column nothing binds. The expected text is the specific clause and not just a verb, so a
+#: message that stops naming the item fails here.
+CONTEXT_REFUSALS = (
+    ("{label: 'x', groups: [[{label: 'A', accel: 'Ctrl+O', onSelect(){}}]]}",
+     'x > A carries an unknown key "accel"'),
+    ("{label: 'x', groups: [[{label: 'A'}]]}",
+     "x > A has no onSelect and no submenu"),
+    ("{label: 'x', groups: [[{label: 'A', selected: true, onSelect(){}},"
+     " {label: 'B', onSelect(){}}]]}",
+     "a group in x mixes one-of-N rows with plain ones"),
+    ("{label: 'x', groups: [[{label: 'A', selected: true, onSelect(){}},"
+     " {label: 'B', selected: true, onSelect(){}}]]}",
+     "a one-of-N group in x has 2 rows marked selected"),
+    ("{label: 'x', groups: [[{label: 'A', selected: false, onSelect(){}}]]}",
+     "a one-of-N group in x has 0 rows marked selected"),
+    ("{label: 'x', groups: []}", "x has no groups"),
+    ("{label: 'x', groups: [[]]}", "x has an empty group"),
+    ("{label: '', groups: [[{label: 'A', onSelect(){}}]]}", "a menu needs a label"),
+    ("{label: 'x', groups: [[{label: '', onSelect(){}}]]}", "an item in x has no label"),
+    ("{label: 'x', groups: [[{label: 'A', groups: [[{label: 'B', groups:"
+     " [[{label: 'C', onSelect(){}}]]}]]}]]}", "x > A > B is a submenu 2 deep"),
+    ("{label: 'x', groups: [[{label: 'A', onSelect: 1}]]}",
+     "x > A has an onSelect that is not a function"),
+    ("{label: 'x', groups: [[{label: 'A', selected: true, groups:"
+     " [[{label: 'B', onSelect(){}}]]}]]}",
+     "x > A is both a submenu and a one-of-N row"),
+    # Two sibling rows on one letter: the typeahead takes the first, so the second underlines
+    # a letter that does nothing. Shipped for one pass as `&Refresh` beside `P&roperties`.
+    #
+    # `src/widgets.mjs`'s `menuBar` does not refuse this shape — measured, a bar with
+    # `&Refresh` beside `&Rename` builds both rows and throws nothing. That is one fact with
+    # two renderings and it is recorded as a finding rather than asserted here, because an
+    # assertion on `menuBar` would fail and a failing check is not coverage.
+    ("{label: 'x', groups: [[{label: '&Refresh', onSelect(){}}],"
+     " [{label: 'P&roperties', onSelect(){}}]]}",
+     'both answer the mnemonic "r"'),
+)
+
+#: A well-formed menu of the same shape, for the control in `check_context_refusals`. Without
+#: it "no console error" is a constant rather than a reading: a drain that never sees anything
+#: cannot tell a refusal that fired from a refusal that was deleted.
+CONTEXT_WELL_FORMED = ("{label: 'Fine', groups: [[{label: '&A', onSelect(){}}],"
+                       " [{label: '&B', selected: true, onSelect(){}},"
+                       "  {label: '&C', selected: false, onSelect(){}}]]}")
+
+
+#: The open context menu, its rows, and where each row can be pressed.
+#:
+#: `hitsSelf` is the reading a DOM query cannot give: a menu that is in the document, named,
+#: and painted behind the taskbar is a menu nobody can use.
+CONTEXT_STATE = """(() => {
+  const popup = document.querySelector('.context-menu');
+  const live = document.getElementById('webxp-live');
+  const active = document.activeElement;
+  const state = {
+    open: !!popup,
+    isOpen: window.webxp.contextMenus.isOpen,
+    popups: document.querySelectorAll('.context-menu').length,
+    live: live ? live.textContent : null,
+    icons: [...document.querySelectorAll('.desktop-icon span')].map((s) => s.textContent),
+    // What the strip is supposed to hold, from the registry it is derived from. Sortedness
+    // alone is vacuous on an empty strip — `[] === sorted([])` — so three assertions about
+    // arranging icons passed on a desktop with no icons on it.
+    onDesktop: [...window.webxp.programs.values()]
+      .filter((program) => program.onDesktop).map((program) => program.name),
+    active: active ? (active.className || active.tagName) : null,
+    activeRow: (active && active.classList && active.classList.contains('menu-item'))
+      ? active.querySelector('.menu-label').textContent : null,
+  };
+  if (!popup) return state;
+  const rect = popup.getBoundingClientRect();
+  const style = getComputedStyle(popup);
+  state.label = popup.getAttribute('aria-label');
+  state.role = popup.getAttribute('role');
+  state.z = parseInt(style.zIndex, 10);
+  state.shadow = style.boxShadow;
+  state.box = {x: rect.left, y: rect.top, w: rect.width, h: rect.height,
+               right: rect.right, bottom: rect.bottom};
+  // `:scope >` and not a descendant sweep: a submenu's groups are inside this popup, so
+  // the loose selector counts them and the number stops being "how many separators does this
+  // menu draw". Measured at 4 for a three-group menu with one submenu.
+  state.groups = popup.querySelectorAll(':scope > .menu-group[role="group"]').length;
+  state.rows = [...popup.querySelectorAll('.menu-item')].map((button) => {
+    const box = button.getBoundingClientRect();
+    const x = box.left + 20;
+    const y = box.top + box.height / 2;
+    const hit = document.elementFromPoint(x, y);
+    const mark = button.querySelector('.menu-label u');
+    return {
+      text: button.querySelector('.menu-label').textContent,
+      role: button.getAttribute('role'),
+      checked: button.getAttribute('aria-checked'),
+      disabled: button.getAttribute('aria-disabled') === 'true',
+      expanded: button.getAttribute('aria-expanded'),
+      tabindex: button.tabIndex,
+      mnemonic: mark ? mark.textContent : null,
+      bullet: getComputedStyle(button.querySelector('.menu-check'), '::before').content,
+      visible: !!button.getClientRects().length,
+      x, y,
+      hitsSelf: !!(hit && hit.closest('.menu-item') === button),
+    };
+  });
+  return state;
+})()"""
+
+
+def context_state(page) -> dict:
+    state = page.evaluate(CONTEXT_STATE)
+    if not isinstance(state, dict) or "open" not in state:
+        raise HarnessError(f"context menu: the page answered {state!r}, not a menu state")
+    return state
+
+
+def icons_missing(state: dict) -> str | None:
+    """Why the desktop strip is not the registry's `onDesktop` programs, or None if it is.
+
+    Belongs beside every assertion about icon order, because order alone is vacuous on an
+    empty strip: `[] == sorted([])`. `Desktop.renderDesktopIcons` ends in
+    `iconsEl.replaceChildren(...rows)` (`src/desktop.mjs:789`), so a regression in its
+    `program.onDesktop` filter empties the strip — and three assertions about arranging
+    icons then reported ok about a desktop with no icons on it.
+    """
+    if sorted(state["icons"]) != sorted(state["onDesktop"]):
+        return (
+            f"the desktop shows {state['icons']}, want the {len(state['onDesktop'])} "
+            f"programs the registry flags onDesktop: {state['onDesktop']}"
+        )
+    if len(state["icons"]) < 2:
+        return f"{len(state['icons'])} desktop icon(s), so nothing here measures an order"
+    return None
+
+
+def context_row(state: dict, text: str) -> dict:
+    """One row by its label. A missing row is a failure here, never a silent skip."""
+    for row in state.get("rows") or []:
+        if row["text"] == text:
+            return row
+    raise HarnessError(
+        f"context menu: no {text!r} row among "
+        f"{[row['text'] for row in state.get('rows') or []]} — every assertion below about "
+        "it would pass on its absence"
+    )
+
+
+def bare_desktop(page) -> tuple[float, float]:
+    """A point on the wallpaper that no window is over, proved before it is pressed.
+
+    The suite leaves one window per program open and cascaded into the upper left, so a
+    computed point can land on a window — where a right-click is *correctly* declined, which
+    would read as the desktop menu failing to open. That is the harness's problem and it says
+    so rather than reporting a product verdict.
+    """
+    surface = probe(page)["surface"]
+    x = surface["x"] + surface["w"] - 240
+    y = surface["y"] + surface["h"] - 160
+    on_top = page.evaluate(
+        "(() => { const e = document.elementFromPoint(%f, %f);"
+        " return e ? (e.className || e.tagName) : 'nothing'; })()" % (x, y)
+    )
+    if "desktop" not in str(on_top):
+        raise HarnessError(
+            f"context menu: {on_top!r} is at ({x:.0f}, {y:.0f}), not bare desktop — a "
+            "right-click there is declined by design, so this is a harness problem and not "
+            "the shell's"
+        )
+    return x, y
+
+
+def open_desktop_menu(page) -> dict:
+    """Right-click bare desktop and hand back the menu, or fail saying it did not open."""
+    x, y = bare_desktop(page)
+    right_click(page, x, y)
+    state = context_state(page)
+    if not state["open"]:
+        raise HarnessError(
+            f"context menu: a right-click at ({x:.0f}, {y:.0f}) on bare desktop opened no "
+            "menu, so nothing below it is measured"
+        )
+    state["pressedAt"] = (x, y)
+    return state
+
+
+#: A `contextmenu` recorder on the document, installed once.
+CONTEXT_WATCH = """
+(() => { window.__ctxPrevented = null;
+  if (!window.__ctxWatch) { window.__ctxWatch = true;
+    document.addEventListener('contextmenu', (e) => {
+      window.__ctxPrevented = e.defaultPrevented; }); } return true; })()
+"""
+
+
+def check_context_desktop(page) -> list[str]:
+    """A right-click on the wallpaper raises the desktop's menu instead of Chrome's.
+
+    The suppression is half the point, so it is measured and not inferred: a `contextmenu`
+    listener on `document` records `defaultPrevented`, which is the only reading that
+    separates "the shell's menu is up" from "the shell's menu is up under the browser's".
+    """
+    bad = []
+    watch_live(page)
+    try:
+        page.evaluate(CONTEXT_WATCH)
+        state = open_desktop_menu(page)
+        x, y = state["pressedAt"]
+
+        if not page.evaluate("window.__ctxPrevented"):
+            bad.append(
+                "context menu: the right-click was not prevented, so Chrome's own menu is "
+                "still over the shell's"
+            )
+        if not state["isOpen"]:
+            bad.append("context menu: a popup is in the document but the host says isOpen false")
+        if state["popups"] != 1:
+            bad.append(f"context menu: {state['popups']} menus are up, want exactly 1")
+        if state["role"] != "menu" or state["label"] != "Desktop":
+            bad.append(
+                f"context menu: the popup is role={state['role']!r} "
+                f"aria-label={state['label']!r}, want 'menu' / 'Desktop'"
+            )
+        # Placed at the pointer, to the pixel. This is the number win32.run gets wrong by
+        # declaring the menu's size — `CMFSItem.js:13-14` — instead of measuring it.
+        if not near(state["box"]["x"], x, 1) or not near(state["box"]["y"], y, 1):
+            bad.append(
+                f"context menu: opened at {state['box']['x']:.0f},{state['box']['y']:.0f} "
+                f"for a press at {x:.0f},{y:.0f}"
+            )
+        taskbar_z = page.evaluate(
+            "parseInt(getComputedStyle(document.querySelector('.taskbar')).zIndex, 10)")
+        if not isinstance(state["z"], int) or state["z"] <= taskbar_z:
+            bad.append(
+                f"context menu: z-index {state['z']!r} against the taskbar's {taskbar_z} — a "
+                "menu under the taskbar is a menu nobody can press"
+            )
+        # The Luna bevel, from `menu.css`. An earlier arrangement made the popup itself the
+        # focus target, and `theme.css`'s `[tabindex]:focus-visible` box-shadow then replaced
+        # the whole bevel with a navy halo. Measured, which is why this line exists.
+        if "inset" not in str(state["shadow"]):
+            bad.append(
+                f"context menu: the popup's box-shadow is {state['shadow']!r} and has no "
+                "inset edge — something has outranked `.menu-popup`'s bevel"
+            )
+
+        got = tuple(row["text"] for row in state["rows"])
+        if got != CONTEXT_DESKTOP_ROWS:
+            bad.append(f"context menu: rows {got}, want {CONTEXT_DESKTOP_ROWS}")
+        if state["groups"] != 3:
+            bad.append(
+                f"context menu: {state['groups']} groups, want 3 — the grouping is the "
+                "separator, so a lost group is a lost rule"
+            )
+        for row in state["rows"]:
+            if row["tabindex"] != -1:
+                bad.append(
+                    f"context menu: {row['text']!r} has tabindex {row['tabindex']}, want -1 "
+                    "so the menu never becomes a tab stop of its own"
+                )
+            if not row["mnemonic"]:
+                bad.append(f"context menu: {row['text']!r} draws no underlined mnemonic")
+        # One letter per row, per list. A submenu is its own list, so the top-level rows and
+        # the submenu's are counted apart — which is why `&Properties` can sit beside
+        # `&Program order`.
+        for which, names in (("the desktop menu", CONTEXT_DESKTOP_ROWS[:1]
+                              + CONTEXT_DESKTOP_ROWS[3:]),
+                             ("Arrange Icons By", CONTEXT_DESKTOP_ROWS[1:3])):
+            letters = [str(context_row(state, name)["mnemonic"]).lower() for name in names]
+            if len(set(letters)) != len(letters):
+                bad.append(
+                    f"context menu: {which} answers {letters} — two rows on one letter means "
+                    "the second underlines a letter the typeahead never reaches"
+                )
+        # Focus is in the menu on open, or Escape and the arrows have nowhere to start from.
+        if state["activeRow"] != CONTEXT_DESKTOP_ROWS[0]:
+            bad.append(
+                f"context menu: focus is on {state['active']!r} after opening, want the "
+                f"first row {CONTEXT_DESKTOP_ROWS[0]!r}"
+            )
+        for name in ("Arrange Icons By", "Refresh", "Properties"):
+            row = context_row(state, name)
+            if not row["visible"] or not row["hitsSelf"]:
+                bad.append(
+                    f"context menu: {name!r} is visible={row['visible']} and answers a press "
+                    f"at ({row['x']:.0f}, {row['y']:.0f}) with hitsSelf={row['hitsSelf']}"
+                )
+
+        # Refresh does something, and says so. A row that renders and does nothing is the one
+        # thing these menus refuse to ship.
+        if not page.evaluate(
+            "(() => { window.__ctxIcon = document.querySelector('.desktop-icon');"
+            " return !!window.__ctxIcon; })()"
+        ):
+            raise HarnessError("context menu: no desktop icon to watch across a Refresh")
+        row = context_row(state, "Refresh")
+        click_at(page, row["x"], row["y"])
+        after = context_state(page)
+        if after["open"]:
+            bad.append("context menu: pressing Refresh left the menu on screen")
+        spoken = said(page)
+        if "Desktop refreshed" not in spoken:
+            bad.append(f"context menu: Refresh announced {spoken!r}, want 'Desktop refreshed'")
+        thin = icons_missing(after)
+        if thin:
+            bad.append(f"context menu: after Refresh, {thin}")
+        # A different node, and a node at all. `__ctxIcon !== null` is true, so a Refresh
+        # that emptied the strip read as a Refresh that rebuilt it.
+        if not page.evaluate(
+            "(() => { const now = document.querySelector('.desktop-icon');"
+            " return Boolean(now) && now !== window.__ctxIcon; })()"
+        ):
+            bad.append(
+                "context menu: Refresh left the same icon nodes in place, or left none at "
+                "all, so it recomputed nothing from the registry the icons are derived from"
+            )
+
+        # The submenu, reached and used by the pointer that opened it.
+        #
+        # This is the regression the hover rule was written for, and it is the whole reason
+        # this block exists. The obvious close test — "any row that is not the one the submenu
+        # hangs off" — is true of every row *inside* the submenu, so the submenu closed under
+        # the pointer on its way in and the press that followed landed on the wallpaper
+        # behind. Measured, before `current.rows.includes(row)`: hovering 'Arrange Icons By'
+        # then pressing 'Name' left the icons in their old order, the live region empty, and
+        # the menu gone.
+        state = open_desktop_menu(page)
+        parent = context_row(state, "Arrange Icons By")
+        hover_at(page, parent["x"], parent["y"])
+        time.sleep(0.2)
+        state = context_state(page)
+        if context_row(state, "Arrange Icons By")["expanded"] != "true":
+            bad.append("context menu: the pointer crossing 'Arrange Icons By' opened nothing")
+        row = context_row(state, "Name")
+        if not row["visible"] or not row["hitsSelf"]:
+            bad.append(
+                "context menu: hovering 'Arrange Icons By' left 'Name' visible="
+                f"{row['visible']} hitsSelf={row['hitsSelf']} — the submenu is not reachable "
+                "by the pointer that opened it"
+            )
+        else:
+            click_at(page, row["x"], row["y"])
+            after = context_state(page)
+            if after["open"]:
+                bad.append("context menu: pressing a submenu row left the menu on screen")
+            thin = icons_missing(after)
+            if thin:
+                bad.append(f"context menu: {thin}")
+            elif after["icons"] != sorted(after["icons"]):
+                bad.append(
+                    "context menu: pressing 'Name' with the pointer left the icons as "
+                    f"{after['icons']}, not sorted"
+                )
+            if "arranged by name" not in str(after["live"]):
+                bad.append(f"context menu: the pointer path announced {after['live']!r}")
+    finally:
+        page.evaluate("(() => { delete window.__ctxIcon; return true; })()")
+        # Back to the order every other check found the desktop in.
+        page.evaluate("window.webxp.arrange('program')")
+        stop_watching_live(page)
+    return bad
+
+
+def check_context_keyboard(page) -> list[str]:
+    """The menu opens without a pointer, and the arrows, Enter, a mnemonic and Escape all work.
+
+    This is the whole reason the control is written rather than copied: every menu row in
+    win32.run is a `div on:click`, so none of its menus has a keyboard route at all.
+    """
+    bad = []
+    watch_live(page)
+    try:
+        # Shift+F10 from a desktop icon, which is the only focusable thing on the wallpaper.
+        on_icon = page.evaluate(
+            "(() => { const i = document.querySelector('.desktop-icon');"
+            " if (!i) return null; i.focus();"
+            " return document.activeElement === i ? i.querySelector('span').textContent"
+            "   : null; })()"
+        )
+        if not on_icon:
+            raise HarnessError("context menu: no desktop icon took focus")
+        press_key(page, "F10", modifiers=SHIFT)
+        state = context_state(page)
+        if not state["open"]:
+            return ["context menu: Shift+F10 on a desktop icon opened nothing"]
+        if state["activeRow"] != CONTEXT_DESKTOP_ROWS[0]:
+            bad.append(
+                f"context menu: Shift+F10 left focus on {state['active']!r}, want the first row"
+            )
+        icon_box = page.evaluate(
+            "(({left, bottom}) => ({left, bottom}))"
+            "(document.querySelector('.desktop-icon').getBoundingClientRect())"
+        )
+        # Anchored at the box the keyboard is standing on, not at wherever the pointer was
+        # last left — which for a keyboard-only visitor is the corner of the screen.
+        if not near(state["box"]["x"], icon_box["left"], 2) or not near(
+            state["box"]["y"], icon_box["bottom"], 2
+        ):
+            bad.append(
+                f"context menu: Shift+F10 placed the menu at {state['box']['x']:.0f},"
+                f"{state['box']['y']:.0f}, want the focused icon's "
+                f"{icon_box['left']:.0f},{icon_box['bottom']:.0f}"
+            )
+        press_key(page, "Escape")
+        back = context_state(page)
+        if back["open"]:
+            bad.append("context menu: Escape left the menu on screen")
+        if "desktop-icon" not in str(back["active"]):
+            bad.append(
+                f"context menu: Escape put focus on {back['active']!r}, want the icon the "
+                "menu was opened from"
+            )
+
+        # The context-menu key is the other route Windows itself offers.
+        page.evaluate("document.querySelector('.desktop-icon').focus()")
+        press_key(page, "ContextMenu")
+        if not context_state(page)["open"]:
+            bad.append("context menu: the ContextMenu key opened nothing")
+        press_key(page, "Escape")
+
+        # One-of-N, by keyboard, both ways round — which is also what leaves the desktop in
+        # the order the rest of the suite found it in.
+        for want, expect_sorted in (("Name", True), ("Program order", False)):
+            state = open_desktop_menu(page)
+            arrange = context_row(state, "Arrange Icons By")
+            if arrange["expanded"] != "false":
+                bad.append(
+                    "context menu: 'Arrange Icons By' is aria-expanded="
+                    f"{arrange['expanded']!r} before it is opened"
+                )
+            for name in ("Name", "Program order"):
+                if context_row(state, name)["visible"]:
+                    bad.append(
+                        f"context menu: the submenu row {name!r} is on screen while its "
+                        "parent row is collapsed"
+                    )
+            press_key(page, "ArrowRight")
+            state = context_state(page)
+            arrange = context_row(state, "Arrange Icons By")
+            if arrange["expanded"] != "true":
+                bad.append(
+                    "context menu: ArrowRight opened the submenu with the parent row still "
+                    f"aria-expanded={arrange['expanded']!r}"
+                )
+            if state["activeRow"] != "Name":
+                bad.append(
+                    f"context menu: ArrowRight left focus on {state['active']!r}, want the "
+                    "submenu's first row"
+                )
+            on = [row["text"] for row in state["rows"] if row["checked"] == "true"]
+            if len(on) != 1:
+                bad.append(
+                    f"context menu: {len(on)} rows report aria-checked=true ({on}) — one-of-N "
+                    "means exactly one"
+                )
+            for name in ("Name", "Program order"):
+                got = context_row(state, name)
+                if got["role"] != "menuitemradio":
+                    bad.append(
+                        f"context menu: {name!r} is role={got['role']!r}, want menuitemradio "
+                        "— a checkbox announces independent switches where XP had one choice"
+                    )
+                if got["checked"] == "true" and "•" not in str(got["bullet"]):
+                    bad.append(
+                        f"context menu: the chosen row {name!r} draws {got['bullet']!r}, want "
+                        "a bullet — `menu.css`'s tick is a checkbox's and this is a radio"
+                    )
+                if got["checked"] != "true" and str(got["bullet"]) not in ("none", '""'):
+                    bad.append(
+                        f"context menu: the unchosen row {name!r} draws {got['bullet']!r}"
+                    )
+            # Walk to the row this pass is about, then press Enter.
+            for _ in range(len(CONTEXT_DESKTOP_ROWS)):
+                if context_state(page)["activeRow"] == want:
+                    break
+                press_key(page, "ArrowDown")
+            if context_state(page)["activeRow"] != want:
+                raise HarnessError(
+                    f"context menu: the arrows never reached {want!r} in the submenu"
+                )
+            press_key(page, "Enter")
+            time.sleep(0.25)
+            state = context_state(page)
+            if state["open"]:
+                bad.append(f"context menu: Enter on {want!r} left the menu on screen")
+            names = state["icons"]
+            thin = icons_missing(state)
+            if thin:
+                bad.append(f"context menu: after {want!r}, {thin}")
+            elif expect_sorted and names != sorted(names):
+                bad.append(f"context menu: {want!r} left the icons as {names}, not sorted")
+            # The announcement, against the key the row carries. `src/desktop.mjs:378`
+            # announces `entry.id` and not the row's own label, so the two already disagree
+            # for one of the two values: the rows read `&Name` and `&Program order` while the
+            # live region says "by name" and "by program". Asserted as the product behaves,
+            # and recorded as a finding — one fact with two renderings.
+            if expect_sorted and "arranged by name" not in str(state["live"]):
+                bad.append(
+                    f"context menu: {want!r} announced {state['live']!r} — a state change a "
+                    "reader cannot see has to be said out loud"
+                )
+            if not expect_sorted and "arranged by program" not in str(state["live"]):
+                bad.append(f"context menu: {want!r} announced {state['live']!r}")
+
+        # Re-opening reads the order off the desktop rather than off a copy the menu kept.
+        state = open_desktop_menu(page)
+        press_key(page, "ArrowRight")
+        state = context_state(page)
+        chosen = [row["text"] for row in state["rows"] if row["checked"] == "true"]
+        if chosen != ["Program order"]:
+            bad.append(
+                f"context menu: the re-opened submenu marks {chosen} as chosen, but the "
+                "desktop was last arranged by program order"
+            )
+        # Escape backs out of the submenu first, and only then closes the menu.
+        press_key(page, "Escape")
+        state = context_state(page)
+        if not state["open"]:
+            bad.append("context menu: Escape in a submenu closed the whole menu")
+        elif state["activeRow"] != "Arrange Icons By":
+            bad.append(
+                f"context menu: Escape out of the submenu left focus on {state['active']!r}, "
+                "want the row the submenu hangs off"
+            )
+        elif context_row(state, "Arrange Icons By")["expanded"] != "false":
+            bad.append("context menu: the submenu's parent row still reports itself expanded")
+        press_key(page, "Escape")
+        if context_state(page)["open"]:
+            bad.append("context menu: a second Escape left the menu on screen")
+
+        # Home, End, and a bare mnemonic — XP activated a row on its letter with no Enter.
+        open_desktop_menu(page)
+        press_key(page, "End")
+        if context_state(page)["activeRow"] != CONTEXT_DESKTOP_ROWS[-1]:
+            bad.append("context menu: End did not reach the last row")
+        press_key(page, "Home")
+        if context_state(page)["activeRow"] != CONTEXT_DESKTOP_ROWS[0]:
+            bad.append("context menu: Home did not reach the first row")
+        press_key(page, "r")
+        time.sleep(0.25)
+        if context_state(page)["open"]:
+            bad.append("context menu: the bare mnemonic 'r' left the menu on screen")
+        if "Desktop refreshed" not in said(page):
+            bad.append(f"context menu: 'r' did not run Refresh — said {said(page)!r}")
+
+        # Tab closes rather than walking out of a floating popup into whatever follows it in
+        # the document, which is the root element and not the surface the menu came from.
+        open_desktop_menu(page)
+        press_key(page, "Tab")
+        if context_state(page)["open"]:
+            bad.append("context menu: Tab left the menu on screen")
+    finally:
+        stop_watching_live(page)
+    return bad
+
+
+def check_context_window(page) -> list[str]:
+    """The window menu, on a title bar and a taskbar button, with the rows each state allows.
+
+    The negative control is in here rather than beside it: the same right-click inside the
+    window's own body must produce no menu *and* must not be prevented, because webxp has no
+    clipboard and the browser's Cut, Copy and Paste are the only ones a text field has.
+    """
+    bad = []
+    watch_live(page)
+    try:
+        page.evaluate(CONTEXT_WATCH)
+        expose(page, "readme")
+        selector = win_selector(page, "readme")
+        bar = rect_of(page, f"{selector} .window-title")
+        if bar is None:
+            raise HarnessError("context menu: Read me has no laid-out title bar")
+
+        right_click(page, bar["x"] + 60, bar["y"] + bar["h"] / 2)
+        state = context_state(page)
+        if not state["open"]:
+            return ["context menu: a right-click on the title bar opened nothing"]
+        if state["label"] != "Read me window":
+            bad.append(
+                f"context menu: the window menu is named {state['label']!r}, want "
+                "'Read me window' — a menu with no name is announced as a list of items"
+            )
+        got = tuple(row["text"] for row in state["rows"])
+        if got != CONTEXT_WINDOW_ROWS:
+            bad.append(f"context menu: window rows {got}, want {CONTEXT_WINDOW_ROWS}")
+        if state["groups"] != 2:
+            bad.append(f"context menu: {state['groups']} groups in the window menu, want 2")
+        press_key(page, "Escape")
+
+        # `centre` spelled out rather than called, for the one reason that justifies it:
+        # `centre` takes a CSS selector, and every window's button is `.task-button`
+        # (`src/desktop.mjs:651`). Nothing in the markup says *which* window's — the one
+        # discriminator is `aria-controls`, carrying a generated window id — so singling out
+        # the read-me's means going through the model, which is the read below. The other
+        # exception is `menu_pick`, which reads its own box to stay inside one window by id.
+        task_button = (
+            "(() => { const w = window.webxp.windows.find((w) => w.programId === 'readme');"
+            " const r = w.taskButton.getBoundingClientRect();"
+            " return {x: r.left + r.width / 2, y: r.top + r.height / 2}; })()"
+        )
+        # The disabled table, state by state, on the taskbar button — which is the only
+        # surface a minimised window still has.
+        for want_state in ("normal", "max", "min"):
+            page.evaluate(
+                "(() => { const w = window.webxp.windows.find((w) => w.programId === 'readme');"
+                " const want = %s;"
+                " if (want === 'max') { if (w.state === 'min') w.restore(); w.maximize(); }"
+                " else if (want === 'min') w.minimize();"
+                " else { if (w.state === 'min') w.restore();"
+                "        if (w.state === 'max') w.unmaximize(); } return true; })()"
+                % json.dumps(want_state)
+            )
+            time.sleep(SETTLE_S + 0.25)
+            reached = page.evaluate(
+                "(window.webxp.windows.find((w) => w.programId === 'readme') || {}).state")
+            if reached != want_state:
+                bad.append(
+                    f"context menu: wanted the window {want_state!r} before opening its menu, "
+                    f"got {reached!r} — the row table below was not measured in that state"
+                )
+                continue
+            button = page.evaluate(task_button)
+            right_click(page, button["x"], button["y"])
+            state = context_state(page)
+            if not state["open"]:
+                bad.append(
+                    f"context menu: a right-click on the taskbar button of a {want_state!r} "
+                    "window opened nothing"
+                )
+                continue
+            dead = {row["text"] for row in state["rows"] if row["disabled"]}
+            if dead != CONTEXT_WINDOW_DISABLED[want_state]:
+                bad.append(
+                    f"context menu: a {want_state!r} window greys {sorted(dead)}, want "
+                    f"{sorted(CONTEXT_WINDOW_DISABLED[want_state])}"
+                )
+            for row in state["rows"]:
+                # Every row stays focusable and announced, greyed or not: the `disabled`
+                # attribute would make the arrows step over it and a reader never be told it
+                # is there.
+                if row["tabindex"] != -1:
+                    bad.append(f"context menu: {row['text']!r} has tabindex {row['tabindex']}")
+                if not row["hitsSelf"]:
+                    bad.append(
+                        f"context menu: {row['text']!r} of a {want_state} window cannot be "
+                        f"pressed at ({row['x']:.0f}, {row['y']:.0f}) — the taskbar is "
+                        "z-index 1000 and this menu has to clear it"
+                    )
+            # A greyed row refuses activation rather than looking dead and firing anyway.
+            for name in sorted(CONTEXT_WINDOW_DISABLED[want_state]):
+                row = context_row(state, name)
+                click_at(page, row["x"], row["y"])
+                after = page.evaluate(
+                    "(window.webxp.windows.find((w) => w.programId === 'readme') || {}).state")
+                if after != want_state:
+                    bad.append(
+                        f"context menu: the greyed {name!r} row acted — the window went from "
+                        f"{want_state!r} to {after!r}"
+                    )
+                if not context_state(page)["open"]:
+                    bad.append(
+                        f"context menu: pressing the greyed {name!r} row closed the menu"
+                    )
+                    right_click(page, button["x"], button["y"])
+            press_key(page, "Escape")
+
+        # Restore, from the taskbar menu of a minimised window: the window comes back and the
+        # keyboard comes with it.
+        # Restored out of whatever the loop left before being minimised, so the state Restore
+        # returns to is the one this block names. Written as `if (max) unmaximize()` first,
+        # which is dead: the loop above always ends on 'min', so the test never passed and
+        # the window was minimised with 'max' remembered. Measured both ways — Restore hands
+        # the keyboard back from either, so this is determinism rather than a defect fixed.
+        page.evaluate(
+            "(() => { const w = window.webxp.windows.find((w) => w.programId === 'readme');"
+            " if (w.state === 'min') w.restore();"
+            " if (w.state === 'max') w.unmaximize();"
+            " w.minimize(); return true; })()"
+        )
+        time.sleep(SETTLE_S + 0.25)
+        button = page.evaluate(task_button)
+        right_click(page, button["x"], button["y"])
+        row = context_row(context_state(page), "Restore")
+        click_at(page, row["x"], row["y"])
+        time.sleep(SETTLE_S + 0.4)
+        state = probe(page)
+        if need(state, "readme")["state"] == "min":
+            bad.append("context menu: Restore left the window minimised")
+        if state["active"] != "readme":
+            bad.append(
+                f"context menu: Restore left {state['active']!r} active, want the window it "
+                "brought back"
+            )
+        if not page.evaluate(
+            "(() => { const w = window.webxp.windows.find((w) => w.programId === 'readme');"
+            " return w.el.contains(document.activeElement); })()"
+        ):
+            bad.append("context menu: Restore brought the window back without the keyboard")
+
+        # The negative control: the same gesture inside the window's own body. No menu, and
+        # not prevented, so a text field keeps the only Cut, Copy and Paste there are.
+        page.evaluate("window.__ctxPrevented = null")
+        body = rect_of(page, f"{selector} .window-body")
+        if body is None:
+            raise HarnessError("context menu: Read me has no laid-out body")
+        right_click(page, body["x"] + body["w"] / 2, body["y"] + body["h"] - 20)
+        if context_state(page)["open"]:
+            bad.append(
+                "context menu: a right-click inside the window body opened the shell's menu — "
+                "the desktop's binding is supposed to decline anything that is not the "
+                "wallpaper or its icons"
+            )
+        if page.evaluate("window.__ctxPrevented") is not False:
+            bad.append(
+                "context menu: a right-click in a window body was prevented, which deletes "
+                "the browser's Cut, Copy and Paste without replacing them"
+            )
+
+        # Close, from the menu, and the window really goes.
+        bar = rect_of(page, f"{selector} .window-title")
+        right_click(page, bar["x"] + 60, bar["y"] + bar["h"] / 2)
+        row = context_row(context_state(page), "Close")
+        click_at(page, row["x"], row["y"])
+        time.sleep(SETTLE_S + 0.4)
+        if window_of(probe(page), "readme") is not None:
+            bad.append("context menu: Close left the window in the desktop's list")
+        if "Read me closed" not in said(page):
+            bad.append(f"context menu: Close announced {said(page)!r}")
+    finally:
+        stop_watching_live(page)
+        # Put back what this check closed, so nothing after it finds a window missing.
+        if window_of(probe(page), "readme") is None:
+            launch(page, "readme")
+    return bad
+
+
+#: A context menu host on a scratch root, bound to a scratch surface and left for the check.
+#:
+#: Its own root, not the shell's, so `destroy()` here cannot be confused with the desktop's
+#: teardown and the check can be run by itself.
+CONTEXT_SCRATCH = """(async () => {
+  const module = await import('/src/contextmenu.mjs');
+  const root = document.createElement('div');
+  root.id = 'ctx-scratch';
+  document.body.append(root);
+  const surface = document.createElement('div');
+  // Over everything, and clear of the desktop's icon strip, so a real right-click lands here
+  // and not on whatever the suite has left open.
+  surface.style.position = 'fixed';
+  surface.style.left = '45%';
+  surface.style.top = '40%';
+  surface.style.width = '120px';
+  surface.style.height = '80px';
+  surface.style.zIndex = '3000';
+  root.append(surface);
+  const host = module.contextMenus({ root });
+  host.bind(surface, () => ({ label: 'Scratch',
+    groups: [[{ label: '&Only', onSelect: () => { window.__ctxFired = true; } }]] }));
+  window.__ctxScratch = { root, host };
+  const box = surface.getBoundingClientRect();
+  return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
+})()"""
+
+
+def check_context_teardown(page) -> list[str]:
+    """`destroy()` makes a host inert, and the bindings outlive it.
+
+    The bindings live on the surfaces — a title bar, a taskbar button, the desktop itself —
+    and `destroy` cannot reach them, because the root element belongs to whoever built it.
+    Before the host carried a dead flag, a desktop that had already been destroyed still
+    answered a right-click with a full menu whose Close and Restore rows called back into it.
+    Measured, which is why this check exists: `desktop destroy` covers the resize listener and
+    said nothing about this.
+    """
+    bad = []
+    try:
+        at = page.evaluate(CONTEXT_SCRATCH, await_promise=True)
+        right_click(page, at["x"], at["y"])
+        named = page.evaluate(
+            "(() => { const p = document.querySelector('#ctx-scratch .context-menu');"
+            " return p ? p.getAttribute('aria-label') : null; })()"
+        )
+        if named != "Scratch":
+            return [
+                f"context menu: the scratch host put up {named!r} rather than its own menu, so "
+                "the teardown below measures nothing"
+            ]
+        page.evaluate("(() => { window.__ctxScratch.host.destroy(); return true; })()")
+        if page.evaluate("!!document.querySelector('#ctx-scratch .context-menu')"):
+            bad.append("context menu: destroy() left the open menu on screen")
+        right_click(page, at["x"], at["y"])
+        if page.evaluate("!!document.querySelector('#ctx-scratch .context-menu')"):
+            bad.append(
+                "context menu: a destroyed host still answers a right-click, so a replaced "
+                "desktop keeps serving a menu whose rows call back into it"
+            )
+        threw = page.evaluate(
+            "(() => { try { window.__ctxScratch.host.bind(document.body, () => null);"
+            " return ''; } catch (e) { return e.message; } })()"
+        )
+        if "destroyed" not in str(threw):
+            bad.append(
+                f"context menu: bind() on a destroyed host answered {threw!r}, want a throw "
+                "naming the host as destroyed"
+            )
+    finally:
+        page.evaluate(
+            "(() => { if (window.__ctxScratch) { window.__ctxScratch.host.destroy();"
+            " window.__ctxScratch.root.remove(); delete window.__ctxScratch; }"
+            " delete window.__ctxFired; return true; })()"
+        )
+    return bad
+
+
+def check_context_refusals(page) -> list[str]:
+    """Every menu definition that would ship a dead or ambiguous row is refused, by name.
+
+    Driven through a real `make`, because that is where a definition is built: at every open
+    rather than once at startup, which is what lets a greyed row be right about the state the
+    window is in now.
+
+    The `contextmenu` event here is synthesised, which the rest of this file refuses to do —
+    and the reason is narrow. The subject is the validator, not whether a right-click reaches
+    the listener; the three checks above drive that with real presses. A real press cannot be
+    used anyway, because each case needs a surface of its own and the throw has to arrive from
+    inside the listener.
+
+    The throw lands inside an event listener, so it reaches the page as an uncaught exception
+    rather than as a rejected call. `drain_expecting` is how the rest of this file reads a
+    deliberate error: it requires the message and keeps the end-of-run sweep strict.
+    """
+    bad = []
+    # Clear whatever an earlier check left, so each drain below sees only its own error. Kept
+    # rather than discarded — `drain` folds it into the run's failures.
+    drain(page)
+    build = (
+        "(async () => { const m = await import('/src/contextmenu.mjs');"
+        " const root = document.createElement('div'); document.body.append(root);"
+        " const surface = document.createElement('div'); root.append(surface);"
+        " const host = m.contextMenus({ root });"
+        " const before = document.querySelectorAll('.context-menu').length;"
+        " host.bind(surface, () => (%s));"
+        " surface.dispatchEvent(new MouseEvent('contextmenu'));"
+        " const after = document.querySelectorAll('.context-menu').length;"
+        " host.destroy(); root.remove();"
+        " return after - before; })()"
+    )
+    for spec, wanted in CONTEXT_REFUSALS:
+        leaked = page.evaluate(build % spec, await_promise=True)
+        # The exception arrives over the websocket, not with the evaluate's reply.
+        time.sleep(0.15)
+        bad += drain_expecting(page, wanted, "context menu refusal")
+        if leaked:
+            bad.append(
+                f"context menu: refusing {wanted!r} left {leaked} popup(s) in the page — a "
+                "half-built menu on screen is worse than none"
+            )
+    # The control. A well-formed menu of the same shape must put exactly one popup up and say
+    # nothing to the console, or "no console error" above is a constant and the thirteen
+    # assertions are reading a drain that never sees anything.
+    put_up = page.evaluate(build % CONTEXT_WELL_FORMED, await_promise=True)
+    time.sleep(0.15)
+    noise = console_errors(page)
+    if put_up != 1:
+        bad.append(
+            f"context menu: a well-formed menu put {put_up} popup(s) up, want 1 — the "
+            f"{len(CONTEXT_REFUSALS)} refusals above are then measuring a builder that "
+            "refuses everything"
+        )
+    if noise:
+        bad.append(f"context menu: a well-formed menu reported {noise}")
+    return bad
+
+
+#: A scratch popup with one checkbox row and one radio row, built by hand in `menu.css`'s own
+#: DOM contract.
+#:
+#: Built rather than found, because the two glyphs are a tie between two sheets and neither
+#: control reliably has both roles on screen at once: `widgets.menuBar` renders only
+#: `menuitemcheckbox` and `contextmenu.mjs` only `menuitemradio`.
+CONTEXT_GLYPHS = """(() => {
+  const popup = document.createElement('div');
+  popup.className = 'menu-popup context-menu';
+  popup.setAttribute('role', 'menu');
+  popup.style.left = '0px';
+  popup.style.top = '0px';
+  const group = document.createElement('div');
+  group.className = 'menu-group';
+  group.setAttribute('role', 'group');
+  const out = {};
+  for (const role of ['menuitemcheckbox', 'menuitemradio']) {
+    for (const on of ['true', 'false']) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'menu-item';
+      button.setAttribute('role', role);
+      button.setAttribute('aria-checked', on);
+      const gutter = document.createElement('span');
+      gutter.className = 'menu-check';
+      const label = document.createElement('span');
+      label.className = 'menu-label';
+      label.textContent = role + ' ' + on;
+      button.append(gutter, label);
+      group.append(button);
+      out[role + ':' + on] = button;
+    }
+  }
+  popup.append(group);
+  document.body.append(popup);
+  try {
+    const read = {};
+    for (const [key, button] of Object.entries(out)) {
+      read[key] = getComputedStyle(button.querySelector('.menu-check'), '::before').content;
+    }
+    read.gutter = getComputedStyle(popup).getPropertyValue('--menu-gutter').trim();
+    return read;
+  } finally {
+    popup.remove();
+  }
+})()"""
+
+
+def check_context_glyphs(page, *, invert: bool = False) -> list[str]:
+    """A tick means a switch that is on; a bullet means the one of several that is chosen.
+
+    `menu.css`'s `.menu-item[aria-checked="true"] .menu-check::before` matches a radio row
+    too, because `aria-checked` is the attribute for both roles. `src/contextmenu.css`
+    overrides it one class higher, so the decision is won on count and not on which sheet is
+    linked last. `css_ties.py` pins that same decision — `OUTRANKS`, (0,4,1) over (0,3,1) —
+    by reading the sheets; this reads the glyph a reader sees out of computed style in a live
+    page, which is the half no static count can answer: a selector that outranks another
+    still draws nothing if the rule it wins is itself overridden at runtime.
+
+    Invertible, and cheaply so: it builds its own popup, reads four computed styles and
+    removes it again, so the inverted run costs one page round trip and changes no state.
+    """
+    glyphs = page.evaluate(CONTEXT_GLYPHS)
+    if not isinstance(glyphs, dict) or "gutter" not in glyphs:
+        raise HarnessError(f"context menu: the glyph probe answered {glyphs!r}")
+    bad = []
+    if invert:
+        # --prove-failure. The two glyphs are there; asserting that they are not must fail.
+        if "✓" in str(glyphs["menuitemcheckbox:true"]) and "•" in str(
+            glyphs["menuitemradio:true"]
+        ):
+            bad.append(
+                "context menu glyphs[--prove-failure]: the checkbox row draws "
+                f"{glyphs['menuitemcheckbox:true']!r} and the radio row "
+                f"{glyphs['menuitemradio:true']!r} as they should — the inverted assertion "
+                "failed, so this check can fail"
+            )
+        return bad
+    if "✓" not in str(glyphs["menuitemcheckbox:true"]):
+        bad.append(
+            f"context menu: a checked checkbox row draws {glyphs['menuitemcheckbox:true']!r}, "
+            "want a tick — `contextmenu.css`'s radio rule has reached a checkbox"
+        )
+    if "•" not in str(glyphs["menuitemradio:true"]):
+        bad.append(
+            f"context menu: a chosen radio row draws {glyphs['menuitemradio:true']!r}, want a "
+            "bullet"
+        )
+    for key in ("menuitemcheckbox:false", "menuitemradio:false"):
+        if str(glyphs[key]) not in ("none", '""'):
+            bad.append(f"context menu: an unchecked {key} row draws {glyphs[key]!r}")
+    # The gutter the two glyphs are centred in is `menu.css`'s one declaration of that number,
+    # and a context menu reading a different one would be a second copy of it.
+    if glyphs["gutter"] != "20px":
+        bad.append(
+            f"context menu: --menu-gutter reads {glyphs['gutter']!r} on a context menu popup, "
+            "want menu.css's 20px"
+        )
+    return bad
+
+
 def check_app_loading(page) -> list[str]:
     """Every folder in the manifest became a registered program, in manifest order."""
     bad = []
@@ -8850,6 +9851,7 @@ INVERTIBLE = (
     # `--prove-failure` rather than being a measurement somebody took once.
     check_file_associations,
     check_scrollbar_skin,
+    check_context_glyphs,
     # `css_ties.check` carries its own inversion: `invert=True` applies its `REVERTS` to the
     # stylesheet text in memory and asserts against the undone tree. Listing it here runs
     # that control on every `--prove-failure` rather than only when somebody runs the file by
@@ -8931,6 +9933,15 @@ CHECKS = (
     ("menu style", check_menu_style),
     ("menu refusals", check_menu_refusals),
     ("menu bar handed back", check_menu_handed_back),
+    # The context menus after the menu bar, and after its teardown: the bar's fixture parks
+    # and re-parks a window in the upper left, and `check_context_desktop` raises if anything
+    # covers the lower-right point it right-clicks.
+    ("context menu on the desktop", check_context_desktop),
+    ("context menu by keyboard", check_context_keyboard),
+    ("context menu on a window", check_context_window),
+    ("context menu teardown", check_context_teardown),
+    ("context menu refusals", check_context_refusals),
+    ("context menu glyphs", check_context_glyphs),
     # Last, because it registers a program and provokes a console error. Its cleanup puts
     # the desktop back, but a check that deliberately breaks something belongs at the end.
     ("mount failure", check_mount_failure),

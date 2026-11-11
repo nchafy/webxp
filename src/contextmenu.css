@@ -1,0 +1,34 @@
+/* What a context menu needs that a pull-down does not.
+ *
+ * Everything else — the bevelled popup, the gutter stripe, the row, the highlight, the
+ * disabled row, the separator between groups, the submenu arrow — comes from `src/menu.css`,
+ * because a context menu and a pull-down were the same popup in Luna. `contextmenu.mjs` links
+ * both sheets and skips either one another control has already linked.
+ *
+ * Two rules, and both of them are a tie against `menu.css` that has to be won on count rather
+ * than on link order: this sheet and that one are linked by the same module in a fixed order
+ * today, and the first menu bar a program builds would reverse it. `docs/apps.md` carries the
+ * eight collisions this project has already paid for; count before changing one.
+ */
+
+/* `menu.css` puts a popup at `z-index: 4`, which is right for a pull-down: it has to clear
+   `.window-grip` at 3 and stay inside its own window's stacking context, so a background
+   window's menu cannot cover the window in front of it.
+ *
+ * A context menu has no window. It is appended to the shell's root and has to paint over the
+ * taskbar (1000) and the Start menu (1001), both in `src/shell.css` — right-click a taskbar
+ * button and the menu that comes up is over the bar it came from.
+ *
+ * (0,2,0) against `.menu-popup`'s (0,1,0), so this wins wherever the two sheets land. A bare
+ * `.context-menu` would be (0,1,0), a tie on the one property that decides whether the menu is
+ * visible at all, and the answer would be whichever sheet was linked last. */
+.menu-popup.context-menu { z-index: 1002; }
+
+/* One-of-N draws a bullet, not a tick. Luna's menus used both glyphs and meant different
+   things by them: a tick is a switch that is on, a bullet is the one of several that is
+   chosen, and `role="menuitemradio"` is already saying so to a screen reader.
+ *
+ * (0,3,0) against `menu.css`'s `.menu-item[aria-checked="true"] .menu-check::before` at
+ * (0,2,0), which matches a radio row too — `aria-checked` is the attribute for both roles. So
+ * this is an override and not an addition, and it has to outrank rather than follow. */
+.menu-item[role="menuitemradio"][aria-checked="true"] .menu-check::before { content: "•"; }

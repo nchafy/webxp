@@ -12,9 +12,26 @@
 import { XPWindow, WINDOW_SPEC_KEYS, zoom } from './window.mjs';
 import { icon } from './icons.mjs';
 import { group, iconTile, sheet } from './widgets.mjs';
+import { contextMenus } from './contextmenu.mjs';
 
 //: The lowest z-index a window gets. Above the desktop icons, below the taskbar.
 const Z_BASE = 10;
+
+//: How the desktop icons may be ordered: each mode's id, the row that offers it, and the
+//: comparator that performs it, in one place. The context menu renders this list and
+//: `renderDesktopIcons` reads the comparator out of it, so adding an order is adding a row
+//: here rather than editing either of them. `&` marks the row's mnemonic.
+const ARRANGE = Object.freeze([
+  { id: 'name', label: '&Name', order: (a, b) => a.name.localeCompare(b.name) },
+  //: Registration order, which is `apps/manifest.mjs`'s order and so the folder listing's.
+  //: `null` and not a comparator returning 0: this is the absence of a sort, and a
+  //: comparator saying so would be a second spelling of the same thing.
+  { id: 'program', label: '&Program order', order: null },
+]);
+
+//: The order a fresh desktop draws its icons in — registration order, which is what it drew
+//: before there was a choice.
+const ARRANGE_DEFAULT = 'program';
 
 //: Every key an app may declare that `Desktop` reads, beside the window's own
 //: `WINDOW_SPEC_KEYS`. Named here and nowhere else: `apps.mjs` validates an app spec against
@@ -80,6 +97,9 @@ export class Desktop {
     //: timer, outlives the root this desktop was built in; one list is what makes the
     //: teardown complete rather than nearly complete.
     this.teardown = [];
+    //: Which of `ARRANGE` the icon strip is drawn in. Set before `build`, because the
+    //: constructor's own `renderDesktopIcons` reads it.
+    this.arrangeBy = ARRANGE_DEFAULT;
 
     this.ready = false;
     this.build(options);
@@ -230,9 +250,145 @@ export class Desktop {
     this.menuList = list;
     this.live = live;
 
+    // Right-click, the context-menu key and Shift+F10. The host is handed the root and not
+    // the surface: the surface is `overflow: hidden` and a menu has to paint over the
+    // taskbar, so the popup belongs outside both. One binding covers the wallpaper and the
+    // icon strip, and `desktopMenu` declines everything else — see there.
+    this.contextMenus = contextMenus({ root });
+    this.contextMenus.bind(surface, (ctx) => this.desktopMenu(ctx));
+    this.teardown.push(() => this.contextMenus.destroy());
+
     this.wireStartMenu();
     this.tick(clock);
     this.teardown.push(() => clearTimeout(this.clockTimer));
+  }
+
+  /* -------------------------------------------------------------------------
+     The shell's context menus. The host is `contextmenu.mjs`; these are the definitions,
+     because what Refresh and Properties mean is the shell's business and not the popup's.
+     ------------------------------------------------------------------------- */
+
+  /**
+   * The desktop's own menu: the wallpaper's, and the icon strip that sits on it.
+   *
+   * `null` for anything else, which leaves the browser's menu where it is still the only one
+   * with something to offer. A right-click in Notepad's textarea reaches Cut, Copy and Paste;
+   * webxp has no clipboard, so replacing that menu would not move those three rows into the
+   * shell, it would delete them.
+   *
+   * Paste and New are absent for the same reason, and both are reported rather than greyed:
+   * Paste needs a shell clipboard nothing in this tree has, and New needs the desktop to be a
+   * folder in `shared/fs` rather than a view of the program registry.
+   *
+   * @param {{target: Element}} ctx
+   */
+  desktopMenu({ target }) {
+    if (target !== this.surface && !this.iconsEl.contains(target)) return null;
+    return {
+      label: 'Desktop',
+      groups: [
+        [{
+          label: 'Arrange &Icons By',
+          groups: [ARRANGE.map((entry) => ({
+            label: entry.label,
+            // Read off the desktop at every open rather than held by the menu. The order is
+            // the desktop's state; a menu that owned a copy would be showing the answer it
+            // gave last time.
+            selected: this.arrangeBy === entry.id,
+            onSelect: () => this.arrange(entry.id),
+          }))],
+        }],
+        [{ label: '&Refresh', onSelect: () => this.refresh() }],
+        // XP's Properties on the wallpaper opened Display Properties, which is a program here
+        // and a singleton, so a second press raises the window the first one opened.
+        // `&P`, not XP's `P&roperties`: XP spelled it that way because Paste had already
+        // taken P in this menu, and this menu has no Paste. Spelled XP's way it collided
+        // with Refresh's R, and `buildPopup` refuses a letter two sibling rows answer.
+        [{ label: '&Properties', onSelect: () => this.launch('display') }],
+      ],
+    };
+  }
+
+  /**
+   * The window menu: what XP put on a title bar and on a taskbar button, identically.
+   *
+   * Built at every open, which is what lets the greyed rows be right — whether Restore is
+   * available is a question about the state the window is in now.
+   *
+   * Move and Size are absent rather than present and dead. Both put XP's window into a
+   * keyboard drag, and the title bar here already is one: a focusable toolbar whose arrows
+   * move the window and whose shifted arrows resize it. The rows would announce a mode that
+   * the surface the menu came from has already entered.
+   *
+   * @param {XPWindow} win
+   */
+  windowMenu(win) {
+    const min = win.state === 'min';
+    const max = win.state === 'max';
+    return {
+      label: `${win.titleText} window`,
+      groups: [
+        [
+          {
+            // One row, two exits, as XP's was: a minimised window comes back out of the
+            // taskbar and a maximised one comes back to its own box. The state is read at
+            // activation, not captured here, so the row cannot act on a stale reading.
+            label: '&Restore',
+            disabled: !min && !max,
+            onSelect: () => (win.state === 'min'
+              ? this.restoreWindow(win)
+              : win.unmaximize()),
+          },
+          {
+            // Maximised is not a refusal: XP minimised a maximised window straight into the
+            // taskbar, and `restoreState` is what brings it back maximised.
+            label: 'Mi&nimize',
+            disabled: min || !win.minimizable,
+            onSelect: () => win.minimize(),
+          },
+          {
+            // Refused while minimised, where XP allowed it. Maximising a hidden frame has to
+            // restore it first, which makes one row a two-step sequence — and the window's
+            // own taskbar button already restores it in one press.
+            label: 'Ma&ximize',
+            disabled: max || min || !win.maximizable,
+            onSelect: () => win.maximize(),
+          },
+        ],
+        [{ label: '&Close', onSelect: () => win.close() }],
+      ],
+    };
+  }
+
+  /**
+   * Order the desktop icons.
+   *
+   * @param {string} id  An `id` of `ARRANGE`. Anything else throws: an unknown order would
+   *        otherwise leave `renderDesktopIcons` with no entry to read a comparator out of,
+   *        and the icons would vanish rather than stay as they were.
+   */
+  arrange(id) {
+    const entry = ARRANGE.find((candidate) => candidate.id === id);
+    if (!entry) {
+      throw new Error(`Desktop.arrange: no such order ${JSON.stringify(id)}; one of `
+        + ARRANGE.map((candidate) => candidate.id).join(', '));
+    }
+    this.arrangeBy = id;
+    this.renderDesktopIcons();
+    this.announce(`Desktop icons arranged by ${entry.id}`);
+  }
+
+  /**
+   * Redraw what the shell derives from its programs.
+   *
+   * XP's Refresh re-read the desktop folder. The source here is `programs`, and both the
+   * Start menu and the icon strip are derived from it, so Refresh recomputes them from it
+   * rather than patching either in place.
+   */
+  refresh() {
+    this.renderStartMenu();
+    this.renderDesktopIcons();
+    this.announce('Desktop refreshed');
   }
 
   /* -------------------------------------------------------------------------
@@ -353,6 +509,11 @@ export class Desktop {
     this.windows.push(win);
     this.surface.append(win.el);
     this.addTaskButton(win);
+    // Both surfaces XP gave the window menu, from one definition, because XP's two were the
+    // same menu. Bound here rather than in `addTaskButton` so neither surface reads as the
+    // other's business.
+    this.contextMenus.bind(win.bar, () => this.windowMenu(win));
+    this.contextMenus.bind(win.taskButton, () => this.windowMenu(win));
     this.focus(win);
 
     const started = performance.now();
@@ -499,7 +660,7 @@ export class Desktop {
       // XP's rule: the button for the window you are looking at puts it away. Any other
       // button brings its window up. One control, both directions, no second button.
       if (win.state === 'min') {
-        win.restore().then(() => this.focus(win, { moveFocus: true }));
+        this.restoreWindow(win);
         return;
       }
       if (this.active === win) {
@@ -515,6 +676,19 @@ export class Desktop {
     win.taskItem = item;
     win.taskButton = button;
     win.taskLabel = label;
+  }
+
+  /**
+   * Bring a minimised window back and put the keyboard in it.
+   *
+   * One implementation, because two surfaces ask for it: the taskbar button's own click and
+   * the window menu's Restore row. A second copy that dropped the focus move would leave the
+   * window on screen with the keyboard still on the taskbar.
+   *
+   * @returns {Promise<void>} Settles once the zoom has finished and the window has focus.
+   */
+  restoreWindow(win) {
+    return win.restore().then(() => this.focus(win, { moveFocus: true }));
   }
 
   syncTaskButtons() {
@@ -593,8 +767,12 @@ export class Desktop {
   }
 
   renderDesktopIcons() {
-    const rows = [...this.programs.values()]
-      .filter((program) => program.onDesktop)
+    const entry = ARRANGE.find((candidate) => candidate.id === this.arrangeBy);
+    const programs = [...this.programs.values()].filter((program) => program.onDesktop);
+    // Sorted on the copy `filter` already made, so `programs` — the registry, and the Start
+    // menu's order — is left in the order it was registered in.
+    if (entry.order) programs.sort(entry.order);
+    const rows = programs
       .map((program) => {
         const item = document.createElement('li');
         item.append(iconTile({
