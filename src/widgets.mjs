@@ -1071,7 +1071,14 @@ export function folderView(spec) {
   const items = document.createElement('ul');
   items.className = 'folder-items';
   const selects = spec.select === 'one';
-  if (selects) items.setAttribute('aria-multiselectable', 'false');
+  if (selects) {
+    // The roles are set in selecting mode and nowhere else. A folder of launchers is a list
+    // of buttons — `apps/map-challenge/app.mjs` uses this as exactly that — and calling that
+    // a listbox promises a selection the reader cannot make. `aria-multiselectable` was here
+    // before the role was, on a `<ul>` whose implicit `list` role ignored it.
+    items.setAttribute('role', 'listbox');
+    items.setAttribute('aria-multiselectable', 'false');
+  }
 
   const tiles = [];
   (spec.items || []).forEach((item, index) => {
@@ -1101,6 +1108,7 @@ export function folderView(spec) {
       if (item.hint) tile.title = item.hint;
     }
     if (selects) {
+      tile.setAttribute('role', 'option');
       tile.setAttribute('aria-selected', 'false');
       tile.addEventListener('dblclick', () => {
         if (!item.disabled) item.onOpen();
